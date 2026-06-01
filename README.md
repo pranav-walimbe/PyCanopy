@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/pycanopy_logo2.png" alt="PyCanopy" width="400"/>
+  <img src="assets/pycanopy_logo2.png" alt="PyCanopy" width="600"/>
 </p>
 
 # PyCanopy
