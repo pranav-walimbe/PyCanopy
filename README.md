@@ -1,6 +1,10 @@
+<p align="center">
+  <img src="assets/logo.png" alt="PyCanopy" width="400"/>
+</p>
+
 # PyCanopy
 
-A geospatial query engine with automatic index selection. Written in Rust, callable from Python.
+A geospatial query engine with automatic index selection. Written in Rust, callable through python.
 
 PyCanopy accepts point datasets and answers spatial queries (k-nearest neighbours, bounding-box range, point-in-polygon) by automatically choosing the fastest index — R-tree, KD-tree, uniform grid, or brute force — based on dataset size, geometry kind, and spatial distribution.
 
