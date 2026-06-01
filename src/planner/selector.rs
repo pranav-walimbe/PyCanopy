@@ -4,7 +4,6 @@ use crate::stats::types::{DatasetStats, Distribution, GeometryKind};
 
 const FULL_SCAN_SELECTIVITY: f64 = 0.5;
 const BRUTE_FORCE_N: usize = 500;
-const LARGE_N: usize = 1_000_000;
 const KNN_FRACTION_THRESHOLD: f64 = 0.1;
 
 /// Choose the best index kind for the given dataset statistics and query
@@ -30,9 +29,7 @@ pub fn select_index(stats: &DatasetStats, query: &Query) -> IndexKind {
         }
         Query::Range { .. } => match stats.kind {
             GeometryKind::Point => {
-                if stats.n > LARGE_N && stats.distribution == Distribution::Uniform {
-                    IndexKind::Grid
-                } else if stats.distribution == Distribution::Uniform {
+                if stats.distribution == Distribution::Uniform {
                     IndexKind::Grid
                 } else {
                     IndexKind::KdTree
