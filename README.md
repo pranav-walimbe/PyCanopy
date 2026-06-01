@@ -4,6 +4,11 @@
 
 # PyCanopy
 
+[![PyPI version](https://badge.fury.io/py/pycanopy.svg)](https://pypi.org/project/pycanopy/)
+[![Python versions](https://img.shields.io/pypi/pyversions/pycanopy)](https://pypi.org/project/pycanopy/)
+[![CI](https://github.com/pranavwalimbe/PyCanopy/actions/workflows/CI.yml/badge.svg)](https://github.com/pranavwalimbe/PyCanopy/actions/workflows/CI.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A geospatial query engine with automatic index selection. Written in Rust, callable through python.
 
 PyCanopy accepts point datasets and answers spatial queries (k-nearest neighbours, bounding-box range, point-in-polygon) by automatically choosing the fastest index — R-tree, KD-tree, uniform grid, or brute force — based on dataset size, geometry kind, and spatial distribution.
