@@ -1,0 +1,32 @@
+[package]
+name = "pycanopy"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "pycanopy"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+geo = "0.31"
+geo-index = "0.3"
+rayon = "1"
+thiserror = "2"
+ordered-float = "4"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "index_comparison"
+harness = false
+
+[[bench]]
+name = "calibrate"
+harness = false

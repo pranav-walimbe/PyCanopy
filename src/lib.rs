@@ -1,0 +1,186 @@
+use geo::{coord, Geometry, Point, Rect};
+use pyo3::{exceptions::PyValueError, prelude::*, types::PyModule, Bound};
+
+pub mod index;
+pub mod planner;
+pub mod query;
+pub mod stats;
+
+use index::{
+    brute::BruteForce, grid::UniformGrid, kdtree::PackedKdTree, rtree::PackedRTree, SpatialIndex,
+};
+use planner::{cost::IndexKind, selector::select_index};
+use query::{
+    nearest::query_nearest,
+    range::{query_contains, query_range},
+    types::Query,
+};
+use stats::collector;
+
+const MAX_BYTES: usize = 10 * 1024 * 1024 * 1024; // 10 GB hard cap
+
+#[pyclass]
+struct Engine {
+    geometries: Vec<Geometry<f64>>,
+    stats: stats::types::DatasetStats,
+    brute: Option<BruteForce>,
+    rtree: Option<PackedRTree>,
+    kdtree: Option<PackedKdTree>,
+    grid: Option<UniformGrid>,
+}
+
+impl Engine {
+    fn build_index_if_needed(&mut self, kind: IndexKind) {
+        match kind {
+            IndexKind::BruteForce if self.brute.is_none() => {
+                self.brute = Some(BruteForce::build(&self.geometries));
+            }
+            IndexKind::RTree if self.rtree.is_none() => {
+                self.rtree = Some(PackedRTree::build(&self.geometries));
+            }
+            IndexKind::KdTree if self.kdtree.is_none() => {
+                self.kdtree = Some(PackedKdTree::build(&self.geometries));
+            }
+            IndexKind::Grid if self.grid.is_none() => {
+                self.grid = Some(UniformGrid::build(&self.geometries));
+            }
+            _ => {}
+        }
+    }
+}
+
+#[pymethods]
+impl Engine {
+    /// Construct from parallel coordinate arrays.  This is the primary Rust-level
+    /// entry point; the Python wrapper adds GeoArrow / geopandas conversion.
+    #[staticmethod]
+    fn from_points(xs: Vec<f64>, ys: Vec<f64>) -> PyResult<Self> {
+        if xs.len() != ys.len() {
+            return Err(PyValueError::new_err("xs and ys must have the same length"));
+        }
+        let estimated_bytes = xs.len() * 64;
+        if estimated_bytes > MAX_BYTES {
+            return Err(PyValueError::new_err(format!(
+                "Dataset too large: ~{} GB exceeds the 10 GB limit",
+                estimated_bytes / (1024 * 1024 * 1024)
+            )));
+        }
+        let geometries: Vec<Geometry<f64>> = xs
+            .iter()
+            .zip(ys.iter())
+            .map(|(&x, &y)| Geometry::Point(Point::new(x, y)))
+            .collect();
+        let stats = collector::collect(&geometries);
+        Ok(Engine {
+            geometries,
+            stats,
+            brute: None,
+            rtree: None,
+            kdtree: None,
+            grid: None,
+        })
+    }
+
+    /// k-nearest-neighbour query
+    fn knn(&mut self, x: f64, y: f64, k: usize, approximate: bool) -> PyResult<Vec<usize>> {
+        let point = Point::new(x, y);
+        let kind = select_index(
+            &self.stats,
+            &Query::Knn {
+                point: point.clone(),
+                k,
+                approximate,
+            },
+        );
+        self.build_index_if_needed(kind);
+
+        let result = match kind {
+            IndexKind::BruteForce => {
+                query_nearest(self.brute.as_ref().unwrap(), &point, k, approximate)
+            }
+            IndexKind::RTree => query_nearest(self.rtree.as_ref().unwrap(), &point, k, approximate),
+            IndexKind::KdTree => {
+                query_nearest(self.kdtree.as_ref().unwrap(), &point, k, approximate)
+            }
+            IndexKind::Grid => query_nearest(self.grid.as_ref().unwrap(), &point, k, approximate),
+        };
+        Ok(result)
+    }
+
+    /// Bounding-box range query
+    fn range_query(
+        &mut self,
+        min_x: f64,
+        min_y: f64,
+        max_x: f64,
+        max_y: f64,
+    ) -> PyResult<Vec<usize>> {
+        let bbox = Rect::new(coord! { x: min_x, y: min_y }, coord! { x: max_x, y: max_y });
+        let kind = select_index(&self.stats, &Query::Range { bbox: bbox.clone() });
+        self.build_index_if_needed(kind);
+
+        let result = match kind {
+            IndexKind::BruteForce => {
+                query_range(self.brute.as_ref().unwrap(), &bbox, &self.geometries)
+            }
+            IndexKind::RTree => query_range(self.rtree.as_ref().unwrap(), &bbox, &self.geometries),
+            IndexKind::KdTree => {
+                query_range(self.kdtree.as_ref().unwrap(), &bbox, &self.geometries)
+            }
+            IndexKind::Grid => query_range(self.grid.as_ref().unwrap(), &bbox, &self.geometries),
+        };
+        Ok(result)
+    }
+
+    /// Point-in-polygon contains query
+    fn contains_query(&mut self, x: f64, y: f64) -> PyResult<Vec<usize>> {
+        let point = Point::new(x, y);
+        let kind = select_index(
+            &self.stats,
+            &Query::Contains {
+                point: point.clone(),
+            },
+        );
+        self.build_index_if_needed(kind);
+
+        let result = match kind {
+            IndexKind::BruteForce => {
+                query_contains(self.brute.as_ref().unwrap(), &point, &self.geometries)
+            }
+            IndexKind::RTree => {
+                query_contains(self.rtree.as_ref().unwrap(), &point, &self.geometries)
+            }
+            IndexKind::KdTree => {
+                query_contains(self.kdtree.as_ref().unwrap(), &point, &self.geometries)
+            }
+            IndexKind::Grid => {
+                query_contains(self.grid.as_ref().unwrap(), &point, &self.geometries)
+            }
+        };
+        Ok(result)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Engine(n={}, kind={:?}, dist={:?})",
+            self.stats.n, self.stats.kind, self.stats.distribution
+        )
+    }
+
+    fn stats_info(&self) -> String {
+        format!(
+            "n={}, kind={:?}, distribution={:?}, density={:.3e}, extent={:?}",
+            self.stats.n,
+            self.stats.kind,
+            self.stats.distribution,
+            self.stats.mean_density,
+            self.stats.extent,
+        )
+    }
+}
+
+#[pymodule]
+fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<Engine>()?;
+    Ok(())
+}
