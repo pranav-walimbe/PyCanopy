@@ -4,10 +4,11 @@
 
 # PyCanopy
 
-[![PyPI version](https://badge.fury.io/py/pycanopy.svg)](https://pypi.org/project/pycanopy/)
-[![Python versions](https://img.shields.io/pypi/pyversions/pycanopy)](https://pypi.org/project/pycanopy/)
-[![CI](https://github.com/pranavwalimbe/PyCanopy/actions/workflows/CI.yml/badge.svg)](https://github.com/pranavwalimbe/PyCanopy/actions/workflows/CI.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+<p align="center">
+  <a href="https://pypi.org/project/pycanopy/"><img src="https://badge.fury.io/py/pycanopy.svg" alt="PyPI version"/></a>
+  <a href="https://pypi.org/project/pycanopy/"><img src="https://img.shields.io/pypi/pyversions/pycanopy" alt="Python versions"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"/></a>
+</p>
 
 A geospatial query engine with automatic index selection. Written in Rust, callable through python.
 
