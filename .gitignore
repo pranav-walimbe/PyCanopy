@@ -36,3 +36,7 @@ env/
 *.swp
 *.swo
 .DS_Store
+
+# Internal development files
+CLAUDE.md
+pycanopy_logo_files/
