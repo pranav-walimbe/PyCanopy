@@ -5,6 +5,7 @@
 <p align="center">
   <a href="https://pypi.org/project/pycanopy/"><img src="https://badge.fury.io/py/pycanopy.svg" alt="PyPI version"/></a>
   <a href="https://pypi.org/project/pycanopy/"><img src="https://img.shields.io/pypi/pyversions/pycanopy" alt="Python versions"/></a>
+  <a href="https://github.com/pranavwalimbe/pycanopy/actions/workflows/CI.yml"><img src="https://github.com/pranavwalimbe/pycanopy/actions/workflows/CI.yml/badge.svg" alt="CI"/></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"/></a>
 </p>
 
