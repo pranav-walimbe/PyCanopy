@@ -98,6 +98,26 @@ fn polygon_range_routes_to_rtree() {
 }
 
 #[test]
+fn polygon_contains_routes_to_rtree() {
+    let s = stats(1000, GeometryKind::Polygon, Distribution::Unknown);
+    let q = Query::Contains {
+        point: Point::new(50.0, 50.0),
+    };
+    assert_eq!(select_index(&s, &q), IndexKind::RTree);
+}
+
+#[test]
+fn polygon_knn_routes_to_rtree() {
+    let s = stats(1000, GeometryKind::Polygon, Distribution::Unknown);
+    let q = Query::Knn {
+        point: Point::new(50.0, 50.0),
+        k: 5,
+        approximate: false,
+    };
+    assert_eq!(select_index(&s, &q), IndexKind::RTree);
+}
+
+#[test]
 fn knn_with_large_k_fraction_falls_back_to_brute() {
     // k/N = 200/1000 = 0.20 > threshold 0.10
     let s = stats(1000, GeometryKind::Point, Distribution::Uniform);
@@ -110,6 +130,33 @@ fn knn_with_large_k_fraction_falls_back_to_brute() {
 }
 
 // end-to-end: collect stats then select index
+
+#[test]
+fn pipeline_polygon_range_selects_rtree() {
+    use geo::{LineString, Polygon};
+    use pycanopy::stats::collector::collect;
+
+    let geoms: Vec<Geometry<f64>> = (0..1000)
+        .map(|i| {
+            let x = (i % 50) as f64 * 2.0;
+            let y = (i / 50) as f64 * 2.0;
+            Geometry::Polygon(Polygon::new(
+                LineString::new(vec![
+                    coord! { x: x,       y: y       },
+                    coord! { x: x + 1.0, y: y       },
+                    coord! { x: x + 1.0, y: y + 1.0 },
+                    coord! { x: x,       y: y + 1.0 },
+                    coord! { x: x,       y: y       },
+                ]),
+                vec![],
+            ))
+        })
+        .collect();
+
+    let stats = collect(&geoms);
+    assert_eq!(stats.kind, GeometryKind::Polygon);
+    assert_eq!(select_index(&stats, &small_range_query()), IndexKind::RTree);
+}
 
 #[test]
 fn pipeline_uniform_points_range_selects_grid() {

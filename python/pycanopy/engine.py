@@ -1,65 +1,67 @@
 """High-level Python engine wrapping the Rust core.
 
 Accepts GeoArrow arrays, geopandas GeoSeries, shapely geometry lists,
-numpy arrays, or plain coordinate sequences and converts them to the
-flat (xs, ys) format that the Rust Engine.from_points constructor expects.
-
-Hard runtime dependencies (numpy, pyarrow) are imported at module level.
-Optional dependencies (geopandas, shapely) are imported inside the specific
-helper that needs them, giving a clear ImportError if they are absent.
+numpy arrays, or plain coordinate sequences. All point input is normalized
+to a pair of contiguous float64 numpy arrays before crossing the Python/Rust
+boundary, which the Rust side receives as zero-copy slices via NumPy's C API.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
 
 import numpy as np
 import pyarrow as pa
+import shapely
 
-if TYPE_CHECKING:
-    import geopandas as gpd
+_SHAPELY_POLYGON_TYPE_ID = 3
+_SHAPELY_MULTIPOLYGON_TYPE_ID = 6
 
 
-def _extract_points(geometries) -> tuple[list[float], list[float]]:
-    """Return (xs, ys) from the most common geometry containers"""
-    if isinstance(geometries, (pa.Array, pa.ChunkedArray)):
-        return _from_geoarrow(geometries)
+def _to_numpy_xy(geometries) -> tuple[np.ndarray, np.ndarray]:
+    """Return (xs, ys) as contiguous float64 numpy arrays.
 
+    Args:
+        geometries: GeoArrow PyArrow array, geopandas GeoSeries, numpy (N, 2) array,
+            list of shapely Points, or list of (x, y) tuples.
+
+    Returns:
+        Pair of 1-D contiguous float64 arrays.
+    """
     if isinstance(geometries, np.ndarray):
         if geometries.ndim != 2 or geometries.shape[1] < 2:
             raise ValueError("numpy array must be shape (N, 2)")
-        return geometries[:, 0].tolist(), geometries[:, 1].tolist()
+        return (
+            np.ascontiguousarray(geometries[:, 0], dtype=np.float64),
+            np.ascontiguousarray(geometries[:, 1], dtype=np.float64),
+        )
 
-    # Check for geopandas GeoSeries by type name to avoid a hard import.
-    # If geopandas is installed the isinstance check works; if not, the
-    # object simply won't match and we fall through to the tuple path.
-    type_name = type(geometries).__name__
-    if type_name == "GeoSeries":
-        return _from_geoseries(geometries)
+    if isinstance(geometries, (pa.Array, pa.ChunkedArray)):
+        return _geoarrow_to_numpy_xy(geometries)
 
-    # Shapely Point list: any iterable whose elements have .x and .y
+    if type(geometries).__name__ == "GeoSeries":
+        return (
+            np.ascontiguousarray(geometries.x.values, dtype=np.float64),
+            np.ascontiguousarray(geometries.y.values, dtype=np.float64),
+        )
+
     pairs = list(geometries)
     if pairs and hasattr(pairs[0], "x") and hasattr(pairs[0], "y"):
-        return [float(g.x) for g in pairs], [float(g.y) for g in pairs]
+        return (
+            np.array([float(g.x) for g in pairs], dtype=np.float64),
+            np.array([float(g.y) for g in pairs], dtype=np.float64),
+        )
 
-    # Plain sequence of (x, y) tuples / lists
-    return [float(p[0]) for p in pairs], [float(p[1]) for p in pairs]
-
-
-def _from_geoseries(gs: gpd.GeoSeries) -> tuple[list[float], list[float]]:
-    """Extract coordinates from a geopandas GeoSeries of Points"""
-    import geopandas  # noqa: F401 - raises ImportError if not installed
-
-    return gs.x.tolist(), gs.y.tolist()
+    return (
+        np.array([float(p[0]) for p in pairs], dtype=np.float64),
+        np.array([float(p[1]) for p in pairs], dtype=np.float64),
+    )
 
 
-def _from_geoarrow(array: pa.Array | pa.ChunkedArray) -> tuple[list[float], list[float]]:
-    """Extract (xs, ys) from a GeoArrow point array.
+def _geoarrow_to_numpy_xy(array: pa.Array | pa.ChunkedArray) -> tuple[np.ndarray, np.ndarray]:
+    """Extract x/y from a GeoArrow array as contiguous float64 numpy arrays.
 
-    Supports two common GeoArrow encodings:
-    - Separated struct: struct<x: float64, y: float64>
-    - Interleaved: FixedSizeList<2, float64>
+    Supports struct<x: float64, y: float64> and FixedSizeList<2, float64> encodings.
     """
     if isinstance(array, pa.ChunkedArray):
         array = array.combine_chunks()
@@ -68,22 +70,63 @@ def _from_geoarrow(array: pa.Array | pa.ChunkedArray) -> tuple[list[float], list
 
     if pa.types.is_struct(arr_type):
         has_x = arr_type.get_field_index("x") >= 0
-        x_col = array.field("x") if has_x else array.field(0)
         has_y = arr_type.get_field_index("y") >= 0
+        x_col = array.field("x") if has_x else array.field(0)
         y_col = array.field("y") if has_y else array.field(1)
-        return x_col.to_pylist(), y_col.to_pylist()
+        return (
+            np.ascontiguousarray(x_col.to_numpy(zero_copy_only=False), dtype=np.float64),
+            np.ascontiguousarray(y_col.to_numpy(zero_copy_only=False), dtype=np.float64),
+        )
 
     if pa.types.is_fixed_size_list(arr_type) and arr_type.list_size == 2:
         flat = array.flatten().to_pylist()
-        return flat[0::2], flat[1::2]
+        return (
+            np.array(flat[0::2], dtype=np.float64),
+            np.array(flat[1::2], dtype=np.float64),
+        )
 
-    # Fallback: treat each element as an (x, y) pair
-    pairs = array.to_pylist()
-    return [float(p[0]) for p in pairs], [float(p[1]) for p in pairs]
+    raise ValueError(f"Unsupported GeoArrow encoding: {arr_type}")
+
+
+def _extract_polygon_rings(
+    geometries,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return (xs, ys, offsets) as contiguous numpy arrays from a collection of shapely Polygons.
+
+    Each polygon's exterior ring contributes a slice xs[offsets[i]:offsets[i+1]].
+    Uses vectorized shapely 2.0 ops and returns contiguous arrays for zero-copy
+    transfer into Rust via the numpy C API.
+    MultiPolygon geometries are rejected with a clear message.
+    """
+    geoms = np.asarray(geometries)
+
+    type_ids = shapely.get_type_id(geoms)
+    for idx, (geom, tid) in enumerate(zip(geoms, type_ids)):
+        if tid == _SHAPELY_MULTIPOLYGON_TYPE_ID:
+            raise TypeError(
+                f"Geometry at index {idx} is a MultiPolygon. "
+                "Split into individual polygons first with .explode() (geopandas) "
+                "or by iterating over .geoms (shapely)."
+            )
+        if tid != _SHAPELY_POLYGON_TYPE_ID:
+            raise TypeError(
+                f"Geometry at index {idx} is not a Polygon (got {type(geom).__name__!r}). "
+                "Engine.from_polygons requires a collection of Polygon geometries."
+            )
+
+    coords = shapely.get_coordinates(geoms)
+    counts = shapely.get_num_coordinates(geoms)
+    offsets = np.concatenate([[0], np.cumsum(counts)])
+
+    return (
+        np.ascontiguousarray(coords[:, 0], dtype=np.float64),
+        np.ascontiguousarray(coords[:, 1], dtype=np.float64),
+        np.ascontiguousarray(offsets, dtype=np.int64),
+    )
 
 
 def _load_core():
-    """Import the compiled Rust extension, with a clear error if it is missing"""
+    """Import the compiled Rust extension, with a clear error if it is missing."""
     try:
         from pycanopy._core import Engine as _Engine
 
@@ -105,14 +148,34 @@ class Engine:
     def __init__(self, geometries=None):
         self._core = None
         if geometries is not None:
-            xs, ys = _extract_points(geometries)
+            xs, ys = _to_numpy_xy(geometries)
             self._core = _load_core().from_points(xs, ys)
 
     @classmethod
-    def from_coords(cls, xs: Sequence[float], ys: Sequence[float]) -> Engine:
-        """Construct directly from x and y coordinate sequences"""
+    def from_polygons(cls, geometries) -> Engine:
+        """Construct from a collection of simple polygon geometries.
+
+        Args:
+            geometries: A geopandas GeoSeries or list of shapely Polygon objects.
+                MultiPolygon geometries must be split before loading (use
+                GeoSeries.explode() or iterate over shapely MultiPolygon.geoms).
+
+        Returns:
+            Engine ready to answer range and contains queries over polygon data.
+        """
+        xs, ys, offsets = _extract_polygon_rings(geometries)
         eng = cls.__new__(cls)
-        eng._core = _load_core().from_points(list(xs), list(ys))
+        eng._core = _load_core().from_polygon_rings(xs, ys, offsets)
+        return eng
+
+    @classmethod
+    def from_coords(cls, xs: Sequence[float], ys: Sequence[float]) -> Engine:
+        """Construct directly from x and y coordinate sequences."""
+        eng = cls.__new__(cls)
+        eng._core = _load_core().from_points(
+            np.ascontiguousarray(xs, dtype=np.float64),
+            np.ascontiguousarray(ys, dtype=np.float64),
+        )
         return eng
 
     def knn(self, x: float, y: float, k: int, approximate: bool = False) -> list[int]:
@@ -156,7 +219,7 @@ class Engine:
         return self._core.contains_query(x, y)
 
     def stats(self) -> str:
-        """Return a human-readable summary of dataset statistics"""
+        """Return a human-readable summary of dataset statistics."""
         return self._core.stats_info()
 
     def __repr__(self) -> str:

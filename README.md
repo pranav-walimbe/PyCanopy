@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/pycanopy_logo2.png" alt="PyCanopy" width="600"/>
+  <img src="assets/pycanopy_logo2.png" alt="PyCanopy" width="800"/>
 </p>
 
 # PyCanopy
@@ -10,9 +10,19 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"/></a>
 </p>
 
-A geospatial query engine with automatic index selection. Written in Rust, callable through python.
+A geospatial query engine with automatic index selection. Rust core, Python API.
 
-PyCanopy accepts point datasets and answers spatial queries (k-nearest neighbours, bounding-box range, point-in-polygon) by automatically choosing the fastest index — R-tree, KD-tree, uniform grid, or brute force — based on dataset size, geometry kind, and spatial distribution.
+> **Early development.** The API is stable for point and polygon datasets but the project is actively evolving. Contributions and feedback welcome.
+
+---
+
+## Background
+
+GeoPandas is excellent for data manipulation, but spatial queries (finding the k nearest points, all geometries within a bounding box, which polygons contain a location) default to full O(N) scans. For large datasets this gets slow fast.
+
+PyCanopy is a dedicated spatial query engine that sits alongside your GeoPandas workflow. It inspects your dataset at load time (size, geometry type, spatial distribution) and automatically picks the fastest index (KD-tree, R-tree, uniform grid, or brute force) without you having to think about it. The core is written in Rust and coordinates cross the Python/Rust boundary as zero-copy numpy buffers.
+
+---
 
 ## Installation
 
@@ -20,7 +30,9 @@ PyCanopy accepts point datasets and answers spatial queries (k-nearest neighbour
 pip install pycanopy
 ```
 
-> **Note:** Pre-built wheels are provided for Linux, macOS, and Windows. No Rust toolchain required.
+> Pre-built wheels for Linux, macOS, and Windows. No Rust toolchain required.
+
+---
 
 ## Quick start
 
@@ -28,13 +40,23 @@ pip install pycanopy
 import numpy as np
 from pycanopy import Engine
 
-coords = np.random.uniform(0, 100, size=(50_000, 2))
+# Point dataset
+coords = np.random.uniform(0, 100, size=(500_000, 2))
 engine = Engine(coords)
 
-indices = engine.knn(x=42.0, y=37.0, k=10)
-indices = engine.range_query(min_x=10.0, min_y=10.0, max_x=50.0, max_y=50.0)
-indices = engine.contains(x=25.0, y=25.0)
+nearest = engine.knn(x=42.0, y=37.0, k=10)
+in_box  = engine.range_query(min_x=10.0, min_y=10.0, max_x=50.0, max_y=50.0)
+
+# Polygon dataset
+from shapely.geometry import box
+polygons = [box(i, 0, i + 0.9, 0.9) for i in range(500_000)]
+poly_engine = Engine.from_polygons(polygons)
+
+intersecting = poly_engine.range_query(0.0, 0.0, 10.0, 1.0)
+containing   = poly_engine.contains(x=5.5, y=0.5)
 ```
+
+---
 
 ## Accepted input formats
 
@@ -43,32 +65,41 @@ indices = engine.contains(x=25.0, y=25.0)
 | numpy `(N, 2)` array | `np.array([[x, y], ...])` |
 | GeoArrow PyArrow array | `pa.StructArray` or `FixedSizeList<2>` |
 | geopandas `GeoSeries` | `gdf.geometry` |
-| list of shapely Points | `[Point(x, y), ...]` |
+| list of shapely Points or Polygons | `[Point(x, y), ...]` |
 | list of `(x, y)` tuples | `[(x, y), ...]` |
-| Separate coordinate lists | `Engine.from_coords(xs, ys)` |
+| Separate coordinate sequences | `Engine.from_coords(xs, ys)` |
 
-## How index selection works
+---
 
-| Condition | Index chosen |
+## Index selection
+
+PyCanopy inspects the dataset at load time and picks automatically:
+
+| Condition | Index |
 |---|---|
 | N < 500 or selectivity > 50% | Brute force |
 | Points + kNN | KD-tree |
-| Points + uniform + range | Uniform grid |
-| Points + clustered + range | KD-tree |
+| Points + uniform distribution + range | Uniform grid |
+| Points + clustered distribution + range | KD-tree |
 | Polygons or mixed geometries | R-tree |
+
+---
 
 ## Development setup
 
-Requires Python >= 3.9 and a Rust toolchain ([rustup.rs](https://rustup.rs)).
+Requires Python ≥ 3.9 and a Rust toolchain ([rustup.rs](https://rustup.rs)).
 
 ```bash
 git clone https://github.com/pranavwalimbe/pycanopy
 cd pycanopy
-uv sync --group dev
-uv run maturin develop
-uv run pytest
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]" maturin shapely geopandas
+maturin develop
+pytest
 cargo test
 ```
+
+---
 
 ## License
 
