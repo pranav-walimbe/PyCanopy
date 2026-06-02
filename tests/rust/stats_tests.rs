@@ -1,7 +1,7 @@
 use geo::{Geometry, Point};
 use pycanopy::stats::{
     collector::collect,
-    types::{DatasetStats, Distribution, GeometryKind},
+    types::{Distribution, GeometryKind},
 };
 
 fn pt(x: f64, y: f64) -> Geometry<f64> {

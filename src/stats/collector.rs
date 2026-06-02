@@ -1,6 +1,8 @@
 use geo::{coord, BoundingRect, Geometry, Rect};
 
-use crate::stats::types::{DatasetStats, Distribution, GeometryKind};
+use crate::stats::types::{
+    DatasetStats, Distribution, GeometryKind, SpatialHistogram, HISTOGRAM_RESOLUTION,
+};
 
 /// Collect statistics from a geometry slice
 pub fn collect(geometries: &[Geometry<f64>]) -> DatasetStats {
@@ -12,6 +14,7 @@ pub fn collect(geometries: &[Geometry<f64>]) -> DatasetStats {
             extent: None,
             distribution: Distribution::Unknown,
             mean_density: 0.0,
+            histogram: None,
         };
     }
 
@@ -28,6 +31,7 @@ pub fn collect(geometries: &[Geometry<f64>]) -> DatasetStats {
             }
         })
         .unwrap_or(0.0);
+    let histogram = extent.map(|e| build_histogram(geometries, &e));
 
     DatasetStats {
         n,
@@ -35,6 +39,7 @@ pub fn collect(geometries: &[Geometry<f64>]) -> DatasetStats {
         extent,
         distribution,
         mean_density,
+        histogram,
     }
 }
 
@@ -142,6 +147,49 @@ fn estimate_distribution(
     }
 }
 
+fn geom_center(geom: &Geometry<f64>) -> (f64, f64) {
+    match geom {
+        Geometry::Point(p) => (p.x(), p.y()),
+        _ => {
+            if let Some(bbox) = geom.bounding_rect() {
+                (
+                    (bbox.min().x + bbox.max().x) / 2.0,
+                    (bbox.min().y + bbox.max().y) / 2.0,
+                )
+            } else {
+                (0.0, 0.0)
+            }
+        }
+    }
+}
+
+fn build_histogram(geometries: &[Geometry<f64>], extent: &Rect<f64>) -> SpatialHistogram {
+    let w = (extent.max().x - extent.min().x).max(f64::EPSILON);
+    let h = (extent.max().y - extent.min().y).max(f64::EPSILON);
+    let cell_w = w / HISTOGRAM_RESOLUTION as f64;
+    let cell_h = h / HISTOGRAM_RESOLUTION as f64;
+    let mut counts = vec![0u32; HISTOGRAM_RESOLUTION * HISTOGRAM_RESOLUTION];
+
+    for geom in geometries {
+        let (cx, cy) = geom_center(geom);
+        let col = ((cx - extent.min().x) / cell_w)
+            .floor()
+            .clamp(0.0, (HISTOGRAM_RESOLUTION - 1) as f64) as usize;
+        let row = ((cy - extent.min().y) / cell_h)
+            .floor()
+            .clamp(0.0, (HISTOGRAM_RESOLUTION - 1) as f64) as usize;
+        counts[row * HISTOGRAM_RESOLUTION + col] += 1;
+    }
+
+    SpatialHistogram {
+        counts,
+        min_x: extent.min().x,
+        min_y: extent.min().y,
+        cell_w,
+        cell_h,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,5 +267,46 @@ mod tests {
         let stats = collect(&geoms);
         let expected = 25.0 / 16.0;
         assert!((stats.mean_density - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn histogram_is_none_for_empty_dataset() {
+        let stats = collect(&[]);
+        assert!(stats.histogram.is_none());
+    }
+
+    #[test]
+    fn histogram_is_some_for_nonempty_dataset() {
+        let geoms = point_grid_5x5();
+        let stats = collect(&geoms);
+        assert!(stats.histogram.is_some());
+    }
+
+    #[test]
+    fn histogram_counts_sum_to_n() {
+        let geoms = point_grid_5x5();
+        let stats = collect(&geoms);
+        let hist = stats.histogram.unwrap();
+        let total: u32 = hist.counts.iter().sum();
+        assert_eq!(total as usize, stats.n);
+    }
+
+    #[test]
+    fn histogram_skewed_selectivity_beats_area_ratio() {
+        // 24 points clustered near origin, 1 outlier at (100, 100).
+        // Query bbox covers the dense region (x: 0..1, y: 0..1).
+        // Area ratio: 1/100^2 = 0.0001 — misses almost all points.
+        // Histogram: should return ~24/25 = 0.96.
+        let geoms = clustered_25();
+        let stats = collect(&geoms);
+        let hist = stats.histogram.unwrap();
+        use geo::{coord, Rect};
+        let bbox = Rect::new(coord! { x: 0.0, y: 0.0 }, coord! { x: 1.0, y: 1.0 });
+        let hist_sel = hist.selectivity(&bbox, stats.n);
+        let area_sel = 1.0_f64 / (100.0 * 100.0); // area ratio: query/extent
+        assert!(
+            hist_sel > area_sel * 10.0,
+            "histogram sel={hist_sel}, area sel={area_sel}"
+        );
     }
 }

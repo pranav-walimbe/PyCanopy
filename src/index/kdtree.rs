@@ -4,12 +4,14 @@ use geo::{Geometry, Point, Rect};
 use geo_index::kdtree::{KDTree, KDTreeBuilder, KDTreeIndex};
 
 use crate::index::{geom_center, SpatialIndex};
+use crate::stats::types::SpatialHistogram;
 
 /// Packed immutable KD-tree backed by geo-index, optimised for point datasets
 pub struct PackedKdTree {
     tree: KDTree<f64>,
     coords: Vec<(f64, f64)>,
     extent_area: f64,
+    histogram: Option<SpatialHistogram>,
 }
 
 impl SpatialIndex for PackedKdTree {
@@ -43,6 +45,7 @@ impl SpatialIndex for PackedKdTree {
             tree: builder.finish(),
             coords,
             extent_area,
+            histogram: None,
         }
     }
 
@@ -53,12 +56,18 @@ impl SpatialIndex for PackedKdTree {
         }
         let k = k.min(n);
 
-        // Density-based initial radius estimate, then expand until k results found.
-        let density = if self.extent_area > 0.0 {
-            n as f64 / self.extent_area
-        } else {
-            1.0
-        };
+        // Use local density from histogram when available; fall back to global density.
+        let density = self
+            .histogram
+            .as_ref()
+            .and_then(|h| h.local_density(point.x(), point.y()))
+            .unwrap_or_else(|| {
+                if self.extent_area > 0.0 {
+                    n as f64 / self.extent_area
+                } else {
+                    1.0
+                }
+            });
         let mut radius = (k as f64 / (PI * density)).sqrt() * 1.5;
         if radius <= 0.0 {
             radius = 1.0;
@@ -103,6 +112,13 @@ impl SpatialIndex for PackedKdTree {
             .iter()
             .map(|&i| i as usize)
             .collect()
+    }
+}
+
+impl PackedKdTree {
+    /// Inject the spatial histogram for local-density radius estimation in kNN
+    pub fn set_histogram(&mut self, histogram: Option<SpatialHistogram>) {
+        self.histogram = histogram;
     }
 }
 

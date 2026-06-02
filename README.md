@@ -20,14 +20,29 @@ PyCanopy is a dedicated spatial query engine that inspects your dataset at load 
 
 ### Preliminary Performance Comparison
 
-Cross-compared query speed on mock dataset with 1 million geometries
+Measured on 1 million geometries against GeoPandas STRtree / scipy KDTree (both pre-built outside the timed section). Three scenarios: uniform distribution, clustered distribution queried in a dense region, and clustered distribution queried in a sparse region.
 
-| Query | PyCanopy | GeoPandas sindex | Speedup |
-|---|---|---|---|
-| kNN k=10 (points) | 0.03 ms | 0.63 ms scipy KDTree | **18x** |
-| Range 1% bbox (points) | 1.26 ms | 4.80 ms STRtree | **4x** |
-| Range 1% bbox (polygons) | 0.60 ms | 4.48 ms STRtree | **7.5x** |
-| Contains (polygons) | 0.01 ms | 0.05 ms STRtree | **3.4x** |
+**Points**
+
+| Query | Scenario | PyCanopy | GeoPandas sindex | Speedup |
+|---|---|---|---|---|
+| kNN k=10 | Uniform | 0.03 ms | 0.57 ms scipy KDTree | **17x** |
+| kNN k=10 | Clustered, dense | 0.03 ms | 0.13 ms scipy KDTree | **4x** |
+| kNN k=10 | Clustered, sparse | 0.01 ms | 0.18 ms scipy KDTree | **14x** |
+| Range 1% bbox | Uniform | 1.27 ms | 6.50 ms STRtree | **5x** |
+| Range 1% bbox | Clustered, dense | 1.41 ms | 25.61 ms STRtree | **18x** |
+| Range 1% bbox | Clustered, sparse | 0.01 ms | 0.12 ms STRtree | **24x** |
+
+**Polygons**
+
+| Query | Scenario | PyCanopy | GeoPandas sindex | Speedup |
+|---|---|---|---|---|
+| Range 1% bbox | Uniform | 0.63 ms | 4.67 ms STRtree | **7x** |
+| Range 1% bbox | Clustered, dense | 8.40 ms | 22.73 ms STRtree | **3x** |
+| Range 1% bbox | Clustered, sparse | 0.00 ms | 0.09 ms STRtree | **37x** |
+| Contains | Uniform | 0.01 ms | 0.04 ms STRtree | **4x** |
+| Contains | Clustered, dense | 0.04 ms | 0.08 ms STRtree | **2x** |
+| Contains | Clustered, sparse | 0.01 ms | 0.03 ms STRtree | **5x** |
 
 ---
 

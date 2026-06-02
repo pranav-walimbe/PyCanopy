@@ -4,6 +4,7 @@
 use geo::{coord, Geometry, LineString, Point, Polygon, Rect};
 use numpy::PyReadonlyArray1;
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyModule, Bound};
+use rayon::prelude::*;
 
 pub mod index;
 pub mod planner;
@@ -20,6 +21,7 @@ use query::{
     types::Query,
 };
 use stats::collector;
+use stats::types::GeometryKind;
 
 const MAX_BYTES: usize = 10 * 1024 * 1024 * 1024; // 10 GB hard cap
 
@@ -43,7 +45,9 @@ impl Engine {
                 self.rtree = Some(PackedRTree::build(&self.geometries));
             }
             IndexKind::KdTree if self.kdtree.is_none() => {
-                self.kdtree = Some(PackedKdTree::build(&self.geometries));
+                let mut kd = PackedKdTree::build(&self.geometries);
+                kd.set_histogram(self.stats.histogram.clone());
+                self.kdtree = Some(kd);
             }
             IndexKind::Grid if self.grid.is_none() => {
                 self.grid = Some(UniformGrid::build(&self.geometries));
@@ -61,12 +65,12 @@ impl Engine {
     /// no coordinate data is copied across the Python/Rust boundary.
     #[staticmethod]
     fn from_points(xs: PyReadonlyArray1<f64>, ys: PyReadonlyArray1<f64>) -> PyResult<Self> {
-        let xs = xs.as_slice().map_err(|_| {
-            PyValueError::new_err("xs must be a contiguous float64 array")
-        })?;
-        let ys = ys.as_slice().map_err(|_| {
-            PyValueError::new_err("ys must be a contiguous float64 array")
-        })?;
+        let xs = xs
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("xs must be a contiguous float64 array"))?;
+        let ys = ys
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("ys must be a contiguous float64 array"))?;
         if xs.len() != ys.len() {
             return Err(PyValueError::new_err("xs and ys must have the same length"));
         }
@@ -78,8 +82,8 @@ impl Engine {
             )));
         }
         let geometries: Vec<Geometry<f64>> = xs
-            .iter()
-            .zip(ys.iter())
+            .par_iter()
+            .zip(ys.par_iter())
             .map(|(&x, &y)| Geometry::Point(Point::new(x, y)))
             .collect();
         let stats = collector::collect(&geometries);
@@ -106,15 +110,15 @@ impl Engine {
         ys: PyReadonlyArray1<f64>,
         offsets: PyReadonlyArray1<i64>,
     ) -> PyResult<Self> {
-        let xs = xs.as_slice().map_err(|_| {
-            PyValueError::new_err("xs must be a contiguous float64 array")
-        })?;
-        let ys = ys.as_slice().map_err(|_| {
-            PyValueError::new_err("ys must be a contiguous float64 array")
-        })?;
-        let offsets = offsets.as_slice().map_err(|_| {
-            PyValueError::new_err("offsets must be a contiguous int64 array")
-        })?;
+        let xs = xs
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("xs must be a contiguous float64 array"))?;
+        let ys = ys
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("ys must be a contiguous float64 array"))?;
+        let offsets = offsets
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("offsets must be a contiguous int64 array"))?;
         if xs.len() != ys.len() {
             return Err(PyValueError::new_err("xs and ys must have the same length"));
         }
@@ -131,9 +135,8 @@ impl Engine {
             )));
         }
         let n = offsets.len() - 1;
-        let mut geometries = Vec::with_capacity(n);
+        // Validate all offsets before spawning threads.
         for i in 0..n {
-            let start = offsets[i] as usize;
             let end = offsets[i + 1] as usize;
             if end > xs.len() {
                 return Err(PyValueError::new_err(format!(
@@ -141,11 +144,18 @@ impl Engine {
                     xs.len()
                 )));
             }
-            let coords: Vec<geo::Coord<f64>> = (start..end)
-                .map(|j| coord! { x: xs[j], y: ys[j] })
-                .collect();
-            geometries.push(Geometry::Polygon(Polygon::new(LineString::new(coords), vec![])));
         }
+        let geometries: Vec<Geometry<f64>> = (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let start = offsets[i] as usize;
+                let end = offsets[i + 1] as usize;
+                let coords: Vec<geo::Coord<f64>> = (start..end)
+                    .map(|j| coord! { x: xs[j], y: ys[j] })
+                    .collect();
+                Geometry::Polygon(Polygon::new(LineString::new(coords), vec![]))
+            })
+            .collect();
         let stats = collector::collect(&geometries);
         Ok(Engine {
             geometries,
@@ -192,6 +202,13 @@ impl Engine {
         max_y: f64,
     ) -> PyResult<Vec<usize>> {
         let bbox = Rect::new(coord! { x: min_x, y: min_y }, coord! { x: max_x, y: max_y });
+        if self.stats.kind == GeometryKind::Point {
+            if let Some(hist) = &self.stats.histogram {
+                if !hist.has_any_in_bbox(&bbox) {
+                    return Ok(vec![]);
+                }
+            }
+        }
         let kind = select_index(&self.stats, &Query::Range { bbox });
         self.build_index_if_needed(kind);
 
@@ -211,6 +228,13 @@ impl Engine {
     /// Point-in-polygon contains query
     fn contains_query(&mut self, x: f64, y: f64) -> PyResult<Vec<usize>> {
         let point = Point::new(x, y);
+        if self.stats.kind == GeometryKind::Point {
+            if let Some(hist) = &self.stats.histogram {
+                if !hist.has_any_at(x, y) {
+                    return Ok(vec![]);
+                }
+            }
+        }
         let kind = select_index(&self.stats, &Query::Contains { point });
         self.build_index_if_needed(kind);
 

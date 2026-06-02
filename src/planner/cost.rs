@@ -14,6 +14,9 @@ pub enum IndexKind {
 pub fn selectivity(stats: &DatasetStats, query: &Query) -> f64 {
     match query {
         Query::Range { bbox } => {
+            if let Some(hist) = &stats.histogram {
+                return hist.selectivity(bbox, stats.n);
+            }
             let total_area = stats.extent_area();
             if total_area <= 0.0 {
                 return 1.0;
@@ -43,6 +46,7 @@ mod tests {
             )),
             distribution: Distribution::Uniform,
             mean_density: n as f64 / 10_000.0,
+            histogram: None,
         }
     }
 
@@ -82,5 +86,42 @@ mod tests {
             point: Point::new(0.0, 0.0),
         };
         assert!((selectivity(&stats, &q) - 0.001).abs() < 1e-12);
+    }
+
+    #[test]
+    fn range_selectivity_uses_histogram_when_present() {
+        use crate::stats::types::{SpatialHistogram, HISTOGRAM_RESOLUTION};
+        // All 1000 points in a single histogram cell (bottom-left).
+        // Area ratio for a 10x10 query over 100x100 extent = 0.01.
+        // Histogram for a query covering just that cell should return 1.0.
+        let mut counts = vec![0u32; HISTOGRAM_RESOLUTION * HISTOGRAM_RESOLUTION];
+        counts[0] = 1000;
+        let hist = SpatialHistogram {
+            counts,
+            min_x: 0.0,
+            min_y: 0.0,
+            cell_w: 100.0 / HISTOGRAM_RESOLUTION as f64,
+            cell_h: 100.0 / HISTOGRAM_RESOLUTION as f64,
+        };
+        let mut stats = make_stats(1000);
+        stats.histogram = Some(hist);
+        // Query covering exactly the bottom-left cell
+        let cell_size = 100.0 / HISTOGRAM_RESOLUTION as f64;
+        let q = Query::Range {
+            bbox: Rect::new(
+                coord! { x: 0.0, y: 0.0 },
+                coord! { x: cell_size, y: cell_size },
+            ),
+        };
+        assert!((selectivity(&stats, &q) - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn range_selectivity_falls_back_to_area_ratio_without_histogram() {
+        let stats = make_stats(1000); // histogram: None
+        let q = Query::Range {
+            bbox: Rect::new(coord! { x: 0.0, y: 0.0 }, coord! { x: 50.0, y: 50.0 }),
+        };
+        assert!((selectivity(&stats, &q) - 0.25).abs() < 1e-10);
     }
 }

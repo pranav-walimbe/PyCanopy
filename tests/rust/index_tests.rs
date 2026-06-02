@@ -25,7 +25,13 @@ fn five_polygon_grid() -> Vec<Geometry<f64>> {
             vec![],
         ))
     };
-    vec![sq(0.0, 0.0), sq(2.0, 0.0), sq(4.0, 0.0), sq(0.0, 2.0), sq(2.0, 2.0)]
+    vec![
+        sq(0.0, 0.0),
+        sq(2.0, 0.0),
+        sq(4.0, 0.0),
+        sq(0.0, 2.0),
+        sq(2.0, 2.0),
+    ]
 }
 
 fn five_point_grid() -> Vec<Geometry<f64>> {

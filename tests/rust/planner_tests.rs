@@ -18,6 +18,7 @@ fn stats(n: usize, kind: GeometryKind, dist: Distribution) -> DatasetStats {
         )),
         distribution: dist,
         mean_density: n as f64 / 10_000.0,
+        histogram: None,
     }
 }
 
