@@ -2,23 +2,32 @@
   <img src="assets/pycanopy_logo2.png" alt="PyCanopy" width="800"/>
 </p>
 
-# PyCanopy
-
 <p align="center">
   <a href="https://pypi.org/project/pycanopy/"><img src="https://badge.fury.io/py/pycanopy.svg" alt="PyPI version"/></a>
   <a href="https://pypi.org/project/pycanopy/"><img src="https://img.shields.io/pypi/pyversions/pycanopy" alt="Python versions"/></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"/></a>
 </p>
 
-A geospatial query engine with automatic index selection. Rust core, Python API.
-
-> **Early development.** The API is stable for point and polygon datasets but the project is actively evolving. Contributions and feedback welcome.
+A geospatial query engine for optimized in-memory queries. Rust core, Python API.
 
 ---
 
 ## Background
 
-GeoPandas spatial queries (kNN, bounding-box range, point-in-polygon) default to full O(N) scans, and even optimized baselines like the GeoPandas STRtree or scipy KDTree require manual index selection and still carry Python-level overhead. PyCanopy is a dedicated spatial query engine that inspects your dataset at load time (size, geometry type, spatial distribution) and automatically picks the fastest index (KD-tree, R-tree, uniform grid, or brute force) without any manual tuning. The core is written in Rust with coordinates crossing the Python boundary as zero-copy numpy buffers. The goal is to beat all three baselines: naive GeoPandas, STRtree, and scipy KDTree.
+GeoPandas spatial queries (kNN, bounding-box range, point-in-polygon) default to linear scans, and even optimized baselines like the GeoPandas STRtree or scipy KDTree require manual index selection and still carry Python-level overhead.
+
+PyCanopy is a dedicated spatial query engine that inspects your dataset at load time (size, geometry type, spatial distribution) and automatically picks the fastest index (KD-tree, R-tree, uniform grid, or brute force).
+
+### Preliminary Performance Comparison
+
+Cross-compared query speed on mock dataset with 1 million geometries
+
+| Query | PyCanopy | GeoPandas sindex | Speedup |
+|---|---|---|---|
+| kNN k=10 (points) | 0.03 ms | 0.63 ms scipy KDTree | **18x** |
+| Range 1% bbox (points) | 1.26 ms | 4.80 ms STRtree | **4x** |
+| Range 1% bbox (polygons) | 0.60 ms | 4.48 ms STRtree | **7.5x** |
+| Contains (polygons) | 0.01 ms | 0.05 ms STRtree | **3.4x** |
 
 ---
 
