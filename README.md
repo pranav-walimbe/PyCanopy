@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/pycanopy_logo2.png" alt="PyCanopy" width="800"/>
+  <img src="assets/pycanopy_logo3.png" alt="PyCanopy" width="800"/>
 </p>
 
 <p align="center">
@@ -8,7 +8,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"/></a>
 </p>
 
-A geospatial query engine for optimized in-memory queries. Rust core, Python API.
+<p align="center">A geospatial query engine for optimized in-memory queries. Rust core, Python API.</p>
 
 ---
 
@@ -20,7 +20,7 @@ PyCanopy is a dedicated spatial query engine that inspects your dataset at load 
 
 ### Preliminary Performance Comparison
 
-Measured on 1 million geometries against GeoPandas STRtree / scipy KDTree (both pre-built outside the timed section). Three scenarios: uniform distribution, clustered distribution queried in a dense region, and clustered distribution queried in a sparse region.
+Measured on 1 million geometries against GeoPandas STRtree / scipy KDTree. Three scenarios used: uniform distribution, clustered distribution queried in a dense region, and clustered distribution queried in a sparse region.
 
 **Points**
 
