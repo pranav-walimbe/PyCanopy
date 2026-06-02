@@ -18,9 +18,7 @@ A geospatial query engine with automatic index selection. Rust core, Python API.
 
 ## Background
 
-GeoPandas is excellent for data manipulation, but spatial queries (finding the k nearest points, all geometries within a bounding box, which polygons contain a location) default to full O(N) scans. For large datasets this gets slow fast.
-
-PyCanopy is a dedicated spatial query engine that sits alongside your GeoPandas workflow. It inspects your dataset at load time (size, geometry type, spatial distribution) and automatically picks the fastest index (KD-tree, R-tree, uniform grid, or brute force) without you having to think about it. The core is written in Rust and coordinates cross the Python/Rust boundary as zero-copy numpy buffers.
+GeoPandas spatial queries (kNN, bounding-box range, point-in-polygon) default to full O(N) scans, and even optimized baselines like the GeoPandas STRtree or scipy KDTree require manual index selection and still carry Python-level overhead. PyCanopy is a dedicated spatial query engine that inspects your dataset at load time (size, geometry type, spatial distribution) and automatically picks the fastest index (KD-tree, R-tree, uniform grid, or brute force) without any manual tuning. The core is written in Rust with coordinates crossing the Python boundary as zero-copy numpy buffers. The goal is to beat all three baselines: naive GeoPandas, STRtree, and scipy KDTree.
 
 ---
 
