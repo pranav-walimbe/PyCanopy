@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://pypi.org/project/pycanopy/"><img src="https://badge.fury.io/py/pycanopy.svg" alt="PyPI version"/></a>
   <a href="https://pypi.org/project/pycanopy/"><img src="https://img.shields.io/pypi/pyversions/pycanopy" alt="Python versions"/></a>
-  <a href="https://github.com/pranavwalimbe/pycanopy/actions/workflows/CI.yml"><img src="https://img.shields.io/github/actions/workflow/status/pranavwalimbe/pycanopy/CI.yml?branch=main&label=tests" alt="CI"/></a>
+  <a href="https://github.com/pranav-walimbe/pycanopy/actions/workflows/CI.yml"><img src="https://img.shields.io/github/actions/workflow/status/pranav-walimbe/pycanopy/CI.yml?branch=main&label=tests" alt="CI"/></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"/></a>
 </p>
 
@@ -113,7 +113,7 @@ PyCanopy inspects the dataset at load time and picks automatically:
 Requires Python ≥ 3.9 and a Rust toolchain ([rustup.rs](https://rustup.rs)).
 
 ```bash
-git clone https://github.com/pranavwalimbe/pycanopy
+git clone https://github.com/pranav-walimbe/pycanopy
 cd pycanopy
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]" maturin shapely geopandas
