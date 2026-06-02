@@ -41,6 +41,7 @@ dev = [
     "numpy>=1.24",
     "pyarrow>=12.0",
     "ruff>=0.4",
+    "shapely>=2.0",
 ]
 
 [tool.pytest.ini_options]
