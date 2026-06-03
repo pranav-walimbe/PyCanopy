@@ -21,29 +21,25 @@ PyCanopy is a dedicated spatial query engine that inspects your dataset at load 
 
 ### Preliminary Performance Comparison
 
-Measured on 1 million geometries against GeoPandas STRtree / scipy KDTree. Three scenarios used: uniform distribution, clustered distribution queried in a dense region, and clustered distribution queried in a sparse region.
+Measured on 1 million geometries. Naive = GeoPandas full scan, sindex = GeoPandas STRtree / scipy KDTree (pre-built). Two scenarios: uniform distribution and clustered data queried in a sparse region.
 
 **Points**
 
-| Query | Scenario | PyCanopy | GeoPandas sindex | Speedup |
+| Query | Scenario | PyCanopy | GeoPandas naive | GeoPandas sindex |
 |---|---|---|---|---|
-| kNN k=10 | Uniform | 0.03 ms | 0.57 ms scipy KDTree | **17x** |
-| kNN k=10 | Clustered, dense | 0.03 ms | 0.13 ms scipy KDTree | **4x** |
-| kNN k=10 | Clustered, sparse | 0.01 ms | 0.18 ms scipy KDTree | **14x** |
-| Range 1% bbox | Uniform | 1.27 ms | 6.50 ms STRtree | **5x** |
-| Range 1% bbox | Clustered, dense | 1.41 ms | 25.61 ms STRtree | **18x** |
-| Range 1% bbox | Clustered, sparse | 0.01 ms | 0.12 ms STRtree | **24x** |
+| kNN k=10 | Uniform | 0.03 ms | 43 ms **(1433x)** | 0.57 ms **(19x)** |
+| kNN k=10 | Clustered, sparse | 0.01 ms | 41 ms **(4100x)** | 0.18 ms **(18x)** |
+| Range 1% bbox | Uniform | 1.27 ms | 336 ms **(265x)** | 6.50 ms **(5x)** |
+| Range 1% bbox | Clustered, sparse | 0.01 ms | 345 ms **(34500x)** | 0.12 ms **(12x)** |
 
 **Polygons**
 
-| Query | Scenario | PyCanopy | GeoPandas sindex | Speedup |
+| Query | Scenario | PyCanopy | GeoPandas naive | GeoPandas sindex |
 |---|---|---|---|---|
-| Range 1% bbox | Uniform | 0.63 ms | 4.67 ms STRtree | **7x** |
-| Range 1% bbox | Clustered, dense | 8.40 ms | 22.73 ms STRtree | **3x** |
-| Range 1% bbox | Clustered, sparse | 0.00 ms | 0.09 ms STRtree | **37x** |
-| Contains | Uniform | 0.01 ms | 0.04 ms STRtree | **4x** |
-| Contains | Clustered, dense | 0.04 ms | 0.08 ms STRtree | **2x** |
-| Contains | Clustered, sparse | 0.01 ms | 0.03 ms STRtree | **5x** |
+| Range 1% bbox | Uniform | 0.63 ms | 33 ms **(52x)** | 4.67 ms **(7x)** |
+| Range 1% bbox | Clustered, sparse | 0.00 ms | 28 ms **(∞)** | 0.09 ms **(∞)** |
+| Contains | Uniform | 0.01 ms | 42 ms **(4200x)** | 0.04 ms **(4x)** |
+| Contains | Clustered, sparse | 0.01 ms | 42 ms **(4200x)** | 0.03 ms **(3x)** |
 
 ---
 
