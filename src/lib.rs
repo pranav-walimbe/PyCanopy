@@ -23,8 +23,6 @@ use query::{
 use stats::collector;
 use stats::types::GeometryKind;
 
-const MAX_BYTES: usize = 10 * 1024 * 1024 * 1024; // 10 GB hard cap
-
 #[pyclass]
 struct Engine {
     geometries: Vec<Geometry<f64>>,
@@ -74,13 +72,6 @@ impl Engine {
         if xs.len() != ys.len() {
             return Err(PyValueError::new_err("xs and ys must have the same length"));
         }
-        let estimated_bytes = xs.len() * 64;
-        if estimated_bytes > MAX_BYTES {
-            return Err(PyValueError::new_err(format!(
-                "Dataset too large: ~{} GB exceeds the 10 GB limit",
-                estimated_bytes / (1024 * 1024 * 1024)
-            )));
-        }
         let geometries: Vec<Geometry<f64>> = xs
             .par_iter()
             .zip(ys.par_iter())
@@ -126,13 +117,6 @@ impl Engine {
             return Err(PyValueError::new_err(
                 "offsets must have at least 2 entries (one polygon requires two offset values)",
             ));
-        }
-        let estimated_bytes = xs.len() * 16;
-        if estimated_bytes > MAX_BYTES {
-            return Err(PyValueError::new_err(format!(
-                "Dataset too large: ~{} GB exceeds the 10 GB limit",
-                estimated_bytes / (1024 * 1024 * 1024)
-            )));
         }
         let n = offsets.len() - 1;
         // Validate all offsets before spawning threads.
