@@ -21,25 +21,25 @@ PyCanopy is a dedicated spatial query engine that inspects your dataset at load 
 
 ### Preliminary Performance Comparison
 
-Measured on 1 million geometries. Naive = GeoPandas full scan, sindex = GeoPandas STRtree / scipy KDTree (pre-built). Two scenarios: uniform distribution and clustered data queried in a sparse region.
+Measured on 1 million geometries. Naive = GeoPandas full scan, sindex = GeoPandas STRtree / scipy KDTree (pre-built). Two scenarios: uniform distribution and clustered data queried in a sparse region. †early exit via spatial histogram (index is not traversed).
 
 **Points**
 
 | Query | Scenario | PyCanopy | GeoPandas naive | GeoPandas sindex |
 |---|---|---|---|---|
-| kNN k=10 | Uniform | 0.03 ms | 43 ms **(1433x)** | 0.57 ms **(19x)** |
-| kNN k=10 | Clustered, sparse | 0.01 ms | 41 ms **(4100x)** | 0.18 ms **(18x)** |
-| Range 1% bbox | Uniform | 1.27 ms | 336 ms **(265x)** | 6.50 ms **(5x)** |
-| Range 1% bbox | Clustered, sparse | 0.01 ms | 345 ms **(34500x)** | 0.12 ms **(12x)** |
+| kNN k=10 | Uniform | 0.02 ms | 44 ms **(2200x)** | 0.81 ms **(41x)** |
+| kNN k=10 | Clustered, sparse | 0.01 ms | 33 ms **(3300x)** | 0.08 ms **(8x)** |
+| Range 1% bbox | Uniform | 1.12 ms | 333 ms **(297x)** | 4.96 ms **(4x)** |
+| Range 1% bbox | Clustered, sparse† | 0.004 ms | 319 ms **(79750x)** | 0.11 ms **(28x)** |
 
 **Polygons**
 
 | Query | Scenario | PyCanopy | GeoPandas naive | GeoPandas sindex |
 |---|---|---|---|---|
-| Range 1% bbox | Uniform | 0.63 ms | 33 ms **(52x)** | 4.67 ms **(7x)** |
-| Range 1% bbox | Clustered, sparse | 0.00 ms | 28 ms **(∞)** | 0.09 ms **(∞)** |
-| Contains | Uniform | 0.01 ms | 42 ms **(4200x)** | 0.04 ms **(4x)** |
-| Contains | Clustered, sparse | 0.01 ms | 42 ms **(4200x)** | 0.03 ms **(3x)** |
+| Range 1% bbox | Uniform | 0.59 ms | 34 ms **(58x)** | 4.52 ms **(8x)** |
+| Range 1% bbox | Clustered, sparse† | 0.002 ms | 27 ms **(13500x)** | 0.04 ms **(20x)** |
+| Contains | Uniform | 0.01 ms | 41 ms **(4100x)** | 0.05 ms **(5x)** |
+| Contains | Clustered, sparse† | 0.005 ms | 41 ms **(8200x)** | 0.03 ms **(6x)** |
 
 ---
 
