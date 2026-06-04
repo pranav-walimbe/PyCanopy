@@ -30,6 +30,12 @@ _FUSION_SELECTIVITY_FLOOR = 0.05
 # Datasets smaller than this always use BruteForce; fusion overhead isn't worth it.
 _FUSION_MIN_N = 500
 
+# Spatial selectivity below this threshold means the spatial filter is tighter than
+# 5% of the dataset. The pre-built Engine index on N rows returns so few candidates
+# that slicing sf.df directly (IO path) is cheaper than rebuilding a local index on
+# M post-scalar rows and running a map_batches expression (EXPR path).
+_IO_SELECTIVITY_THRESHOLD = 0.05
+
 
 class SpatialOptimizer:
     """Transforms a raw SpatialLazyFrame plan into an execution-ordered plan."""
@@ -176,5 +182,37 @@ class SpatialOptimizer:
         )
 
     def _select_plugin_path(self, plan: Plan, engine) -> PluginPath:
-        """Choose expression plugin (default) or IO plugin. Phase 4."""
-        raise NotImplementedError("Phase 4")
+        """Choose expression plugin (default) or IO plugin.
+
+        IO path: queries the pre-built Engine on N rows, slices sf.df to K candidates,
+        then applies scalar filters on K. Wins when spatial selectivity is tight
+        (K << N) so the index query is fast and the slice is small.
+
+        EXPR path: emits map_batches(is_elementwise=False) expressions. Polars runs
+        scalar filters first (barrier semantics), then the closure builds a fresh
+        local index on M remaining rows. Wins for moderate selectivity where M is
+        meaningfully smaller than N and rebuilding is cheap.
+
+        Join nodes and KNN always use EXPR — they need the global Engine index and
+        the _ROW_IDX correlation mechanism that the IO path skips.
+
+        Args:
+            plan: Optimised plan with selectivity populated.
+            engine: Engine instance (unused currently; reserved for future n-based tuning).
+
+        Returns:
+            PluginPath.IO or PluginPath.EXPR.
+        """
+        if any(isinstance(n, (KnnNode, KnnJoinNode, WithinJoinNode)) for n in plan):
+            return PluginPath.EXPR
+
+        for node in plan:
+            sel: float | None = None
+            if isinstance(node, (RangeNode, ContainsNode)):
+                sel = node.selectivity
+            elif isinstance(node, FusedSpatialNode):
+                sel = min(p.selectivity for p in node.predicates)
+            if sel is not None and sel < _IO_SELECTIVITY_THRESHOLD:
+                return PluginPath.IO
+
+        return PluginPath.EXPR

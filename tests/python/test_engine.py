@@ -45,6 +45,32 @@ def large_poly_engine():
     return Engine.from_polygons(polys)
 
 
+@pytest.fixture(scope="session")
+def large_engine():
+    xs = [(i % 50) * 2.0 for i in range(1000)]
+    ys = [(i // 50) * 2.0 for i in range(1000)]
+    return Engine.from_coords(xs, ys)
+
+
+@pytest.fixture(scope="session")
+def numpy_engine():
+    arr = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]], dtype=float)
+    return Engine(arr)
+
+
+@pytest.fixture(scope="session")
+def pyarrow_struct_engine():
+    arr = pa.StructArray.from_arrays([pa.array(XS), pa.array(YS)], names=["x", "y"])
+    return Engine(arr)
+
+
+@pytest.fixture(scope="session")
+def pyarrow_fsl_engine():
+    flat = [v for x, y in zip(XS, YS) for v in (x, y)]
+    arr = pa.FixedSizeListArray.from_arrays(pa.array(flat, type=pa.float64()), 2)
+    return Engine(arr)
+
+
 # point construction
 
 
@@ -133,40 +159,27 @@ def test_contains_no_match_returns_empty(engine):
 # alternative input formats
 
 
-def test_from_numpy_array():
-    arr = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]], dtype=float)
-    eng = Engine(arr)
-    assert sorted(eng.knn(1.2, 0.0, 1)) == [1]
+def test_from_numpy_array(numpy_engine):
+    assert sorted(numpy_engine.knn(1.2, 0.0, 1)) == [1]
 
 
-def test_from_pyarrow_struct_array():
-    arr = pa.StructArray.from_arrays([pa.array(XS), pa.array(YS)], names=["x", "y"])
-    eng = Engine(arr)
-    assert sorted(eng.knn(1.2, 0.1, 1)) == [1]
+def test_from_pyarrow_struct_array(pyarrow_struct_engine):
+    assert sorted(pyarrow_struct_engine.knn(1.2, 0.1, 1)) == [1]
 
 
-def test_from_pyarrow_fixed_size_list():
-    flat = [v for x, y in zip(XS, YS) for v in (x, y)]
-    arr = pa.FixedSizeListArray.from_arrays(pa.array(flat, type=pa.float64()), 2)
-    eng = Engine(arr)
-    assert sorted(eng.knn(1.2, 0.1, 1)) == [1]
+def test_from_pyarrow_fixed_size_list(pyarrow_fsl_engine):
+    assert sorted(pyarrow_fsl_engine.knn(1.2, 0.1, 1)) == [1]
 
 
 # large point dataset — exercises index selection past the brute-force threshold
 
 
-def test_large_dataset_knn():
-    xs = [(i % 50) * 2.0 for i in range(1000)]
-    ys = [(i // 50) * 2.0 for i in range(1000)]
-    eng = Engine.from_coords(xs, ys)
-    assert len(eng.knn(25.0, 10.0, 5)) == 5
+def test_large_dataset_knn(large_engine):
+    assert len(large_engine.knn(25.0, 10.0, 5)) == 5
 
 
-def test_large_dataset_range():
-    xs = [(i % 50) * 2.0 for i in range(1000)]
-    ys = [(i // 50) * 2.0 for i in range(1000)]
-    eng = Engine.from_coords(xs, ys)
-    assert len(eng.range_query(0.0, 0.0, 10.0, 10.0)) > 0
+def test_large_dataset_range(large_engine):
+    assert len(large_engine.range_query(0.0, 0.0, 10.0, 10.0)) > 0
 
 
 # polygon construction

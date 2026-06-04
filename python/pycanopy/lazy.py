@@ -167,9 +167,11 @@ class SpatialLazyFrame:
 
         Triggers:
           1. SpatialOptimizer: selectivity estimation, cost-based sort, fusion pass.
-          2. SpatialExecutor: emits the optimised plan as a Polars LazyFrame chain.
+          2. SpatialOptimizer: plugin path selection (EXPR vs IO).
+          3. SpatialExecutor: emits the optimised plan via the chosen plugin path.
         """
         optimizer = SpatialOptimizer()
         executor = SpatialExecutor()
         optimized = optimizer.optimize(self._plan, self._sf.engine)
-        return executor.execute(optimized, self._sf)
+        plugin_path = optimizer._select_plugin_path(optimized, self._sf.engine)
+        return executor.execute(optimized, self._sf, plugin_path)

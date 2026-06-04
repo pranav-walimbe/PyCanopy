@@ -11,6 +11,7 @@ from pycanopy.nodes import (
     KnnJoinNode,
     KnnNode,
     Plan,
+    PluginPath,
     RangeNode,
     ScalarNode,
     WithinJoinNode,
@@ -22,51 +23,215 @@ from pycanopy.nodes import (
 _ROW_IDX = "__orig_row__"
 
 
+def _range_plugin_expr(
+    x_col: str,
+    y_col: str,
+    min_x: float,
+    min_y: float,
+    max_x: float,
+    max_y: float,
+) -> pl.Expr:
+    """Boolean mask expression for a bounding-box filter via map_batches.
+
+    is_elementwise=False makes Polars treat this as a column-level barrier: any
+    elementwise scalar predicates emitted before it in the LazyFrame chain execute
+    first, so the local index is built on the M already-filtered rows rather than N.
+    """
+
+    def _apply(s: pl.Series) -> pl.Series:
+        from pycanopy.engine import Engine
+
+        df = s.struct.unnest()
+        xs = df[x_col].to_numpy()
+        ys = df[y_col].to_numpy()
+        local_eng = Engine.from_coords(xs, ys)
+        hits = local_eng.range_query(min_x, min_y, max_x, max_y)
+        mask = np.zeros(len(xs), dtype=bool)
+        if hits:
+            mask[hits] = True
+        return pl.Series("", mask, dtype=pl.Boolean)
+
+    return pl.struct(pl.col(x_col), pl.col(y_col)).map_batches(
+        _apply, return_dtype=pl.Boolean, is_elementwise=False
+    )
+
+
+def _contains_plugin_expr(x_col: str, y_col: str, qx: float, qy: float) -> pl.Expr:
+    """Boolean mask expression for a point exact-match filter via map_batches."""
+
+    def _apply(s: pl.Series) -> pl.Series:
+        from pycanopy.engine import Engine
+
+        df = s.struct.unnest()
+        xs = df[x_col].to_numpy()
+        ys = df[y_col].to_numpy()
+        local_eng = Engine.from_coords(xs, ys)
+        hits = local_eng.contains(qx, qy)
+        mask = np.zeros(len(xs), dtype=bool)
+        if hits:
+            mask[hits] = True
+        return pl.Series("", mask, dtype=pl.Boolean)
+
+    return pl.struct(pl.col(x_col), pl.col(y_col)).map_batches(
+        _apply, return_dtype=pl.Boolean, is_elementwise=False
+    )
+
+
+def _fused_plugin_expr(
+    x_col: str, y_col: str, predicates: list[RangeNode | ContainsNode]
+) -> pl.Expr:
+    """Boolean mask expression that applies all fused predicates with one index build.
+
+    Building the local index once for all predicates is the core benefit of fusion:
+    each additional predicate costs only a query, not an index rebuild.
+    """
+
+    def _apply(s: pl.Series) -> pl.Series:
+        from pycanopy.engine import Engine
+
+        df = s.struct.unnest()
+        xs = df[x_col].to_numpy()
+        ys = df[y_col].to_numpy()
+        local_eng = Engine.from_coords(xs, ys)
+
+        mask = np.ones(len(xs), dtype=bool)
+        for pred in predicates:
+            if isinstance(pred, RangeNode):
+                hits = local_eng.range_query(pred.min_x, pred.min_y, pred.max_x, pred.max_y)
+            elif isinstance(pred, ContainsNode):
+                hits = local_eng.contains(pred.qx, pred.qy)
+            else:
+                continue
+            pred_mask = np.zeros(len(xs), dtype=bool)
+            if hits:
+                pred_mask[hits] = True
+            mask &= pred_mask
+
+        return pl.Series("", mask, dtype=pl.Boolean)
+
+    return pl.struct(pl.col(x_col), pl.col(y_col)).map_batches(
+        _apply, return_dtype=pl.Boolean, is_elementwise=False
+    )
+
+
 class SpatialExecutor:
     """Translates the optimised plan into Polars operations and executes them.
 
-    Scalar nodes become .filter() calls delegated directly to Polars.
-    Spatial filter nodes query the Engine and filter the LazyFrame by original row index.
-    Join nodes produce a new DataFrame and replace the current LazyFrame.
+    Two execution paths are available, chosen by the optimizer via PluginPath:
 
-    A persistent _ROW_IDX column is added at the start and dropped at the end
-    for filter operations. Join nodes replace the LazyFrame entirely so the
-    column may or may not be present in the final result.
+    EXPR path (default): spatial nodes emit map_batches(is_elementwise=False)
+        expressions. Polars runs scalar filters first (barrier semantics), then the
+        spatial closure builds a fresh local index on the M remaining rows. A
+        persistent _ROW_IDX column is added for KNN nodes that still need global-index
+        correlation after any scalar pre-filtering.
+
+    IO path: the pre-built Engine (on N rows) is queried directly to get K candidate
+        indices. sf.df is sliced to those K rows. Scalar filters run on the K-row
+        slice. No _ROW_IDX column needed. Best when spatial selectivity is tight
+        (K << N) and re-building a fresh index on M rows would be wasteful.
     """
 
-    def execute(self, plan: Plan, sf) -> pl.DataFrame:
+    def execute(
+        self, plan: Plan, sf, plugin_path: PluginPath = PluginPath.EXPR
+    ) -> pl.DataFrame:
         """Execute the optimised plan against sf.
 
         Args:
             plan: Execution-ordered plan from SpatialOptimizer.
             sf: SpatialFrame owning the Engine and DataFrame.
+            plugin_path: Whether to use the expression plugin or IO plugin path.
 
         Returns:
             Filtered or joined Polars DataFrame.
         """
+        # EXPR path requires x_col/y_col as real DataFrame columns (point datasets).
+        # Polygon SpatialFrames use synthetic coordinate column names that don't
+        # exist in df; degrade gracefully to the IO path in that case.
+        if plugin_path == PluginPath.EXPR and sf.x_col not in sf.df.columns:
+            plugin_path = PluginPath.IO
+
+        if plugin_path == PluginPath.IO:
+            return self._execute_io(plan, sf)
+
         lf = sf.df.with_row_index(_ROW_IDX).lazy()
-        lf = self._emit_chain(plan, sf, lf)
+        lf = self._emit_chain(plan, sf, lf, plugin_path)
         df = lf.collect()
         if _ROW_IDX in df.columns:
             df = df.drop(_ROW_IDX)
         return df
 
-    def _emit_chain(self, plan: Plan, sf, lf: pl.LazyFrame) -> pl.LazyFrame:
+    def _execute_io(self, plan: Plan, sf) -> pl.DataFrame:
+        """IO path: query the pre-built Engine first, slice df, then apply scalars.
+
+        All spatial nodes are resolved against the global Engine (no index rebuild).
+        Results are AND-intersected. Scalar nodes run on the small candidate slice.
+        """
+        candidate_indices: set[int] | None = None
+        scalar_nodes: list[ScalarNode] = []
+
         for node in plan:
-            lf = self._emit_node(node, sf, lf)
+            hits: list[int] | None = None
+            if isinstance(node, RangeNode):
+                hits = sf.engine.range_query(node.min_x, node.min_y, node.max_x, node.max_y)
+            elif isinstance(node, ContainsNode):
+                hits = sf.engine.contains(node.qx, node.qy)
+            elif isinstance(node, FusedSpatialNode):
+                for pred in node.predicates:
+                    if isinstance(pred, RangeNode):
+                        pred_hits = sf.engine.range_query(
+                            pred.min_x, pred.min_y, pred.max_x, pred.max_y
+                        )
+                    elif isinstance(pred, ContainsNode):
+                        pred_hits = sf.engine.contains(pred.qx, pred.qy)
+                    else:
+                        continue
+                    pred_set = set(pred_hits)
+                    candidate_indices = (
+                        pred_set
+                        if candidate_indices is None
+                        else candidate_indices & pred_set
+                    )
+                continue
+            elif isinstance(node, ScalarNode):
+                scalar_nodes.append(node)
+                continue
+
+            if hits is not None:
+                hits_set = set(hits)
+                candidate_indices = (
+                    hits_set if candidate_indices is None else candidate_indices & hits_set
+                )
+
+        if candidate_indices is None:
+            lf = sf.df.lazy()
+        else:
+            lf = sf.df[sorted(candidate_indices)].lazy()
+
+        for node in scalar_nodes:
+            lf = lf.filter(node.expr)
+
+        return lf.collect()
+
+    def _emit_chain(
+        self, plan: Plan, sf, lf: pl.LazyFrame, plugin_path: PluginPath
+    ) -> pl.LazyFrame:
+        for node in plan:
+            lf = self._emit_node(node, sf, lf, plugin_path)
         return lf
 
-    def _emit_node(self, node, sf, lf: pl.LazyFrame) -> pl.LazyFrame:
+    def _emit_node(
+        self, node, sf, lf: pl.LazyFrame, plugin_path: PluginPath
+    ) -> pl.LazyFrame:
         if isinstance(node, ScalarNode):
             return lf.filter(node.expr)
         if isinstance(node, RangeNode):
-            return self._emit_range(node, sf, lf)
+            return self._emit_range(node, sf, lf, plugin_path)
         if isinstance(node, ContainsNode):
-            return self._emit_contains(node, sf, lf)
+            return self._emit_contains(node, sf, lf, plugin_path)
         if isinstance(node, KnnNode):
             return self._emit_knn(node, sf, lf)
         if isinstance(node, FusedSpatialNode):
-            return self._emit_fused(node, sf, lf)
+            return self._emit_fused(node, sf, lf, plugin_path)
         if isinstance(node, KnnJoinNode):
             return self._emit_knn_join(node, sf, lf)
         if isinstance(node, WithinJoinNode):
@@ -75,11 +240,23 @@ class SpatialExecutor:
 
     # --- filter nodes ---
 
-    def _emit_range(self, node: RangeNode, sf, lf: pl.LazyFrame) -> pl.LazyFrame:
+    def _emit_range(
+        self, node: RangeNode, sf, lf: pl.LazyFrame, plugin_path: PluginPath
+    ) -> pl.LazyFrame:
+        if plugin_path == PluginPath.EXPR:
+            return lf.filter(
+                _range_plugin_expr(
+                    sf.x_col, sf.y_col, node.min_x, node.min_y, node.max_x, node.max_y
+                )
+            )
         indices = sf.engine.range_query(node.min_x, node.min_y, node.max_x, node.max_y)
         return self._filter_by_indices(lf, indices)
 
-    def _emit_contains(self, node: ContainsNode, sf, lf: pl.LazyFrame) -> pl.LazyFrame:
+    def _emit_contains(
+        self, node: ContainsNode, sf, lf: pl.LazyFrame, plugin_path: PluginPath
+    ) -> pl.LazyFrame:
+        if plugin_path == PluginPath.EXPR:
+            return lf.filter(_contains_plugin_expr(sf.x_col, sf.y_col, node.qx, node.qy))
         indices = sf.engine.contains(node.qx, node.qy)
         return self._filter_by_indices(lf, indices)
 
@@ -87,18 +264,19 @@ class SpatialExecutor:
         indices = sf.engine.knn(node.qx, node.qy, node.k, node.approximate)
         return self._filter_by_indices(lf, indices)
 
-    def _emit_fused(self, node: FusedSpatialNode, sf, lf: pl.LazyFrame) -> pl.LazyFrame:
-        # Apply each predicate independently. Correctness is identical to chaining;
-        # the single-index-build benefit is deferred to the Phase 4 expression plugin.
+    def _emit_fused(
+        self, node: FusedSpatialNode, sf, lf: pl.LazyFrame, plugin_path: PluginPath
+    ) -> pl.LazyFrame:
+        if plugin_path == PluginPath.EXPR:
+            return lf.filter(_fused_plugin_expr(sf.x_col, sf.y_col, node.predicates))
         for pred in node.predicates:
-            lf = self._emit_node(pred, sf, lf)
+            lf = self._emit_node(pred, sf, lf, plugin_path)
         return lf
 
     def _filter_by_indices(self, lf: pl.LazyFrame, indices: list[int]) -> pl.LazyFrame:
         if not indices:
             return lf.filter(pl.lit(False))
-        match_series = pl.Series("_match", indices, dtype=pl.UInt32)
-        return lf.filter(pl.col(_ROW_IDX).is_in(match_series))
+        return lf.filter(pl.col(_ROW_IDX).is_in(indices))
 
     # --- join nodes ---
 

@@ -9,37 +9,55 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"/></a>
 </p>
 
-<p align="center">A geospatial query engine for optimized in-memory queries. Rust core, Python API.</p>
+<p align="center">A spatial query layer for Polars. Rust core, Python API.</p>
 
 ---
 
 ## Background
 
-GeoPandas spatial queries (kNN, bounding-box range, point-in-polygon) default to linear scans, and even optimized baselines like the GeoPandas STRtree or scipy KDTree require manual index selection and still carry Python-level overhead.
+Polars has no native spatial query support. Getting bounding-box filters, k-nearest neighbours, or point-in-polygon tests on a Polars DataFrame typically means converting to GeoPandas, managing an index manually, or scanning every row in Python.
 
-PyCanopy is a dedicated spatial query engine that inspects your dataset at load time (size, geometry type, spatial distribution) and automatically picks the fastest index (KD-tree, R-tree, uniform grid, or brute force).
+GeoPandas applies linear scans by default for containment and range tests; its STRtree requires explicit opt-in via `.sindex` and is the only available index type regardless of data distribution. KNN has no built-in path at all and requires a separate library.
 
-### Preliminary Performance Comparison
+PyCanopy adds a declarative lazy query layer directly on Polars DataFrames. You describe the spatial operations you want, and PyCanopy decides which index to build, in what order to run each operation, and what to hand off to Polars to execute.
 
-Measured on 1 million geometries. Naive = GeoPandas full scan, sindex = GeoPandas STRtree / scipy KDTree (pre-built). Two scenarios: uniform distribution and clustered data queried in a sparse region. †early exit via spatial histogram (index is not traversed).
+---
 
-**Points**
+## How It Works
 
-| Query | Scenario | PyCanopy | GeoPandas naive | GeoPandas sindex |
-|---|---|---|---|---|
-| kNN k=10 | Uniform | 0.02 ms | 44 ms **(2200x)** | 0.81 ms **(41x)** |
-| kNN k=10 | Clustered, sparse | 0.01 ms | 33 ms **(3300x)** | 0.08 ms **(8x)** |
-| Range 1% bbox | Uniform | 1.12 ms | 333 ms **(297x)** | 4.96 ms **(4x)** |
-| Range 1% bbox | Clustered, sparse† | 0.004 ms | 319 ms **(79750x)** | 0.11 ms **(28x)** |
+PyCanopy sits as a planning and execution layer between your code and Polars. You declare what you want spatially; PyCanopy decides how to run it, then hands a Polars LazyFrame chain back for Polars to execute and return a native DataFrame.
 
-**Polygons**
+```
+  declare                      plan                       hand to Polars
+  ───────────    ──────────────────────────────────    ──────────────────────────
 
-| Query | Scenario | PyCanopy | GeoPandas naive | GeoPandas sindex |
-|---|---|---|---|---|
-| Range 1% bbox | Uniform | 0.59 ms | 34 ms **(58x)** | 4.52 ms **(8x)** |
-| Range 1% bbox | Clustered, sparse† | 0.002 ms | 27 ms **(13500x)** | 0.04 ms **(20x)** |
-| Contains | Uniform | 0.01 ms | 41 ms **(4100x)** | 0.05 ms **(5x)** |
-| Contains | Clustered, sparse† | 0.005 ms | 41 ms **(8200x)** | 0.03 ms **(6x)** |
+  SpatialFrame   SpatialLazyFrame   SpatialOptimizer   scalar filter exprs
+  ─────────────  ────────────────   ────────────────   (Polars runs these first,
+  xs, ys         .filter()          reorder by cost     cheaply, reducing rows)
+  stats cached   .range_query()     fuse predicates
+  index lazy     .knn_join()        pick index type    spatial map_batches exprs
+                 ...                pick EXPR or IO     (is_elementwise=False tells
+                                                         Polars to treat these as
+                                    SpatialExecutor      column-level barriers and
+                                    emits Polars chain   not reorder past them)
+                                    dispatches Rust
+                                    batch joins         join results via rayon,
+                                                        concat'd into LazyFrame
+
+                                                        pl.DataFrame  <── .collect()
+```
+
+The optimizer makes four decisions before any data moves:
+
+**Ordering.** Scalar Polars predicates are placed before spatial operations. Running them first costs nothing extra and shrinks the row count before any index is touched.
+
+**Fusion.** Consecutive spatial predicates on a large dataset are merged so the index is built once and all predicates are evaluated in a single pass over the data.
+
+**Index type.** Chosen per query from KD-tree (point KNN), uniform grid (uniform-distribution range), R-tree (polygons), or brute force (small N or full-scan selectivity).
+
+**Execution path.** The EXPR path emits spatial filters as Polars `map_batches` expressions. Polars sees `is_elementwise=False` and treats each expression as a barrier, running scalar predicates above it first and passing the reduced row set to the spatial closure. The IO path is used for tight spatial filters: the pre-built Engine index is queried directly, the DataFrame is sliced to the small candidate set, and scalar filters run on that slice.
+
+Scalar predicates, sorting, projection, and `collect()` are always handled by Polars. PyCanopy does not re-implement any of that.
 
 ---
 
@@ -53,26 +71,75 @@ pip install pycanopy
 
 ---
 
-## Quick start
+## Usage
+
+### Point dataset: range and KNN
 
 ```python
-import numpy as np
-from pycanopy import Engine
+import polars as pl
+from pycanopy import SpatialFrame
 
-# Point dataset
-coords = np.random.uniform(0, 100, size=(500_000, 2))
-engine = Engine(coords)
+df = pl.read_parquet("cities.parquet")
+sf = SpatialFrame(df, x_col="lon", y_col="lat")
 
-nearest = engine.knn(x=42.0, y=37.0, k=10)
-in_box  = engine.range_query(min_x=10.0, min_y=10.0, max_x=50.0, max_y=50.0)
+# Bounding-box filter combined with a scalar predicate.
+# Optimizer places the scalar filter first, then runs the range query
+# on the reduced row set.
+result = (
+    sf.lazy()
+    .filter(pl.col("population") > 100_000)
+    .range_query(min_x=-10.0, min_y=35.0, max_x=40.0, max_y=70.0)
+    .collect()
+)
 
-# Polygon dataset
+# k-nearest neighbours
+nearest = sf.lazy().knn(x=2.35, y=48.85, k=5).collect()
+```
+
+### Chaining multiple spatial predicates
+
+```python
+# Two range predicates are fused into a single index build on large datasets.
+result = (
+    sf.lazy()
+    .range_query(0.0, 0.0, 50.0, 50.0)
+    .range_query(10.0, 10.0, 40.0, 40.0)
+    .collect()
+)
+```
+
+### KNN join
+
+```python
+query_df = pl.DataFrame({"qx": [2.35, 13.4], "qy": [48.85, 52.5]})
+
+# For each row in query_df, find the 3 nearest rows in sf.
+result = sf.lazy().knn_join(query_df, x_col="qx", y_col="qy", k=3).collect()
+```
+
+### Polygon dataset: contains and range
+
+```python
 from shapely.geometry import box
-polygons = [box(i, 0, i + 0.9, 0.9) for i in range(500_000)]
-poly_engine = Engine.from_polygons(polygons)
+from pycanopy import SpatialFrame
 
-intersecting = poly_engine.range_query(0.0, 0.0, 10.0, 1.0)
-containing   = poly_engine.contains(x=5.5, y=0.5)
+polygons = [box(i, 0, i + 0.9, 0.9) for i in range(100_000)]
+df = pl.DataFrame({"id": list(range(100_000)), "geom": polygons})
+sf = SpatialFrame.from_polygons(df, geometry_col="geom")
+
+# Which polygons contain this point?
+containing = sf.lazy().contains(x=5.5, y=0.5).collect()
+
+# Which polygon MBRs intersect this bbox?
+intersecting = sf.lazy().range_query(0.0, 0.0, 10.0, 1.0).collect()
+```
+
+### Within join
+
+```python
+# For each query point, find which polygons in sf contain it.
+query_df = pl.DataFrame({"qx": [5.5, 12.3], "qy": [0.5, 0.5]})
+result = sf.lazy().within_join(query_df, x_col="qx", y_col="qy").collect()
 ```
 
 ---
@@ -101,22 +168,6 @@ PyCanopy inspects the dataset at load time and picks automatically:
 | Points + uniform distribution + range | Uniform grid |
 | Points + clustered distribution + range | KD-tree |
 | Polygons or mixed geometries | R-tree |
-
----
-
-## Development setup
-
-Requires Python ≥ 3.9 and a Rust toolchain ([rustup.rs](https://rustup.rs)).
-
-```bash
-git clone https://github.com/pranav-walimbe/pycanopy
-cd pycanopy
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]" maturin shapely geopandas
-maturin develop
-pytest
-cargo test
-```
 
 ---
 
