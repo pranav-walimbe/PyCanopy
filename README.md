@@ -96,6 +96,25 @@ containing = sf.lazy().contains(x=5.5, y=0.5).collect()
 intersecting = sf.lazy().range_query(0.0, 0.0, 10.0, 1.0).collect()
 ```
 
+### Polygon holes
+
+```python
+from shapely.geometry import Polygon
+
+# Interior rings (holes) are fully supported.
+outer = [(0, 0), (10, 0), (10, 10), (0, 10)]
+hole  = [(2, 2), (8, 2),  (8, 8),  (2, 8)]
+donut = Polygon(outer, [hole])
+
+sf = SpatialFrame.from_polygons(pl.DataFrame({"id": [0], "geom": [donut]}), geometry_col="geom")
+
+# Point inside the hole is NOT contained.
+sf.lazy().contains(x=5.0, y=5.0).collect()   # empty
+
+# Point outside the hole but inside the outer ring IS contained.
+sf.lazy().contains(x=1.0, y=1.0).collect()   # returns the polygon row
+```
+
 ### Within join
 
 ```python

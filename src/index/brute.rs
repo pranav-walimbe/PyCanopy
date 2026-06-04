@@ -61,10 +61,16 @@ impl SpatialIndex for BruteForce {
 }
 
 impl BruteForce {
-    /// Build from polygon ring coordinates. Computes per-polygon MBRs and centroids.
+    /// Build from two-level polygon ring arrays. Computes per-polygon MBRs and centroids
+    /// from exterior rings only. Holes do not expand the MBR.
     /// These are derived allocations (N = n_polygons, not N = n_ring_vertices).
-    pub fn build_polygons(xs: &[f64], ys: &[f64], ring_offsets: &[i64]) -> Self {
-        let n_polys = ring_offsets.len().saturating_sub(1);
+    pub fn build_polygons(
+        xs: &[f64],
+        ys: &[f64],
+        ring_offsets: &[i64],
+        poly_offsets: &[i64],
+    ) -> Self {
+        let n_polys = poly_offsets.len().saturating_sub(1);
         let mut cxs = Vec::with_capacity(n_polys);
         let mut cys = Vec::with_capacity(n_polys);
         let mut mn_xs = Vec::with_capacity(n_polys);
@@ -72,9 +78,11 @@ impl BruteForce {
         let mut mx_xs = Vec::with_capacity(n_polys);
         let mut mx_ys = Vec::with_capacity(n_polys);
 
-        for i in 0..n_polys {
-            let start = ring_offsets[i] as usize;
-            let end = ring_offsets[i + 1] as usize;
+        for &ext_ring_i64 in poly_offsets.iter().take(n_polys) {
+            // MBR and centroid come from the exterior ring only.
+            let ext_ring = ext_ring_i64 as usize;
+            let start = ring_offsets[ext_ring] as usize;
+            let end = ring_offsets[ext_ring + 1] as usize;
             if start >= end {
                 cxs.push(0.0);
                 cys.push(0.0);

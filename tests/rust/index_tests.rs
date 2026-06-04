@@ -16,10 +16,13 @@ fn five_point_grid() -> (Arc<[f64]>, Arc<[f64]>) {
     )
 }
 
-// Five non-overlapping unit squares:
+// Five non-overlapping unit squares (no holes).
 //   3=(0,2)-(1,3)   4=(2,2)-(3,3)
 //   0=(0,0)-(1,1)   1=(2,0)-(3,1)   2=(4,0)-(5,1)
-fn five_polygon_grid() -> (Vec<f64>, Vec<f64>, Vec<i64>) {
+//
+// Returns (xs, ys, ring_offsets, poly_offsets).
+// For simple polygons poly_offsets is [0,1,...,n_polys].
+fn five_polygon_grid() -> (Vec<f64>, Vec<f64>, Vec<i64>, Vec<i64>) {
     let sq = |min_x: f64, min_y: f64| -> Vec<(f64, f64)> {
         vec![
             (min_x, min_y),
@@ -38,15 +41,46 @@ fn five_polygon_grid() -> (Vec<f64>, Vec<f64>, Vec<i64>) {
     ];
     let mut xs = Vec::new();
     let mut ys = Vec::new();
-    let mut offsets: Vec<i64> = vec![0];
+    let mut ring_offsets: Vec<i64> = vec![0];
     for poly in &polys {
         for &(x, y) in poly {
             xs.push(x);
             ys.push(y);
         }
-        offsets.push(xs.len() as i64);
+        ring_offsets.push(xs.len() as i64);
     }
-    (xs, ys, offsets)
+    let poly_offsets: Vec<i64> = (0..=polys.len() as i64).collect();
+    (xs, ys, ring_offsets, poly_offsets)
+}
+
+// One polygon with a square hole: outer (0,0)-(4,4), hole (1,1)-(3,3).
+// Points inside the hole must NOT be contained.
+fn polygon_with_hole() -> (Vec<f64>, Vec<f64>, Vec<i64>, Vec<i64>) {
+    let outer = [
+        (0.0f64, 0.0),
+        (4.0, 0.0),
+        (4.0, 4.0),
+        (0.0, 4.0),
+        (0.0, 0.0),
+    ];
+    let hole = [
+        (1.0f64, 1.0),
+        (3.0, 1.0),
+        (3.0, 3.0),
+        (1.0, 3.0),
+        (1.0, 1.0),
+    ];
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    for &(x, y) in outer.iter().chain(hole.iter()) {
+        xs.push(x);
+        ys.push(y);
+    }
+    // ring 0 = outer (coords 0..5), ring 1 = hole (coords 5..10)
+    let ring_offsets = vec![0i64, 5, 10];
+    // polygon 0 uses rings 0..2
+    let poly_offsets = vec![0i64, 2];
+    (xs, ys, ring_offsets, poly_offsets)
 }
 
 fn as_set(v: Vec<usize>) -> HashSet<usize> {
@@ -204,57 +238,81 @@ fn range_on_larger_dataset_all_agree() {
 }
 
 // polygon queries: BruteForce is the oracle, RTree must agree (two-phase: MBR + exact check)
+// Each test builds brute + rtree once and runs all related assertions against them.
 
 #[test]
 fn polygon_range_brute_and_rtree_agree() {
-    let (xs, ys, offsets) = five_polygon_grid();
-    let brute = BruteForce::build_polygons(&xs, &ys, &offsets);
-    let rtree = PackedRTree::build_polygons(&xs, &ys, &offsets);
+    let (xs, ys, ring_off, poly_off) = five_polygon_grid();
+    let brute = BruteForce::build_polygons(&xs, &ys, &ring_off, &poly_off);
+    let rtree = PackedRTree::build_polygons(&xs, &ys, &ring_off, &poly_off);
 
     // bbox covers squares 0, 1, 3, 4 — misses square 2 at (4,0)-(5,1)
     let b = as_set(query_range_polygons(
-        &brute, &xs, &ys, &offsets, 0.0, 0.0, 3.0, 3.0,
+        &brute, &xs, &ys, &ring_off, &poly_off, 0.0, 0.0, 3.0, 3.0,
     ));
     let r = as_set(query_range_polygons(
-        &rtree, &xs, &ys, &offsets, 0.0, 0.0, 3.0, 3.0,
+        &rtree, &xs, &ys, &ring_off, &poly_off, 0.0, 0.0, 3.0, 3.0,
     ));
-    assert_eq!(r, b);
     assert_eq!(b, [0, 1, 3, 4].into_iter().collect());
+    assert_eq!(r, b, "rtree agrees");
+
+    // bbox beyond all polygons returns empty
+    let b_empty = query_range_polygons(
+        &brute, &xs, &ys, &ring_off, &poly_off, 10.0, 10.0, 20.0, 20.0,
+    );
+    let r_empty = query_range_polygons(
+        &rtree, &xs, &ys, &ring_off, &poly_off, 10.0, 10.0, 20.0, 20.0,
+    );
+    assert!(b_empty.is_empty());
+    assert!(r_empty.is_empty());
 }
 
 #[test]
-fn polygon_range_empty_brute_and_rtree_agree() {
-    let (xs, ys, offsets) = five_polygon_grid();
-    let brute = BruteForce::build_polygons(&xs, &ys, &offsets);
-    let rtree = PackedRTree::build_polygons(&xs, &ys, &offsets);
+fn polygon_contains_brute_and_rtree_agree() {
+    let (xs, ys, ring_off, poly_off) = five_polygon_grid();
+    let brute = BruteForce::build_polygons(&xs, &ys, &ring_off, &poly_off);
+    let rtree = PackedRTree::build_polygons(&xs, &ys, &ring_off, &poly_off);
 
-    let b = query_range_polygons(&brute, &xs, &ys, &offsets, 10.0, 10.0, 20.0, 20.0);
-    let r = query_range_polygons(&rtree, &xs, &ys, &offsets, 10.0, 10.0, 20.0, 20.0);
-    assert!(b.is_empty());
-    assert!(r.is_empty());
-}
-
-#[test]
-fn polygon_contains_interior_point_brute_and_rtree_agree() {
-    let (xs, ys, offsets) = five_polygon_grid();
-    let brute = BruteForce::build_polygons(&xs, &ys, &offsets);
-    let rtree = PackedRTree::build_polygons(&xs, &ys, &offsets);
-
-    let b = query_contains_polygons(&brute, &xs, &ys, &offsets, 0.5, 0.5);
-    let r = query_contains_polygons(&rtree, &xs, &ys, &offsets, 0.5, 0.5);
-    assert_eq!(r, b);
+    // interior point of square 0
+    let b = query_contains_polygons(&brute, &xs, &ys, &ring_off, &poly_off, 0.5, 0.5);
+    let r = query_contains_polygons(&rtree, &xs, &ys, &ring_off, &poly_off, 0.5, 0.5);
     assert_eq!(b, vec![0]);
+    assert_eq!(r, b, "rtree agrees");
+
+    // gap between squares 0 and 1 — no polygon
+    let b_gap = query_contains_polygons(&brute, &xs, &ys, &ring_off, &poly_off, 1.5, 0.5);
+    let r_gap = query_contains_polygons(&rtree, &xs, &ys, &ring_off, &poly_off, 1.5, 0.5);
+    assert!(b_gap.is_empty());
+    assert!(r_gap.is_empty());
 }
 
-#[test]
-fn polygon_contains_gap_point_returns_empty() {
-    let (xs, ys, offsets) = five_polygon_grid();
-    let brute = BruteForce::build_polygons(&xs, &ys, &offsets);
-    let rtree = PackedRTree::build_polygons(&xs, &ys, &offsets);
+// polygon holes
 
-    // gap between squares 0 and 1
-    let b = query_contains_polygons(&brute, &xs, &ys, &offsets, 1.5, 0.5);
-    let r = query_contains_polygons(&rtree, &xs, &ys, &offsets, 1.5, 0.5);
-    assert!(b.is_empty());
-    assert!(r.is_empty());
+#[test]
+fn polygon_with_hole_contains_and_range() {
+    let (xs, ys, ring_off, poly_off) = polygon_with_hole();
+    let brute = BruteForce::build_polygons(&xs, &ys, &ring_off, &poly_off);
+    let rtree = PackedRTree::build_polygons(&xs, &ys, &ring_off, &poly_off);
+
+    // (0.5, 0.5) is inside the outer ring but outside the hole — must be contained
+    let b_in = query_contains_polygons(&brute, &xs, &ys, &ring_off, &poly_off, 0.5, 0.5);
+    let r_in = query_contains_polygons(&rtree, &xs, &ys, &ring_off, &poly_off, 0.5, 0.5);
+    assert_eq!(b_in, vec![0], "point outside hole is contained");
+    assert_eq!(r_in, b_in, "rtree agrees");
+
+    // (2.0, 2.0) is inside the hole — must NOT be contained
+    let b_hole = query_contains_polygons(&brute, &xs, &ys, &ring_off, &poly_off, 2.0, 2.0);
+    let r_hole = query_contains_polygons(&rtree, &xs, &ys, &ring_off, &poly_off, 2.0, 2.0);
+    assert!(b_hole.is_empty(), "point in hole is not contained");
+    assert!(r_hole.is_empty(), "rtree agrees");
+
+    // range query overlapping the MBR still returns the polygon
+    let b_rng = as_set(query_range_polygons(
+        &brute, &xs, &ys, &ring_off, &poly_off, 0.0, 0.0, 2.0, 2.0,
+    ));
+    let r_rng = as_set(query_range_polygons(
+        &rtree, &xs, &ys, &ring_off, &poly_off, 0.0, 0.0, 2.0, 2.0,
+    ));
+    assert_eq!(b_rng, [0].into_iter().collect());
+    assert_eq!(r_rng, b_rng, "rtree agrees");
 }

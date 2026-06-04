@@ -75,8 +75,10 @@ fn collect_polygons_classifies_correctly() {
     // Two unit squares
     let xs = vec![0.0, 1.0, 1.0, 0.0, 0.0, 2.0, 3.0, 3.0, 2.0, 2.0];
     let ys = vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0];
-    let offsets: Vec<i64> = vec![0, 5, 10];
-    let s = collect_polygons(&xs, &ys, &offsets);
+    let ring_offsets: Vec<i64> = vec![0, 5, 10];
+    // simple polygons: one ring each, poly_offsets = [0, 1, 2]
+    let poly_offsets: Vec<i64> = vec![0, 1, 2];
+    let s = collect_polygons(&xs, &ys, &ring_offsets, &poly_offsets);
     assert_eq!(s.n, 2);
     assert_eq!(s.kind, GeometryKind::Polygon);
     assert_eq!(s.distribution, Distribution::Unknown);

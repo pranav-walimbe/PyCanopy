@@ -47,13 +47,20 @@ impl SpatialIndex for PackedRTree {
 }
 
 impl PackedRTree {
-    /// Build from polygon ring coordinates. Each polygon's MBR is computed from its ring vertices.
-    pub fn build_polygons(xs: &[f64], ys: &[f64], ring_offsets: &[i64]) -> Self {
-        let n_polys = ring_offsets.len().saturating_sub(1);
+    /// Build from two-level polygon ring arrays. Each polygon's MBR is computed from
+    /// its exterior ring only. Holes do not expand the MBR.
+    pub fn build_polygons(
+        xs: &[f64],
+        ys: &[f64],
+        ring_offsets: &[i64],
+        poly_offsets: &[i64],
+    ) -> Self {
+        let n_polys = poly_offsets.len().saturating_sub(1);
         let mut builder = RTreeBuilder::<f64>::new(n_polys as u32);
-        for i in 0..n_polys {
-            let start = ring_offsets[i] as usize;
-            let end = ring_offsets[i + 1] as usize;
+        for &ext_ring_i64 in poly_offsets.iter().take(n_polys) {
+            let ext_ring = ext_ring_i64 as usize;
+            let start = ring_offsets[ext_ring] as usize;
+            let end = ring_offsets[ext_ring + 1] as usize;
             if start >= end {
                 builder.add(0.0, 0.0, 0.0, 0.0);
                 continue;

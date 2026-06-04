@@ -42,9 +42,14 @@ pub fn collect_points(xs: &[f64], ys: &[f64]) -> DatasetStats {
     }
 }
 
-/// Collect statistics from a flat polygon coordinate dataset.
-pub fn collect_polygons(xs: &[f64], ys: &[f64], ring_offsets: &[i64]) -> DatasetStats {
-    let n = ring_offsets.len().saturating_sub(1);
+/// Collect statistics from a two-level polygon coordinate dataset.
+pub fn collect_polygons(
+    xs: &[f64],
+    ys: &[f64],
+    ring_offsets: &[i64],
+    poly_offsets: &[i64],
+) -> DatasetStats {
+    let n = poly_offsets.len().saturating_sub(1);
     if n == 0 {
         return DatasetStats {
             n: 0,
@@ -67,7 +72,8 @@ pub fn collect_polygons(xs: &[f64], ys: &[f64], ring_offsets: &[i64]) -> Dataset
             }
         })
         .unwrap_or(0.0);
-    let histogram = extent.map(|e| build_polygon_centroid_histogram(xs, ys, ring_offsets, &e));
+    let histogram =
+        extent.map(|e| build_polygon_centroid_histogram(xs, ys, ring_offsets, poly_offsets, &e));
 
     DatasetStats {
         n,
@@ -165,6 +171,7 @@ fn build_polygon_centroid_histogram(
     xs: &[f64],
     ys: &[f64],
     ring_offsets: &[i64],
+    poly_offsets: &[i64],
     extent: &Rect<f64>,
 ) -> SpatialHistogram {
     let w = (extent.max().x - extent.min().x).max(f64::EPSILON);
@@ -172,10 +179,12 @@ fn build_polygon_centroid_histogram(
     let cell_w = w / HISTOGRAM_RESOLUTION as f64;
     let cell_h = h / HISTOGRAM_RESOLUTION as f64;
     let mut counts = vec![0u32; HISTOGRAM_RESOLUTION * HISTOGRAM_RESOLUTION];
-    let n_polys = ring_offsets.len().saturating_sub(1);
-    for i in 0..n_polys {
-        let start = ring_offsets[i] as usize;
-        let end = ring_offsets[i + 1] as usize;
+    let n_polys = poly_offsets.len().saturating_sub(1);
+    for &ext_ring_i64 in poly_offsets.iter().take(n_polys) {
+        // Centroid from exterior ring only.
+        let ext_ring = ext_ring_i64 as usize;
+        let start = ring_offsets[ext_ring] as usize;
+        let end = ring_offsets[ext_ring + 1] as usize;
         if start >= end {
             continue;
         }

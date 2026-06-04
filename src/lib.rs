@@ -31,8 +31,13 @@ use stats::{collector, types::GeometryKind};
 struct Engine {
     xs: Arc<[f64]>,
     ys: Arc<[f64]>,
-    /// None for point datasets; Some for polygon datasets
+    /// None for point datasets; Some for polygon datasets.
+    /// ring_offsets[r]..ring_offsets[r+1] gives ring r's coordinate range.
     ring_offsets: Option<Arc<[i64]>>,
+    /// None for point datasets; Some for polygon datasets (always set alongside ring_offsets).
+    /// poly_offsets[i]..poly_offsets[i+1] gives polygon i's ring range in ring_offsets.
+    /// First ring per polygon is exterior; remaining rings are interior holes.
+    poly_offsets: Option<Arc<[i64]>>,
     stats: stats::types::DatasetStats,
     brute: Option<BruteForce>,
     rtree: Option<PackedRTree>,
@@ -147,17 +152,21 @@ impl Engine {
     fn build_index_if_needed(&mut self, kind: IndexKind) {
         match kind {
             IndexKind::BruteForce if self.brute.is_none() => {
-                self.brute = Some(if let Some(offsets) = &self.ring_offsets {
-                    BruteForce::build_polygons(&self.xs, &self.ys, offsets)
-                } else {
-                    BruteForce::build(Arc::clone(&self.xs), Arc::clone(&self.ys))
+                self.brute = Some(match self.ring_offsets.as_deref() {
+                    Some(ring_off) => {
+                        let poly_off = self.poly_offsets.as_deref().unwrap();
+                        BruteForce::build_polygons(&self.xs, &self.ys, ring_off, poly_off)
+                    }
+                    None => BruteForce::build(Arc::clone(&self.xs), Arc::clone(&self.ys)),
                 });
             }
             IndexKind::RTree if self.rtree.is_none() => {
-                self.rtree = Some(if let Some(offsets) = &self.ring_offsets {
-                    PackedRTree::build_polygons(&self.xs, &self.ys, offsets)
-                } else {
-                    PackedRTree::build(Arc::clone(&self.xs), Arc::clone(&self.ys))
+                self.rtree = Some(match self.ring_offsets.as_deref() {
+                    Some(ring_off) => {
+                        let poly_off = self.poly_offsets.as_deref().unwrap();
+                        PackedRTree::build_polygons(&self.xs, &self.ys, ring_off, poly_off)
+                    }
+                    None => PackedRTree::build(Arc::clone(&self.xs), Arc::clone(&self.ys)),
                 });
             }
             IndexKind::KdTree if self.kdtree.is_none() => {
@@ -198,6 +207,7 @@ impl Engine {
             xs: xs_sl.into(),
             ys: ys_sl.into(),
             ring_offsets: None,
+            poly_offsets: None,
             stats,
             brute: None,
             rtree: None,
@@ -209,17 +219,20 @@ impl Engine {
         })
     }
 
-    /// Construct from exterior ring coordinates of simple polygons.
+    /// Construct from two-level polygon ring arrays (supports holes).
     ///
-    /// `offsets` has `n_polygons + 1` entries. Polygon `i` uses coordinates
-    /// `xs[offsets[i]..offsets[i+1]]` and `ys[offsets[i]..offsets[i+1]]`.
-    /// Copies once from each numpy buffer into Arc<[_]>. Only simple (non-holed)
-    /// polygons are accepted; split MultiPolygons before calling.
+    /// ring_offsets has total_rings + 1 entries; ring r uses coordinates
+    /// xs[ring_offsets[r]..ring_offsets[r+1]].
+    /// poly_offsets has n_polygons + 1 entries; polygon i uses rings
+    /// poly_offsets[i]..poly_offsets[i+1]. The first ring is the exterior;
+    /// any remaining rings are interior holes. MultiPolygons must be split
+    /// before calling. Copies once from each numpy buffer into Arc<[_]>.
     #[staticmethod]
     fn from_polygon_rings(
         xs: PyReadonlyArray1<f64>,
         ys: PyReadonlyArray1<f64>,
-        offsets: PyReadonlyArray1<i64>,
+        ring_offsets: PyReadonlyArray1<i64>,
+        poly_offsets: PyReadonlyArray1<i64>,
     ) -> PyResult<Self> {
         let xs_sl = xs
             .as_slice()
@@ -227,32 +240,50 @@ impl Engine {
         let ys_sl = ys
             .as_slice()
             .map_err(|_| PyValueError::new_err("ys must be a contiguous float64 array"))?;
-        let off_sl = offsets
+        let ring_sl = ring_offsets
             .as_slice()
-            .map_err(|_| PyValueError::new_err("offsets must be a contiguous int64 array"))?;
+            .map_err(|_| PyValueError::new_err("ring_offsets must be a contiguous int64 array"))?;
+        let poly_sl = poly_offsets
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("poly_offsets must be a contiguous int64 array"))?;
         if xs_sl.len() != ys_sl.len() {
             return Err(PyValueError::new_err("xs and ys must have the same length"));
         }
-        if off_sl.len() < 2 {
+        if ring_sl.len() < 2 {
             return Err(PyValueError::new_err(
-                "offsets must have at least 2 entries (one polygon requires two offset values)",
+                "ring_offsets must have at least 2 entries",
             ));
         }
-        let n = off_sl.len() - 1;
-        for i in 0..n {
-            let end = off_sl[i + 1] as usize;
+        if poly_sl.len() < 2 {
+            return Err(PyValueError::new_err(
+                "poly_offsets must have at least 2 entries (one polygon requires two values)",
+            ));
+        }
+        let n_rings = ring_sl.len() - 1;
+        for i in 0..n_rings {
+            let end = ring_sl[i + 1] as usize;
             if end > xs_sl.len() {
                 return Err(PyValueError::new_err(format!(
-                    "Offset out of bounds at polygon {i}: end={end} but coordinate count is {}",
+                    "ring_offsets out of bounds at ring {i}: end={end} but coordinate count is {}",
                     xs_sl.len()
                 )));
             }
         }
-        let stats = collector::collect_polygons(xs_sl, ys_sl, off_sl);
+        let n_polys = poly_sl.len() - 1;
+        for i in 0..n_polys {
+            let end = poly_sl[i + 1] as usize;
+            if end > n_rings {
+                return Err(PyValueError::new_err(format!(
+                    "poly_offsets out of bounds at polygon {i}: end={end} but ring count is {n_rings}",
+                )));
+            }
+        }
+        let stats = collector::collect_polygons(xs_sl, ys_sl, ring_sl, poly_sl);
         Ok(Engine {
             xs: xs_sl.into(),
             ys: ys_sl.into(),
-            ring_offsets: Some(off_sl.into()),
+            ring_offsets: Some(ring_sl.into()),
+            poly_offsets: Some(poly_sl.into()),
             stats,
             brute: None,
             rtree: None,
@@ -315,11 +346,12 @@ impl Engine {
             (IndexKind::BruteForce, None) => {
                 query_range_points(self.brute.as_ref().unwrap(), min_x, min_y, max_x, max_y)
             }
-            (IndexKind::BruteForce, Some(off)) => query_range_polygons(
+            (IndexKind::BruteForce, Some(ring_off)) => query_range_polygons(
                 self.brute.as_ref().unwrap(),
                 &self.xs,
                 &self.ys,
-                off,
+                ring_off,
+                self.poly_offsets.as_deref().unwrap(),
                 min_x,
                 min_y,
                 max_x,
@@ -328,11 +360,12 @@ impl Engine {
             (IndexKind::RTree, None) => {
                 query_range_points(self.rtree.as_ref().unwrap(), min_x, min_y, max_x, max_y)
             }
-            (IndexKind::RTree, Some(off)) => query_range_polygons(
+            (IndexKind::RTree, Some(ring_off)) => query_range_polygons(
                 self.rtree.as_ref().unwrap(),
                 &self.xs,
                 &self.ys,
-                off,
+                ring_off,
+                self.poly_offsets.as_deref().unwrap(),
                 min_x,
                 min_y,
                 max_x,
@@ -341,11 +374,12 @@ impl Engine {
             (IndexKind::KdTree, None) => {
                 query_range_points(self.kdtree.as_ref().unwrap(), min_x, min_y, max_x, max_y)
             }
-            (IndexKind::KdTree, Some(off)) => query_range_polygons(
+            (IndexKind::KdTree, Some(ring_off)) => query_range_polygons(
                 self.kdtree.as_ref().unwrap(),
                 &self.xs,
                 &self.ys,
-                off,
+                ring_off,
+                self.poly_offsets.as_deref().unwrap(),
                 min_x,
                 min_y,
                 max_x,
@@ -354,11 +388,12 @@ impl Engine {
             (IndexKind::Grid, None) => {
                 query_range_points(self.grid.as_ref().unwrap(), min_x, min_y, max_x, max_y)
             }
-            (IndexKind::Grid, Some(off)) => query_range_polygons(
+            (IndexKind::Grid, Some(ring_off)) => query_range_polygons(
                 self.grid.as_ref().unwrap(),
                 &self.xs,
                 &self.ys,
-                off,
+                ring_off,
+                self.poly_offsets.as_deref().unwrap(),
                 min_x,
                 min_y,
                 max_x,
@@ -388,23 +423,42 @@ impl Engine {
         self.build_index_if_needed(kind);
 
         let mut result = match (kind, self.ring_offsets.as_deref()) {
-            (IndexKind::BruteForce, Some(off)) => {
-                query_contains_polygons(self.brute.as_ref().unwrap(), &self.xs, &self.ys, off, x, y)
-            }
-            (IndexKind::RTree, Some(off)) => {
-                query_contains_polygons(self.rtree.as_ref().unwrap(), &self.xs, &self.ys, off, x, y)
-            }
-            (IndexKind::KdTree, Some(off)) => query_contains_polygons(
-                self.kdtree.as_ref().unwrap(),
+            (IndexKind::BruteForce, Some(ring_off)) => query_contains_polygons(
+                self.brute.as_ref().unwrap(),
                 &self.xs,
                 &self.ys,
-                off,
+                ring_off,
+                self.poly_offsets.as_deref().unwrap(),
                 x,
                 y,
             ),
-            (IndexKind::Grid, Some(off)) => {
-                query_contains_polygons(self.grid.as_ref().unwrap(), &self.xs, &self.ys, off, x, y)
-            }
+            (IndexKind::RTree, Some(ring_off)) => query_contains_polygons(
+                self.rtree.as_ref().unwrap(),
+                &self.xs,
+                &self.ys,
+                ring_off,
+                self.poly_offsets.as_deref().unwrap(),
+                x,
+                y,
+            ),
+            (IndexKind::KdTree, Some(ring_off)) => query_contains_polygons(
+                self.kdtree.as_ref().unwrap(),
+                &self.xs,
+                &self.ys,
+                ring_off,
+                self.poly_offsets.as_deref().unwrap(),
+                x,
+                y,
+            ),
+            (IndexKind::Grid, Some(ring_off)) => query_contains_polygons(
+                self.grid.as_ref().unwrap(),
+                &self.xs,
+                &self.ys,
+                ring_off,
+                self.poly_offsets.as_deref().unwrap(),
+                x,
+                y,
+            ),
             // Point dataset: exact match within epsilon via degenerate range query.
             (IndexKind::BruteForce, None) => {
                 let eps = f64::EPSILON * 1000.0;
@@ -717,11 +771,12 @@ impl Engine {
                 "query_xs and query_ys must have the same length",
             ));
         }
-        let offsets = self
+        let ring_off = self
             .ring_offsets
             .as_deref()
             .ok_or_else(|| PyValueError::new_err("batch_contains requires a polygon dataset"))?;
-        let pairs = par_contains(qxs, qys, &self.xs, &self.ys, offsets);
+        let poly_off = self.poly_offsets.as_deref().unwrap();
+        let pairs = par_contains(qxs, qys, &self.xs, &self.ys, ring_off, poly_off);
         let flat: Vec<u64> = pairs.into_iter().flat_map(|(q, e)| [q, e]).collect();
         Ok(PyArray1::from_vec(py, flat))
     }

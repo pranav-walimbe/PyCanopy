@@ -138,16 +138,18 @@ fn pipeline_polygon_range_selects_rtree() {
 
     let mut xs = Vec::new();
     let mut ys = Vec::new();
-    let mut offsets: Vec<i64> = vec![0];
+    let mut ring_offsets: Vec<i64> = vec![0];
     for i in 0..1000usize {
         let ox = (i % 50) as f64 * 2.0;
         let oy = (i / 50) as f64 * 2.0;
         xs.extend_from_slice(&[ox, ox + 1.0, ox + 1.0, ox, ox]);
         ys.extend_from_slice(&[oy, oy, oy + 1.0, oy + 1.0, oy]);
-        offsets.push(xs.len() as i64);
+        ring_offsets.push(xs.len() as i64);
     }
+    // simple polygons: one ring each
+    let poly_offsets: Vec<i64> = (0..=1000i64).collect();
 
-    let stats = collect_polygons(&xs, &ys, &offsets);
+    let stats = collect_polygons(&xs, &ys, &ring_offsets, &poly_offsets);
     assert_eq!(stats.kind, GeometryKind::Polygon);
     assert_eq!(select_index(&stats, &small_range_query()), IndexKind::RTree);
 }

@@ -97,12 +97,14 @@ def _geoarrow_to_numpy_xy(array: pa.Array | pa.ChunkedArray) -> tuple[np.ndarray
 
 def _extract_polygon_rings(
     geometries,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return (xs, ys, offsets) as contiguous numpy arrays from a collection of shapely Polygons.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return (xs, ys, ring_offsets, poly_offsets) from a collection of shapely Polygons.
 
-    Each polygon's exterior ring contributes a slice xs[offsets[i]:offsets[i+1]].
-    Uses vectorized shapely 2.0 ops and returns contiguous arrays for zero-copy
-    transfer into Rust via the numpy C API.
+    Uses a two-level offset encoding (GeoArrow-compatible):
+      ring_offsets[r]..ring_offsets[r+1] is ring r's coordinate range in xs/ys.
+      poly_offsets[i]..poly_offsets[i+1] is polygon i's ring range in ring_offsets.
+    The first ring per polygon is the exterior; remaining rings are interior holes.
+    All arrays are contiguous for zero-copy transfer into Rust via the numpy C API.
     MultiPolygon geometries are rejected with a clear message.
     """
     geoms = np.asarray(geometries)
@@ -121,14 +123,32 @@ def _extract_polygon_rings(
                 "Engine.from_polygons requires a collection of Polygon geometries."
             )
 
-    coords = shapely.get_coordinates(geoms)
-    counts = shapely.get_num_coordinates(geoms)
-    offsets = np.concatenate([[0], np.cumsum(counts)])
+    # Build a flat list of rings: for each polygon, exterior first then holes.
+    n_interior = shapely.get_num_interior_rings(geoms)
+    exterior_rings = shapely.get_exterior_ring(geoms)
+
+    ring_objects = []
+    rings_per_poly = []
+    for i in range(len(geoms)):
+        ring_objects.append(exterior_rings[i])
+        for j in range(int(n_interior[i])):
+            ring_objects.append(shapely.get_interior_ring(geoms[i], j))
+        rings_per_poly.append(1 + int(n_interior[i]))
+
+    all_rings = np.asarray(ring_objects)
+    rings_per_poly_arr = np.array(rings_per_poly, dtype=np.int64)
+
+    coords = shapely.get_coordinates(all_rings)
+    ring_coord_counts = shapely.get_num_coordinates(all_rings)
+
+    ring_offsets = np.concatenate([[0], np.cumsum(ring_coord_counts)])
+    poly_offsets = np.concatenate([[0], np.cumsum(rings_per_poly_arr)])
 
     return (
         np.ascontiguousarray(coords[:, 0], dtype=np.float64),
         np.ascontiguousarray(coords[:, 1], dtype=np.float64),
-        np.ascontiguousarray(offsets, dtype=np.int64),
+        np.ascontiguousarray(ring_offsets, dtype=np.int64),
+        np.ascontiguousarray(poly_offsets, dtype=np.int64),
     )
 
 
@@ -148,19 +168,20 @@ class Engine:
 
     @classmethod
     def from_polygons(cls, geometries) -> Engine:
-        """Construct from a collection of simple polygon geometries.
+        """Construct from a collection of polygon geometries. Interior holes are supported.
 
         Args:
             geometries: A geopandas GeoSeries or list of shapely Polygon objects.
-                MultiPolygon geometries must be split before loading (use
-                GeoSeries.explode() or iterate over shapely MultiPolygon.geoms).
+                Polygons with holes are accepted. MultiPolygon geometries must be
+                split before loading (use GeoSeries.explode() or iterate over
+                shapely MultiPolygon.geoms).
 
         Returns:
             Engine ready to answer range and contains queries over polygon data.
         """
-        xs, ys, offsets = _extract_polygon_rings(geometries)
+        xs, ys, ring_offsets, poly_offsets = _extract_polygon_rings(geometries)
         eng = cls.__new__(cls)
-        eng._core = _CoreEngine.from_polygon_rings(xs, ys, offsets)
+        eng._core = _CoreEngine.from_polygon_rings(xs, ys, ring_offsets, poly_offsets)
         return eng
 
     @classmethod

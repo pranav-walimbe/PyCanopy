@@ -21,6 +21,7 @@ pub fn query_range_polygons<I: SpatialIndex>(
     xs: &[f64],
     ys: &[f64],
     ring_offsets: &[i64],
+    poly_offsets: &[i64],
     min_x: f64,
     min_y: f64,
     max_x: f64,
@@ -30,7 +31,7 @@ pub fn query_range_polygons<I: SpatialIndex>(
     index
         .range(min_x, min_y, max_x, max_y)
         .into_iter()
-        .filter(|&i| make_polygon(xs, ys, ring_offsets, i).intersects(&bbox))
+        .filter(|&i| make_polygon(xs, ys, ring_offsets, poly_offsets, i).intersects(&bbox))
         .collect()
 }
 
@@ -41,6 +42,7 @@ pub fn query_contains_polygons<I: SpatialIndex>(
     xs: &[f64],
     ys: &[f64],
     ring_offsets: &[i64],
+    poly_offsets: &[i64],
     qx: f64,
     qy: f64,
 ) -> Vec<usize> {
@@ -48,18 +50,46 @@ pub fn query_contains_polygons<I: SpatialIndex>(
     index
         .range(qx, qy, qx, qy)
         .into_iter()
-        .filter(|&i| make_polygon(xs, ys, ring_offsets, i).contains(&qpt))
+        .filter(|&i| make_polygon(xs, ys, ring_offsets, poly_offsets, i).contains(&qpt))
         .collect()
 }
 
-/// Reconstruct a Polygon from flat ring coordinate arrays for an exact geometric check.
-pub fn make_polygon(xs: &[f64], ys: &[f64], ring_offsets: &[i64], i: usize) -> Polygon<f64> {
-    let start = ring_offsets[i] as usize;
-    let end = ring_offsets[i + 1] as usize;
-    let coords: Vec<geo::Coord<f64>> = (start..end)
-        .map(|j| coord! { x: xs[j], y: ys[j] })
+/// Reconstruct polygon i from two-level ring arrays, including any interior holes.
+///
+/// ring_offsets[r]..ring_offsets[r+1] gives ring r's coordinate range in xs/ys.
+/// poly_offsets[i]..poly_offsets[i+1] gives polygon i's ring range in ring_offsets.
+/// The first ring is the exterior; any remaining rings are interior holes.
+pub fn make_polygon(
+    xs: &[f64],
+    ys: &[f64],
+    ring_offsets: &[i64],
+    poly_offsets: &[i64],
+    i: usize,
+) -> Polygon<f64> {
+    let r_start = poly_offsets[i] as usize;
+    let r_end = poly_offsets[i + 1] as usize;
+
+    let ext_start = ring_offsets[r_start] as usize;
+    let ext_end = ring_offsets[r_start + 1] as usize;
+    let exterior = LineString::new(
+        (ext_start..ext_end)
+            .map(|j| coord! { x: xs[j], y: ys[j] })
+            .collect(),
+    );
+
+    let holes = (r_start + 1..r_end)
+        .map(|r| {
+            let h_start = ring_offsets[r] as usize;
+            let h_end = ring_offsets[r + 1] as usize;
+            LineString::new(
+                (h_start..h_end)
+                    .map(|j| coord! { x: xs[j], y: ys[j] })
+                    .collect(),
+            )
+        })
         .collect();
-    Polygon::new(LineString::new(coords), vec![])
+
+    Polygon::new(exterior, holes)
 }
 
 #[cfg(test)]

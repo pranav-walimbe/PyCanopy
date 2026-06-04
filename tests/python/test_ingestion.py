@@ -107,8 +107,9 @@ def test_points_from_geoarrow_chunked_array():
 
 def test_extract_polygon_rings_single_polygon():
     poly = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
-    xs, ys, offsets = _extract_polygon_rings([poly])
-    assert offsets.tolist() == [0, 5]
+    xs, ys, ring_offsets, poly_offsets = _extract_polygon_rings([poly])
+    assert ring_offsets.tolist() == [0, 5]
+    assert poly_offsets.tolist() == [0, 1]
     assert len(xs) == 5
     assert len(ys) == 5
 
@@ -116,14 +117,15 @@ def test_extract_polygon_rings_single_polygon():
 def test_extract_polygon_rings_two_polygons_offsets():
     tri = Polygon([(0, 0), (1, 0), (0.5, 1)])
     sq = Polygon([(2, 0), (3, 0), (3, 1), (2, 1)])
-    xs, _ys, offsets = _extract_polygon_rings([tri, sq])
-    assert offsets.tolist() == [0, 4, 9]
+    xs, _ys, ring_offsets, poly_offsets = _extract_polygon_rings([tri, sq])
+    assert ring_offsets.tolist() == [0, 4, 9]
+    assert poly_offsets.tolist() == [0, 1, 2]
     assert len(xs) == 9
 
 
 def test_extract_polygon_rings_coordinates_correct():
     poly = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
-    xs, ys, _offsets = _extract_polygon_rings([poly])
+    xs, ys, _ring_offsets, _poly_offsets = _extract_polygon_rings([poly])
     assert xs[0] == pytest.approx(0.0)
     assert ys[0] == pytest.approx(0.0)
     assert xs[1] == pytest.approx(1.0)
@@ -132,20 +134,34 @@ def test_extract_polygon_rings_coordinates_correct():
 
 def test_extract_polygon_rings_returns_contiguous_arrays():
     poly = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
-    xs, ys, offsets = _extract_polygon_rings([poly])
-    assert xs.flags["C_CONTIGUOUS"]
-    assert ys.flags["C_CONTIGUOUS"]
-    assert offsets.flags["C_CONTIGUOUS"]
+    xs, ys, ring_offsets, poly_offsets = _extract_polygon_rings([poly])
+    for arr in (xs, ys, ring_offsets, poly_offsets):
+        assert arr.flags["C_CONTIGUOUS"]
+        assert arr.dtype == np.float64 or arr.dtype == np.int64
     assert xs.dtype == np.float64
     assert ys.dtype == np.float64
-    assert offsets.dtype == np.int64
+    assert ring_offsets.dtype == np.int64
+    assert poly_offsets.dtype == np.int64
 
 
 def test_extract_polygon_rings_geoseries():
     gpd = pytest.importorskip("geopandas")
     gs = gpd.GeoSeries([Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])])
-    _xs, _ys, offsets = _extract_polygon_rings(gs)
-    assert len(offsets) == 2
+    _xs, _ys, ring_offsets, poly_offsets = _extract_polygon_rings(gs)
+    assert len(ring_offsets) == 2
+    assert len(poly_offsets) == 2
+
+
+def test_extract_polygon_rings_with_hole():
+    # Square with a smaller square hole: 2 rings, 1 polygon
+    outer = [(0, 0), (4, 0), (4, 4), (0, 4)]
+    hole = [(1, 1), (3, 1), (3, 3), (1, 3)]
+    poly = Polygon(outer, [hole])
+    xs, _ys, ring_offsets, poly_offsets = _extract_polygon_rings([poly])
+    assert poly_offsets.tolist() == [0, 2]  # 1 polygon, 2 rings
+    assert len(ring_offsets) == 3  # 2 rings + sentinel
+    assert ring_offsets[0] == 0
+    assert ring_offsets[2] == len(xs)  # all coords accounted for
 
 
 def test_extract_polygon_rings_rejects_multipolygon():

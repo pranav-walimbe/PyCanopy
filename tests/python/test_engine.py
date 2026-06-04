@@ -45,6 +45,14 @@ def large_poly_engine():
     return Engine.from_polygons(polys)
 
 
+# hole_engine: one outer square (0,0)-(4,4) with an inner square hole (1,1)-(3,3)
+@pytest.fixture(scope="session")
+def hole_engine():
+    outer = [(0, 0), (4, 0), (4, 4), (0, 4)]
+    hole = [(1, 1), (3, 1), (3, 3), (1, 3)]
+    return Engine.from_polygons([Polygon(outer, [hole])])
+
+
 @pytest.fixture(scope="session")
 def large_engine():
     xs = [(i % 50) * 2.0 for i in range(1000)]
@@ -265,3 +273,21 @@ def test_large_polygon_dataset_range(large_poly_engine):
 
 def test_large_polygon_dataset_contains(large_poly_engine):
     assert large_poly_engine.contains(5.5, 0.5) == [5]
+
+
+# polygon holes
+
+
+def test_polygon_hole_excludes_point_in_hole(hole_engine):
+    # (2.0, 2.0) is inside the hole — not contained
+    assert hole_engine.contains(2.0, 2.0) == []
+
+
+def test_polygon_hole_contains_point_outside_hole(hole_engine):
+    # (0.5, 0.5) is inside the outer ring but outside the hole
+    assert hole_engine.contains(0.5, 0.5) == [0]
+
+
+def test_polygon_hole_range_finds_polygon(hole_engine):
+    # range overlapping the outer MBR returns the polygon regardless of hole
+    assert hole_engine.range_query(0.0, 0.0, 2.0, 2.0) == [0]

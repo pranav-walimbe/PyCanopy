@@ -69,8 +69,9 @@ pub fn par_contains(
     xs: &[f64],
     ys: &[f64],
     ring_offsets: &[i64],
+    poly_offsets: &[i64],
 ) -> Vec<(u64, u64)> {
-    let brute = BruteForce::build_polygons(xs, ys, ring_offsets);
+    let brute = BruteForce::build_polygons(xs, ys, ring_offsets, poly_offsets);
 
     qxs.par_iter()
         .zip(qys.par_iter())
@@ -81,7 +82,9 @@ pub fn par_contains(
             brute
                 .range(qx, qy, qx, qy)
                 .into_iter()
-                .filter(move |&ei| make_polygon(xs, ys, ring_offsets, ei).contains(&qpt))
+                .filter(move |&ei| {
+                    make_polygon(xs, ys, ring_offsets, poly_offsets, ei).contains(&qpt)
+                })
                 .map(move |ei| (qi as u64, ei as u64))
         })
         .collect()
