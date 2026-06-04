@@ -119,7 +119,13 @@ impl Engine {
     }
 
     /// Merge main-index KNN results with delta candidates and return the top k by distance.
-    fn merge_knn_with_delta(&self, main_results: Vec<usize>, x: f64, y: f64, k: usize) -> Vec<usize> {
+    fn merge_knn_with_delta(
+        &self,
+        main_results: Vec<usize>,
+        x: f64,
+        y: f64,
+        k: usize,
+    ) -> Vec<usize> {
         let n_main = self.xs.len();
         let mut candidates: Vec<(usize, f64)> = main_results
             .into_iter()
@@ -132,9 +138,8 @@ impl Engine {
             let d = (dx - x).powi(2) + (dy - y).powi(2);
             candidates.push((n_main + di, d));
         }
-        candidates.sort_unstable_by(|a, b| {
-            a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
-        });
+        candidates
+            .sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         candidates.truncate(k);
         candidates.into_iter().map(|(i, _)| i).collect()
     }
@@ -529,16 +534,44 @@ impl Engine {
         } else {
             let out = match kind {
                 IndexKind::BruteForce => par_knn_with_delta(
-                    self.brute.as_ref().unwrap(), qxs, qys, k, &self.xs, &self.ys, &self.delta_xs, &self.delta_ys,
+                    self.brute.as_ref().unwrap(),
+                    qxs,
+                    qys,
+                    k,
+                    &self.xs,
+                    &self.ys,
+                    &self.delta_xs,
+                    &self.delta_ys,
                 ),
                 IndexKind::RTree => par_knn_with_delta(
-                    self.rtree.as_ref().unwrap(), qxs, qys, k, &self.xs, &self.ys, &self.delta_xs, &self.delta_ys,
+                    self.rtree.as_ref().unwrap(),
+                    qxs,
+                    qys,
+                    k,
+                    &self.xs,
+                    &self.ys,
+                    &self.delta_xs,
+                    &self.delta_ys,
                 ),
                 IndexKind::KdTree => par_knn_with_delta(
-                    self.kdtree.as_ref().unwrap(), qxs, qys, k, &self.xs, &self.ys, &self.delta_xs, &self.delta_ys,
+                    self.kdtree.as_ref().unwrap(),
+                    qxs,
+                    qys,
+                    k,
+                    &self.xs,
+                    &self.ys,
+                    &self.delta_xs,
+                    &self.delta_ys,
                 ),
                 IndexKind::Grid => par_knn_with_delta(
-                    self.grid.as_ref().unwrap(), qxs, qys, k, &self.xs, &self.ys, &self.delta_xs, &self.delta_ys,
+                    self.grid.as_ref().unwrap(),
+                    qxs,
+                    qys,
+                    k,
+                    &self.xs,
+                    &self.ys,
+                    &self.delta_xs,
+                    &self.delta_ys,
                 ),
             };
             self.delta_query_cost += self.delta_xs.len() as u64 * qxs.len() as u64;
@@ -593,18 +626,38 @@ impl Engine {
         };
         self.build_index_if_needed(kind);
         let pairs = match kind {
-            IndexKind::BruteForce => {
-                par_within_distance(self.brute.as_ref().unwrap(), qxs, qys, &self.xs, &self.ys, distance)
-            }
-            IndexKind::RTree => {
-                par_within_distance(self.rtree.as_ref().unwrap(), qxs, qys, &self.xs, &self.ys, distance)
-            }
-            IndexKind::KdTree => {
-                par_within_distance(self.kdtree.as_ref().unwrap(), qxs, qys, &self.xs, &self.ys, distance)
-            }
-            IndexKind::Grid => {
-                par_within_distance(self.grid.as_ref().unwrap(), qxs, qys, &self.xs, &self.ys, distance)
-            }
+            IndexKind::BruteForce => par_within_distance(
+                self.brute.as_ref().unwrap(),
+                qxs,
+                qys,
+                &self.xs,
+                &self.ys,
+                distance,
+            ),
+            IndexKind::RTree => par_within_distance(
+                self.rtree.as_ref().unwrap(),
+                qxs,
+                qys,
+                &self.xs,
+                &self.ys,
+                distance,
+            ),
+            IndexKind::KdTree => par_within_distance(
+                self.kdtree.as_ref().unwrap(),
+                qxs,
+                qys,
+                &self.xs,
+                &self.ys,
+                distance,
+            ),
+            IndexKind::Grid => par_within_distance(
+                self.grid.as_ref().unwrap(),
+                qxs,
+                qys,
+                &self.xs,
+                &self.ys,
+                distance,
+            ),
         };
         Ok(PyArray1::from_vec(py, pairs))
     }
