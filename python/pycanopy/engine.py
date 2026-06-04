@@ -14,6 +14,13 @@ import numpy as np
 import pyarrow as pa
 import shapely
 
+try:
+    from pycanopy._core import Engine as _CoreEngine
+except ImportError:
+    raise ImportError(
+        "pycanopy native extension not found. Build it first with: maturin develop"
+    ) from None
+
 _SHAPELY_POLYGON_TYPE_ID = 3
 _SHAPELY_MULTIPOLYGON_TYPE_ID = 6
 
@@ -125,18 +132,6 @@ def _extract_polygon_rings(
     )
 
 
-def _load_core():
-    """Import the compiled Rust extension, with a clear error if it is missing."""
-    try:
-        from pycanopy._core import Engine as _Engine
-
-        return _Engine
-    except ImportError:
-        raise ImportError(
-            "pycanopy native extension not found. Build it first with: maturin develop"
-        ) from None
-
-
 class Engine:
     """Geospatial query engine with automatic index selection.
 
@@ -149,7 +144,7 @@ class Engine:
         self._core = None
         if geometries is not None:
             xs, ys = _to_numpy_xy(geometries)
-            self._core = _load_core().from_points(xs, ys)
+            self._core = _CoreEngine.from_points(xs, ys)
 
     @classmethod
     def from_polygons(cls, geometries) -> Engine:
@@ -165,14 +160,14 @@ class Engine:
         """
         xs, ys, offsets = _extract_polygon_rings(geometries)
         eng = cls.__new__(cls)
-        eng._core = _load_core().from_polygon_rings(xs, ys, offsets)
+        eng._core = _CoreEngine.from_polygon_rings(xs, ys, offsets)
         return eng
 
     @classmethod
     def from_coords(cls, xs: Sequence[float], ys: Sequence[float]) -> Engine:
         """Construct directly from x and y coordinate sequences."""
         eng = cls.__new__(cls)
-        eng._core = _load_core().from_points(
+        eng._core = _CoreEngine.from_points(
             np.ascontiguousarray(xs, dtype=np.float64),
             np.ascontiguousarray(ys, dtype=np.float64),
         )
@@ -217,6 +212,100 @@ class Engine:
             Indices of matching polygons in no guaranteed order.
         """
         return self._core.contains_query(x, y)
+
+    def batch_knn_join(
+        self,
+        query_xs: np.ndarray,
+        query_ys: np.ndarray,
+        k: int,
+        approximate: bool = False,
+    ) -> np.ndarray:
+        """For each query point, return the k nearest neighbours in the dataset.
+
+        Crosses the Python/Rust boundary once; loops in Rust via rayon.
+
+        Args:
+            query_xs: Contiguous float64 array of query x coordinates, shape (N,).
+            query_ys: Contiguous float64 array of query y coordinates, shape (N,).
+            k: Number of neighbours per query point.
+            approximate: Skip exact geometric refinement for speed.
+
+        Returns:
+            uint64 array of shape (N * k,). Block i holds k result indices for query i.
+        """
+        return self._core.batch_knn_join(
+            np.ascontiguousarray(query_xs, dtype=np.float64),
+            np.ascontiguousarray(query_ys, dtype=np.float64),
+            k,
+            approximate,
+        )
+
+    def batch_within(
+        self,
+        query_xs: np.ndarray,
+        query_ys: np.ndarray,
+        min_x: float,
+        min_y: float,
+        max_x: float,
+        max_y: float,
+    ) -> np.ndarray:
+        """For each query point, return its index if it falls within the bounding box.
+
+        Crosses the Python/Rust boundary once; filters in Rust via rayon.
+
+        Args:
+            query_xs: Contiguous float64 array of query x coordinates, shape (N,).
+            query_ys: Contiguous float64 array of query y coordinates, shape (N,).
+            min_x: Left edge of the bounding box.
+            min_y: Bottom edge of the bounding box.
+            max_x: Right edge of the bounding box.
+            max_y: Top edge of the bounding box.
+
+        Returns:
+            uint64 array of indices (into the query arrays) of matching points.
+        """
+        return self._core.batch_within(
+            np.ascontiguousarray(query_xs, dtype=np.float64),
+            np.ascontiguousarray(query_ys, dtype=np.float64),
+            min_x,
+            min_y,
+            max_x,
+            max_y,
+        )
+
+    def batch_contains(
+        self,
+        query_xs: np.ndarray,
+        query_ys: np.ndarray,
+    ) -> np.ndarray:
+        """For each query point, return (query_idx, engine_idx) for every polygon
+        in the dataset that contains it.
+
+        Crosses the Python/Rust boundary once; loops in Rust via rayon.
+        Engine must be a polygon dataset.
+
+        Args:
+            query_xs: Contiguous float64 array of query x coordinates, shape (N,).
+            query_ys: Contiguous float64 array of query y coordinates, shape (N,).
+
+        Returns:
+            uint64 array of shape (M * 2,) where M is the total number of matches.
+            Reshape to (-1, 2) to get [query_idx, engine_idx] pairs.
+        """
+        return self._core.batch_contains(
+            np.ascontiguousarray(query_xs, dtype=np.float64),
+            np.ascontiguousarray(query_ys, dtype=np.float64),
+        )
+
+    @property
+    def n(self) -> int:
+        """Number of geometries in the dataset."""
+        return self._core.n()
+
+    @property
+    def extent(self) -> tuple[float, float, float, float] | None:
+        """Bounding extent as (min_x, min_y, max_x, max_y), or None if empty."""
+        return self._core.extent()
 
     def stats(self) -> str:
         """Return a human-readable summary of dataset statistics."""

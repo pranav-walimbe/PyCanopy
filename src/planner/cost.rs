@@ -33,7 +33,9 @@ pub fn selectivity(stats: &DatasetStats, query: &Query) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stats::types::{DatasetStats, Distribution, GeometryKind};
+    use crate::stats::types::{
+        DatasetStats, Distribution, GeometryKind, SpatialHistogram, HISTOGRAM_RESOLUTION,
+    };
     use geo::{coord, Point, Rect};
 
     fn make_stats(n: usize) -> DatasetStats {
@@ -90,7 +92,6 @@ mod tests {
 
     #[test]
     fn range_selectivity_uses_histogram_when_present() {
-        use crate::stats::types::{SpatialHistogram, HISTOGRAM_RESOLUTION};
         // All 1000 points in a single histogram cell (bottom-left).
         // Area ratio for a 10x10 query over 100x100 extent = 0.01.
         // Histogram for a query covering just that cell should return 1.0.

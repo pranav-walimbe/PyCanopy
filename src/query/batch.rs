@@ -1,0 +1,70 @@
+//! Batch spatial operations used by Engine's PyO3-exposed batch methods.
+//! Each function crosses the Python/Rust boundary once and loops via rayon.
+//! Returns Vec<u64> or Vec<(u64, u64)> to avoid per-element Python int allocation.
+
+use geo::Contains;
+use rayon::prelude::*;
+
+use crate::index::brute::BruteForce;
+use crate::index::SpatialIndex;
+use crate::query::range::make_polygon;
+
+/// For each query point, find the k nearest neighbours in the index.
+/// Returns a flat array of shape (n_queries * k,): block i holds results for query i.
+pub fn par_knn<I: SpatialIndex + Sync>(index: &I, qxs: &[f64], qys: &[f64], k: usize) -> Vec<u64> {
+    qxs.par_iter()
+        .zip(qys.par_iter())
+        .flat_map_iter(|(&qx, &qy)| index.nearest(qx, qy, k).into_iter().map(|i| i as u64))
+        .collect()
+}
+
+/// For each query point, return (query_idx, engine_idx) for every polygon in the
+/// Engine's dataset that contains the point. Used for within joins on polygon datasets.
+///
+/// Results are in ascending query_idx order; pairs for the same query point are adjacent.
+pub fn par_contains(
+    qxs: &[f64],
+    qys: &[f64],
+    xs: &[f64],
+    ys: &[f64],
+    ring_offsets: &[i64],
+) -> Vec<(u64, u64)> {
+    let brute = BruteForce::build_polygons(xs, ys, ring_offsets);
+
+    qxs.par_iter()
+        .zip(qys.par_iter())
+        .enumerate()
+        .flat_map_iter(|(qi, (&qx, &qy))| {
+            let qpt = geo::Point::new(qx, qy);
+            // MBR pre-filter via BruteForce, then exact PIP
+            brute
+                .range(qx, qy, qx, qy)
+                .into_iter()
+                .filter(move |&ei| make_polygon(xs, ys, ring_offsets, ei).contains(&qpt))
+                .map(move |ei| (qi as u64, ei as u64))
+        })
+        .collect()
+}
+
+/// For each query point, return its index if it falls within [min_x, max_x] × [min_y, max_y].
+/// Used as a batch bounding-box filter on a column of query coordinates.
+pub fn par_bbox_filter(
+    qxs: &[f64],
+    qys: &[f64],
+    min_x: f64,
+    min_y: f64,
+    max_x: f64,
+    max_y: f64,
+) -> Vec<u64> {
+    qxs.par_iter()
+        .zip(qys.par_iter())
+        .enumerate()
+        .filter_map(|(i, (&x, &y))| {
+            if x >= min_x && x <= max_x && y >= min_y && y <= max_y {
+                Some(i as u64)
+            } else {
+                None
+            }
+        })
+        .collect()
+}

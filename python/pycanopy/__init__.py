@@ -1,4 +1,5 @@
 from .engine import Engine
-from .query import KnnResult, RangeResult
+from .frame import SpatialFrame
+from .lazy import SpatialLazyFrame
 
-__all__ = ["Engine", "KnnResult", "RangeResult"]
+__all__ = ["Engine", "SpatialFrame", "SpatialLazyFrame"]

@@ -1,34 +1,36 @@
 use std::f64::consts::PI;
+use std::sync::Arc;
 
-use geo::{Geometry, Point, Rect};
 use geo_index::kdtree::{KDTree, KDTreeBuilder, KDTreeIndex};
 
-use crate::index::{geom_center, SpatialIndex};
+use crate::index::SpatialIndex;
 use crate::stats::types::SpatialHistogram;
 
-/// Packed immutable KD-tree backed by geo-index, optimised for point datasets
+/// Packed immutable KD-tree backed by geo-index, optimised for point datasets.
+///
+/// xs/ys are shared Arcs from the Engine — no coordinate data is copied at
+/// build time. geo-index makes one internal sorted copy (unavoidable for tree
+/// traversal); the xs/ys Arcs are kept for the kNN distance refinement step.
 pub struct PackedKdTree {
     tree: KDTree<f64>,
-    coords: Vec<(f64, f64)>,
+    xs: Arc<[f64]>,
+    ys: Arc<[f64]>,
     extent_area: f64,
     histogram: Option<SpatialHistogram>,
 }
 
 impl SpatialIndex for PackedKdTree {
-    fn build(geometries: &[Geometry<f64>]) -> Self {
-        let n = geometries.len();
+    fn build(xs: Arc<[f64]>, ys: Arc<[f64]>) -> Self {
+        let n = xs.len();
         let mut builder = KDTreeBuilder::<f64>::new(n as u32);
-        let mut coords = Vec::with_capacity(n);
 
         let mut min_x = f64::INFINITY;
         let mut min_y = f64::INFINITY;
         let mut max_x = f64::NEG_INFINITY;
         let mut max_y = f64::NEG_INFINITY;
 
-        for geom in geometries {
-            let (x, y) = geom_center(geom);
+        for (&x, &y) in xs.iter().zip(ys.iter()) {
             builder.add(x, y);
-            coords.push((x, y));
             min_x = min_x.min(x);
             min_y = min_y.min(y);
             max_x = max_x.max(x);
@@ -43,24 +45,24 @@ impl SpatialIndex for PackedKdTree {
 
         PackedKdTree {
             tree: builder.finish(),
-            coords,
+            xs,
+            ys,
             extent_area,
             histogram: None,
         }
     }
 
-    fn nearest(&self, point: &Point<f64>, k: usize) -> Vec<usize> {
-        let n = self.coords.len();
+    fn nearest(&self, qx: f64, qy: f64, k: usize) -> Vec<usize> {
+        let n = self.xs.len();
         if n == 0 {
             return vec![];
         }
         let k = k.min(n);
 
-        // Use local density from histogram when available; fall back to global density.
         let density = self
             .histogram
             .as_ref()
-            .and_then(|h| h.local_density(point.x(), point.y()))
+            .and_then(|h| h.local_density(qx, qy))
             .unwrap_or_else(|| {
                 if self.extent_area > 0.0 {
                     n as f64 / self.extent_area
@@ -74,13 +76,13 @@ impl SpatialIndex for PackedKdTree {
         }
 
         loop {
-            let hits = self.tree.within(point.x(), point.y(), radius);
+            let hits = self.tree.within(qx, qy, radius);
             if hits.len() >= k || radius > 1.0e15 {
                 let mut with_dist: Vec<(u32, f64)> = hits
                     .iter()
                     .map(|&i| {
-                        let (cx, cy) = self.coords[i as usize];
-                        let d = (cx - point.x()).powi(2) + (cy - point.y()).powi(2);
+                        let d =
+                            (self.xs[i as usize] - qx).powi(2) + (self.ys[i as usize] - qy).powi(2);
                         (i, d)
                     })
                     .collect();
@@ -97,18 +99,9 @@ impl SpatialIndex for PackedKdTree {
         }
     }
 
-    fn range(&self, bbox: &Rect<f64>) -> Vec<usize> {
+    fn range(&self, min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Vec<usize> {
         self.tree
-            .range(bbox.min().x, bbox.min().y, bbox.max().x, bbox.max().y)
-            .iter()
-            .map(|&i| i as usize)
-            .collect()
-    }
-
-    fn contains(&self, point: &Point<f64>) -> Vec<usize> {
-        // For point datasets, contains = exact match within float epsilon.
-        self.tree
-            .within(point.x(), point.y(), f64::EPSILON * 1000.0)
+            .range(min_x, min_y, max_x, max_y)
             .iter()
             .map(|&i| i as usize)
             .collect()
@@ -127,6 +120,10 @@ mod tests {
     use super::*;
     use crate::index::brute::five_point_grid;
 
+    fn build(xs: Vec<f64>, ys: Vec<f64>) -> PackedKdTree {
+        PackedKdTree::build(xs.into(), ys.into())
+    }
+
     fn sorted(mut v: Vec<usize>) -> Vec<usize> {
         v.sort_unstable();
         v
@@ -134,44 +131,31 @@ mod tests {
 
     #[test]
     fn nearest_returns_single_closest() {
-        let geoms = five_point_grid();
-        let idx = PackedKdTree::build(&geoms);
-        assert_eq!(idx.nearest(&Point::new(1.2, 0.1), 1), vec![1]);
+        let (xs, ys) = five_point_grid();
+        assert_eq!(build(xs, ys).nearest(1.2, 0.1, 1), vec![1]);
     }
 
     #[test]
     fn nearest_k_two_returns_correct_pair() {
-        let geoms = five_point_grid();
-        let idx = PackedKdTree::build(&geoms);
-        assert_eq!(sorted(idx.nearest(&Point::new(1.2, 0.1), 2)), vec![1, 2]);
+        let (xs, ys) = five_point_grid();
+        assert_eq!(sorted(build(xs, ys).nearest(1.2, 0.1, 2)), vec![1, 2]);
     }
 
     #[test]
     fn nearest_k_larger_than_n_returns_all() {
-        let geoms = five_point_grid();
-        let idx = PackedKdTree::build(&geoms);
-        assert_eq!(idx.nearest(&Point::new(0.0, 0.0), 100).len(), 5);
+        let (xs, ys) = five_point_grid();
+        assert_eq!(build(xs, ys).nearest(0.0, 0.0, 100).len(), 5);
     }
 
     #[test]
     fn range_returns_correct_points() {
-        let geoms = five_point_grid();
-        let idx = PackedKdTree::build(&geoms);
-        let bbox = Rect::new(
-            geo::coord! { x: 0.0, y: 0.0 },
-            geo::coord! { x: 1.5, y: 0.5 },
-        );
-        assert_eq!(sorted(idx.range(&bbox)), vec![0, 1]);
+        let (xs, ys) = five_point_grid();
+        assert_eq!(sorted(build(xs, ys).range(0.0, 0.0, 1.5, 0.5)), vec![0, 1]);
     }
 
     #[test]
     fn range_empty_bbox_returns_empty() {
-        let geoms = five_point_grid();
-        let idx = PackedKdTree::build(&geoms);
-        let bbox = Rect::new(
-            geo::coord! { x: 5.0, y: 5.0 },
-            geo::coord! { x: 10.0, y: 10.0 },
-        );
-        assert!(idx.range(&bbox).is_empty());
+        let (xs, ys) = five_point_grid();
+        assert!(build(xs, ys).range(5.0, 5.0, 10.0, 10.0).is_empty());
     }
 }

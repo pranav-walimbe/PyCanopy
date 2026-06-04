@@ -1,11 +1,20 @@
-use geo::{coord, Geometry, Point, Rect};
+use std::sync::Arc;
 
-use crate::index::{geom_center, SpatialIndex};
+use rayon::prelude::*;
 
-/// Uniform grid index built from scratch, best for large uniform point datasets
+use crate::index::SpatialIndex;
+
+/// Uniform grid index with CSR (compressed sparse row) cell storage.
+/// Best for large datasets with uniform spatial distribution.
+///
+/// xs/ys are shared Arcs from the Engine — no coordinate data is copied.
+/// The CSR arrays (cell_offsets, indices) are new allocations derived from the data.
 pub struct UniformGrid {
-    cells: Vec<Vec<usize>>,
-    coords: Vec<(f64, f64)>,
+    /// cell_offsets[i]..cell_offsets[i+1] is the slice of indices in cell i
+    cell_offsets: Vec<u32>,
+    indices: Vec<u32>,
+    xs: Arc<[f64]>,
+    ys: Arc<[f64]>,
     min_x: f64,
     min_y: f64,
     cell_w: f64,
@@ -15,17 +24,7 @@ pub struct UniformGrid {
 }
 
 impl UniformGrid {
-    fn cell_of(&self, x: f64, y: f64) -> (usize, usize) {
-        let col = ((x - self.min_x) / self.cell_w)
-            .floor()
-            .clamp(0.0, self.grid_w as f64 - 1.0) as usize;
-        let row = ((y - self.min_y) / self.cell_h)
-            .floor()
-            .clamp(0.0, self.grid_h as f64 - 1.0) as usize;
-        (col, row)
-    }
-
-    fn bbox_cells(
+    fn bbox_cell_range(
         &self,
         min_x: f64,
         min_y: f64,
@@ -40,61 +39,83 @@ impl UniformGrid {
         let row_hi = ((max_y - self.min_y) / self.cell_h)
             .ceil()
             .min(self.grid_h as f64 - 1.0) as usize;
-
         (row_lo..=row_hi).flat_map(move |r| (col_lo..=col_hi).map(move |c| r * self.grid_w + c))
     }
 }
 
 impl SpatialIndex for UniformGrid {
-    fn build(geometries: &[Geometry<f64>]) -> Self {
-        let n = geometries.len();
-        let mut coords = Vec::with_capacity(n);
+    fn build(xs: Arc<[f64]>, ys: Arc<[f64]>) -> Self {
+        let n = xs.len();
 
-        let mut min_x = f64::INFINITY;
-        let mut min_y = f64::INFINITY;
-        let mut max_x = f64::NEG_INFINITY;
-        let mut max_y = f64::NEG_INFINITY;
-
-        for geom in geometries {
-            let (x, y) = geom_center(geom);
-            coords.push((x, y));
-            min_x = min_x.min(x);
-            min_y = min_y.min(y);
-            max_x = max_x.max(x);
-            max_y = max_y.max(y);
-        }
+        let (min_x, min_y, max_x, max_y) = xs.iter().zip(ys.iter()).fold(
+            (
+                f64::INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+            ),
+            |(mn_x, mn_y, mx_x, mx_y), (&x, &y)| {
+                (mn_x.min(x), mn_y.min(y), mx_x.max(x), mx_y.max(y))
+            },
+        );
 
         let grid_dim = (n as f64).sqrt().ceil().max(1.0) as usize;
         let grid_w = grid_dim;
         let grid_h = grid_dim;
-
-        let extent_w = max_x - min_x;
-        let extent_h = max_y - min_y;
-        let cell_w = if extent_w > 0.0 {
-            extent_w / grid_w as f64
+        let cell_w = if max_x > min_x {
+            (max_x - min_x) / grid_w as f64
         } else {
             1.0
         };
-        let cell_h = if extent_h > 0.0 {
-            extent_h / grid_h as f64
+        let cell_h = if max_y > min_y {
+            (max_y - min_y) / grid_h as f64
         } else {
             1.0
         };
 
-        let mut cells = vec![Vec::<usize>::new(); grid_w * grid_h];
-        for (i, &(x, y)) in coords.iter().enumerate() {
-            let col = ((x - min_x) / cell_w)
-                .floor()
-                .clamp(0.0, grid_w as f64 - 1.0) as usize;
-            let row = ((y - min_y) / cell_h)
-                .floor()
-                .clamp(0.0, grid_h as f64 - 1.0) as usize;
-            cells[row * grid_w + col].push(i);
+        // Two-pass CSR build.
+        // Pass 1 (parallel): compute cell index for each point.
+        let cell_for_point: Vec<u32> = xs
+            .par_iter()
+            .zip(ys.par_iter())
+            .map(|(&x, &y)| {
+                let col = ((x - min_x) / cell_w)
+                    .floor()
+                    .clamp(0.0, grid_w as f64 - 1.0) as u32;
+                let row = ((y - min_y) / cell_h)
+                    .floor()
+                    .clamp(0.0, grid_h as f64 - 1.0) as u32;
+                row * grid_w as u32 + col
+            })
+            .collect();
+
+        let num_cells = grid_w * grid_h;
+        let mut counts = vec![0u32; num_cells];
+        for &c in &cell_for_point {
+            counts[c as usize] += 1;
+        }
+
+        // Prefix sum → cell_offsets (length num_cells + 1).
+        let mut cell_offsets = Vec::with_capacity(num_cells + 1);
+        cell_offsets.push(0u32);
+        for &cnt in &counts {
+            cell_offsets.push(cell_offsets.last().unwrap() + cnt);
+        }
+
+        // Pass 2: scatter point indices into their cell slots.
+        let mut indices = vec![0u32; n];
+        let mut write_pos = cell_offsets[..num_cells].to_vec();
+        for (i, &c) in cell_for_point.iter().enumerate() {
+            let pos = write_pos[c as usize] as usize;
+            indices[pos] = i as u32;
+            write_pos[c as usize] += 1;
         }
 
         UniformGrid {
-            cells,
-            coords,
+            cell_offsets,
+            indices,
+            xs,
+            ys,
             min_x,
             min_y,
             cell_w,
@@ -104,33 +125,31 @@ impl SpatialIndex for UniformGrid {
         }
     }
 
-    fn nearest(&self, point: &Point<f64>, k: usize) -> Vec<usize> {
-        if self.coords.is_empty() {
+    fn nearest(&self, qx: f64, qy: f64, k: usize) -> Vec<usize> {
+        if self.xs.is_empty() {
             return vec![];
         }
-        let k = k.min(self.coords.len());
-        let px = point.x();
-        let py = point.y();
+        let k = k.min(self.xs.len());
 
-        let (start_col, start_row) = self.cell_of(px, py);
-        let sc = start_col as isize;
-        let sr = start_row as isize;
+        let start_col = ((qx - self.min_x) / self.cell_w)
+            .floor()
+            .clamp(0.0, self.grid_w as f64 - 1.0) as isize;
+        let start_row = ((qy - self.min_y) / self.cell_h)
+            .floor()
+            .clamp(0.0, self.grid_h as f64 - 1.0) as isize;
         let max_ring = self.grid_w.max(self.grid_h) as isize + 1;
         let mut candidates: Vec<(usize, f64)> = Vec::new();
 
         for ring in 0..=max_ring {
             let r = ring;
-            let col_lo = (sc - r).max(0) as usize;
-            let col_hi = (sc + r).min(self.grid_w as isize - 1) as usize;
-            let row_lo = (sr - r).max(0) as usize;
-            let row_hi = (sr + r).min(self.grid_h as isize - 1) as usize;
-
-            // Unclamped bounds — needed to correctly identify ring border cells
-            // when the grid edge has restricted the visible range.
-            let uc_col_lo = sc - r;
-            let uc_col_hi = sc + r;
-            let uc_row_lo = sr - r;
-            let uc_row_hi = sr + r;
+            let col_lo = (start_col - r).max(0) as usize;
+            let col_hi = (start_col + r).min(self.grid_w as isize - 1) as usize;
+            let row_lo = (start_row - r).max(0) as usize;
+            let row_hi = (start_row + r).min(self.grid_h as isize - 1) as usize;
+            let uc_col_lo = start_col - r;
+            let uc_col_hi = start_col + r;
+            let uc_row_lo = start_row - r;
+            let uc_row_hi = start_row + r;
 
             for row in row_lo..=row_hi {
                 for col in col_lo..=col_hi {
@@ -142,23 +161,23 @@ impl SpatialIndex for UniformGrid {
                     if !on_border {
                         continue;
                     }
-                    for &idx in &self.cells[row * self.grid_w + col] {
-                        let (x, y) = self.coords[idx];
-                        let d = (x - px).powi(2) + (y - py).powi(2);
-                        candidates.push((idx, d));
+                    let cell = row * self.grid_w + col;
+                    let start = self.cell_offsets[cell] as usize;
+                    let end = self.cell_offsets[cell + 1] as usize;
+                    for &idx in &self.indices[start..end] {
+                        let x = self.xs[idx as usize];
+                        let y = self.ys[idx as usize];
+                        candidates.push((idx as usize, (x - qx).powi(2) + (y - qy).powi(2)));
                     }
                 }
             }
 
             if candidates.len() >= k {
-                // Stop only when no unvisited cell can contain a closer point
-                // than our current k-th best candidate.
-                let col_lo_i = (sc - r).max(0);
-                let col_hi_i = (sc + r).min(self.grid_w as isize - 1);
-                let row_lo_i = (sr - r).max(0);
-                let row_hi_i = (sr + r).min(self.grid_h as isize - 1);
+                let col_lo_i = (start_col - r).max(0);
+                let col_hi_i = (start_col + r).min(self.grid_w as isize - 1);
+                let row_lo_i = (start_row - r).max(0);
+                let row_hi_i = (start_row + r).min(self.grid_h as isize - 1);
 
-                // Entire grid covered — definitely done.
                 let full_cover = col_lo_i == 0
                     && col_hi_i == self.grid_w as isize - 1
                     && row_lo_i == 0
@@ -167,11 +186,6 @@ impl SpatialIndex for UniformGrid {
                     break;
                 }
 
-                // Minimum squared distance from (px, py) to any unvisited cell.
-                // Unvisited strips exist in any direction not clamped to the grid edge.
-                // Each strip is a half-plane, so the nearest unvisited point in each
-                // strip has zero distance in the free axis — only the perpendicular
-                // distance matters.
                 let vx_lo = self.min_x + col_lo_i as f64 * self.cell_w;
                 let vx_hi = self.min_x + (col_hi_i + 1) as f64 * self.cell_w;
                 let vy_lo = self.min_y + row_lo_i as f64 * self.cell_h;
@@ -179,27 +193,25 @@ impl SpatialIndex for UniformGrid {
 
                 let mut min_unvisited_sq = f64::INFINITY;
                 if col_lo_i > 0 {
-                    let d = (px - vx_lo).max(0.0);
+                    let d = (qx - vx_lo).max(0.0);
                     min_unvisited_sq = min_unvisited_sq.min(d * d);
                 }
                 if col_hi_i < self.grid_w as isize - 1 {
-                    let d = (vx_hi - px).max(0.0);
+                    let d = (vx_hi - qx).max(0.0);
                     min_unvisited_sq = min_unvisited_sq.min(d * d);
                 }
                 if row_lo_i > 0 {
-                    let d = (py - vy_lo).max(0.0);
+                    let d = (qy - vy_lo).max(0.0);
                     min_unvisited_sq = min_unvisited_sq.min(d * d);
                 }
                 if row_hi_i < self.grid_h as isize - 1 {
-                    let d = (vy_hi - py).max(0.0);
+                    let d = (vy_hi - qy).max(0.0);
                     min_unvisited_sq = min_unvisited_sq.min(d * d);
                 }
 
-                // k-th best distance² among current candidates.
                 let mut dists: Vec<f64> = candidates.iter().map(|c| c.1).collect();
                 dists.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
                 let kth_dist_sq = dists[k - 1];
-
                 if min_unvisited_sq > kth_dist_sq {
                     break;
                 }
@@ -211,30 +223,23 @@ impl SpatialIndex for UniformGrid {
         candidates.into_iter().take(k).map(|(i, _)| i).collect()
     }
 
-    fn range(&self, bbox: &Rect<f64>) -> Vec<usize> {
+    fn range(&self, min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Vec<usize> {
         if self.grid_w == 0 || self.grid_h == 0 {
             return vec![];
         }
-        let (qmin_x, qmin_y, qmax_x, qmax_y) =
-            (bbox.min().x, bbox.min().y, bbox.max().x, bbox.max().y);
-
-        self.bbox_cells(qmin_x, qmin_y, qmax_x, qmax_y)
-            .flat_map(|cell_idx| self.cells[cell_idx].iter().copied())
-            .filter(|&i| {
-                let (x, y) = self.coords[i];
-                x >= qmin_x && x <= qmax_x && y >= qmin_y && y <= qmax_y
+        self.bbox_cell_range(min_x, min_y, max_x, max_y)
+            .flat_map(|cell_idx| {
+                let start = self.cell_offsets[cell_idx] as usize;
+                let end = self.cell_offsets[cell_idx + 1] as usize;
+                self.indices[start..end].iter().copied()
             })
+            .filter(|&idx| {
+                let x = self.xs[idx as usize];
+                let y = self.ys[idx as usize];
+                x >= min_x && x <= max_x && y >= min_y && y <= max_y
+            })
+            .map(|i| i as usize)
             .collect()
-    }
-
-    fn contains(&self, point: &Point<f64>) -> Vec<usize> {
-        // Reuse range with a zero-area bbox.
-        let eps = f64::EPSILON * 1000.0;
-        let bbox = Rect::new(
-            coord! { x: point.x() - eps, y: point.y() - eps },
-            coord! { x: point.x() + eps, y: point.y() + eps },
-        );
-        self.range(&bbox)
     }
 }
 
@@ -243,6 +248,10 @@ mod tests {
     use super::*;
     use crate::index::brute::five_point_grid;
 
+    fn build(xs: Vec<f64>, ys: Vec<f64>) -> UniformGrid {
+        UniformGrid::build(xs.into(), ys.into())
+    }
+
     fn sorted(mut v: Vec<usize>) -> Vec<usize> {
         v.sort_unstable();
         v
@@ -250,38 +259,31 @@ mod tests {
 
     #[test]
     fn nearest_returns_single_closest() {
-        let geoms = five_point_grid();
-        let idx = UniformGrid::build(&geoms);
-        assert_eq!(idx.nearest(&Point::new(1.2, 0.1), 1), vec![1]);
+        let (xs, ys) = five_point_grid();
+        assert_eq!(build(xs, ys).nearest(1.2, 0.1, 1), vec![1]);
     }
 
     #[test]
     fn nearest_k_two_returns_correct_pair() {
-        let geoms = five_point_grid();
-        let idx = UniformGrid::build(&geoms);
-        assert_eq!(sorted(idx.nearest(&Point::new(1.2, 0.1), 2)), vec![1, 2]);
+        let (xs, ys) = five_point_grid();
+        assert_eq!(sorted(build(xs, ys).nearest(1.2, 0.1, 2)), vec![1, 2]);
     }
 
     #[test]
     fn nearest_k_larger_than_n_returns_all() {
-        let geoms = five_point_grid();
-        let idx = UniformGrid::build(&geoms);
-        assert_eq!(idx.nearest(&Point::new(0.0, 0.0), 100).len(), 5);
+        let (xs, ys) = five_point_grid();
+        assert_eq!(build(xs, ys).nearest(0.0, 0.0, 100).len(), 5);
     }
 
     #[test]
     fn range_returns_correct_points() {
-        let geoms = five_point_grid();
-        let idx = UniformGrid::build(&geoms);
-        let bbox = Rect::new(coord! { x: 0.0, y: 0.0 }, coord! { x: 1.5, y: 0.5 });
-        assert_eq!(sorted(idx.range(&bbox)), vec![0, 1]);
+        let (xs, ys) = five_point_grid();
+        assert_eq!(sorted(build(xs, ys).range(0.0, 0.0, 1.5, 0.5)), vec![0, 1]);
     }
 
     #[test]
     fn range_empty_bbox_returns_empty() {
-        let geoms = five_point_grid();
-        let idx = UniformGrid::build(&geoms);
-        let bbox = Rect::new(coord! { x: 5.0, y: 5.0 }, coord! { x: 10.0, y: 10.0 });
-        assert!(idx.range(&bbox).is_empty());
+        let (xs, ys) = five_point_grid();
+        assert!(build(xs, ys).range(5.0, 5.0, 10.0, 10.0).is_empty());
     }
 }

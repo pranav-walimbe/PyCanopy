@@ -1,70 +1,65 @@
-use geo::{Contains, Geometry, Intersects, Point, Rect};
+use geo::{coord, Contains, Intersects, LineString, Point, Polygon, Rect};
 
 use crate::index::SpatialIndex;
 
-/// Two-phase range query: MBR candidates from the index then exact geometric check
-pub fn query_range<I: SpatialIndex>(
+/// Range query against a point dataset. The index performs the exact coordinate check.
+pub fn query_range_points<I: SpatialIndex>(
     index: &I,
-    bbox: &Rect<f64>,
-    geometries: &[Geometry<f64>],
+    min_x: f64,
+    min_y: f64,
+    max_x: f64,
+    max_y: f64,
 ) -> Vec<usize> {
+    index.range(min_x, min_y, max_x, max_y)
+}
+
+/// Range query against a polygon dataset.
+/// The index returns MBR candidates; exact intersection is verified per candidate.
+#[allow(clippy::too_many_arguments)]
+pub fn query_range_polygons<I: SpatialIndex>(
+    index: &I,
+    xs: &[f64],
+    ys: &[f64],
+    ring_offsets: &[i64],
+    min_x: f64,
+    min_y: f64,
+    max_x: f64,
+    max_y: f64,
+) -> Vec<usize> {
+    let bbox = Rect::new(coord! { x: min_x, y: min_y }, coord! { x: max_x, y: max_y });
     index
-        .range(bbox)
+        .range(min_x, min_y, max_x, max_y)
         .into_iter()
-        .filter(|&i| intersects_rect(&geometries[i], bbox))
+        .filter(|&i| make_polygon(xs, ys, ring_offsets, i).intersects(&bbox))
         .collect()
 }
 
-/// Two-phase contains query: MBR candidates from the index then exact contains check
-pub fn query_contains<I: SpatialIndex>(
+/// Point-in-polygon query against a polygon dataset.
+/// The index returns MBR candidates; exact containment is verified per candidate.
+pub fn query_contains_polygons<I: SpatialIndex>(
     index: &I,
-    point: &Point<f64>,
-    geometries: &[Geometry<f64>],
+    xs: &[f64],
+    ys: &[f64],
+    ring_offsets: &[i64],
+    qx: f64,
+    qy: f64,
 ) -> Vec<usize> {
+    let qpt = Point::new(qx, qy);
     index
-        .contains(point)
+        .range(qx, qy, qx, qy)
         .into_iter()
-        .filter(|&i| contains_point(&geometries[i], point))
+        .filter(|&i| make_polygon(xs, ys, ring_offsets, i).contains(&qpt))
         .collect()
 }
 
-fn intersects_rect(geom: &Geometry<f64>, bbox: &Rect<f64>) -> bool {
-    match geom {
-        Geometry::Point(p) => {
-            p.x() >= bbox.min().x
-                && p.x() <= bbox.max().x
-                && p.y() >= bbox.min().y
-                && p.y() <= bbox.max().y
-        }
-        Geometry::Polygon(poly) => poly.intersects(bbox),
-        Geometry::MultiPolygon(mpoly) => mpoly.intersects(bbox),
-        Geometry::LineString(ls) => ls.intersects(bbox),
-        Geometry::MultiLineString(mls) => mls.intersects(bbox),
-        _ => {
-            // Fallback: MBR intersection (no false negatives given index pre-filtered).
-            use geo::BoundingRect;
-            geom.bounding_rect()
-                .map(|g| {
-                    g.max().x >= bbox.min().x
-                        && g.min().x <= bbox.max().x
-                        && g.max().y >= bbox.min().y
-                        && g.min().y <= bbox.max().y
-                })
-                .unwrap_or(false)
-        }
-    }
-}
-
-fn contains_point(geom: &Geometry<f64>, point: &Point<f64>) -> bool {
-    match geom {
-        Geometry::Point(p) => {
-            (p.x() - point.x()).abs() < f64::EPSILON * 1000.0
-                && (p.y() - point.y()).abs() < f64::EPSILON * 1000.0
-        }
-        Geometry::Polygon(poly) => poly.contains(point),
-        Geometry::MultiPolygon(mpoly) => mpoly.contains(point),
-        _ => false,
-    }
+/// Reconstruct a Polygon from flat ring coordinate arrays for an exact geometric check.
+pub fn make_polygon(xs: &[f64], ys: &[f64], ring_offsets: &[i64], i: usize) -> Polygon<f64> {
+    let start = ring_offsets[i] as usize;
+    let end = ring_offsets[i + 1] as usize;
+    let coords: Vec<geo::Coord<f64>> = (start..end)
+        .map(|j| coord! { x: xs[j], y: ys[j] })
+        .collect();
+    Polygon::new(LineString::new(coords), vec![])
 }
 
 #[cfg(test)]
@@ -72,7 +67,6 @@ mod tests {
     use super::*;
     use crate::index::brute::{five_point_grid, BruteForce};
     use crate::index::SpatialIndex;
-    use geo::coord;
 
     fn sorted(mut v: Vec<usize>) -> Vec<usize> {
         v.sort_unstable();
@@ -81,39 +75,25 @@ mod tests {
 
     #[test]
     fn query_range_returns_correct_points() {
-        let geoms = five_point_grid();
-        let idx = BruteForce::build(&geoms);
-        let bbox = Rect::new(coord! { x: 0.0, y: 0.0 }, coord! { x: 1.5, y: 0.5 });
-        assert_eq!(sorted(query_range(&idx, &bbox, &geoms)), vec![0, 1]);
+        let (xs, ys) = five_point_grid();
+        let idx = BruteForce::build(xs.into(), ys.into());
+        assert_eq!(
+            sorted(query_range_points(&idx, 0.0, 0.0, 1.5, 0.5)),
+            vec![0, 1]
+        );
     }
 
     #[test]
     fn query_range_empty_returns_empty() {
-        let geoms = five_point_grid();
-        let idx = BruteForce::build(&geoms);
-        let bbox = Rect::new(coord! { x: 5.0, y: 5.0 }, coord! { x: 10.0, y: 10.0 });
-        assert!(query_range(&idx, &bbox, &geoms).is_empty());
+        let (xs, ys) = five_point_grid();
+        let idx = BruteForce::build(xs.into(), ys.into());
+        assert!(query_range_points(&idx, 5.0, 5.0, 10.0, 10.0).is_empty());
     }
 
     #[test]
     fn query_range_single_result() {
-        let geoms = five_point_grid();
-        let idx = BruteForce::build(&geoms);
-        let bbox = Rect::new(coord! { x: 0.5, y: 0.5 }, coord! { x: 1.5, y: 1.5 });
-        assert_eq!(query_range(&idx, &bbox, &geoms), vec![4]);
-    }
-
-    #[test]
-    fn query_contains_matches_exact_point() {
-        let geoms = five_point_grid();
-        let idx = BruteForce::build(&geoms);
-        assert_eq!(query_contains(&idx, &Point::new(1.0, 0.0), &geoms), vec![1]);
-    }
-
-    #[test]
-    fn query_contains_no_match_returns_empty() {
-        let geoms = five_point_grid();
-        let idx = BruteForce::build(&geoms);
-        assert!(query_contains(&idx, &Point::new(0.5, 0.5), &geoms).is_empty());
+        let (xs, ys) = five_point_grid();
+        let idx = BruteForce::build(xs.into(), ys.into());
+        assert_eq!(query_range_points(&idx, 0.5, 0.5, 1.5, 1.5), vec![4]);
     }
 }

@@ -1,4 +1,4 @@
-use geo::{coord, Geometry, Point, Rect};
+use geo::{coord, Point, Rect};
 use pycanopy::{
     planner::{
         cost::{selectivity, IndexKind},
@@ -134,48 +134,33 @@ fn knn_with_large_k_fraction_falls_back_to_brute() {
 
 #[test]
 fn pipeline_polygon_range_selects_rtree() {
-    use geo::{LineString, Polygon};
-    use pycanopy::stats::collector::collect;
+    use pycanopy::stats::collector::collect_polygons;
 
-    let geoms: Vec<Geometry<f64>> = (0..1000)
-        .map(|i| {
-            let x = (i % 50) as f64 * 2.0;
-            let y = (i / 50) as f64 * 2.0;
-            Geometry::Polygon(Polygon::new(
-                LineString::new(vec![
-                    coord! { x: x,       y: y       },
-                    coord! { x: x + 1.0, y: y       },
-                    coord! { x: x + 1.0, y: y + 1.0 },
-                    coord! { x: x,       y: y + 1.0 },
-                    coord! { x: x,       y: y       },
-                ]),
-                vec![],
-            ))
-        })
-        .collect();
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    let mut offsets: Vec<i64> = vec![0];
+    for i in 0..1000usize {
+        let ox = (i % 50) as f64 * 2.0;
+        let oy = (i / 50) as f64 * 2.0;
+        xs.extend_from_slice(&[ox, ox + 1.0, ox + 1.0, ox, ox]);
+        ys.extend_from_slice(&[oy, oy, oy + 1.0, oy + 1.0, oy]);
+        offsets.push(xs.len() as i64);
+    }
 
-    let stats = collect(&geoms);
+    let stats = collect_polygons(&xs, &ys, &offsets);
     assert_eq!(stats.kind, GeometryKind::Polygon);
     assert_eq!(select_index(&stats, &small_range_query()), IndexKind::RTree);
 }
 
 #[test]
 fn pipeline_uniform_points_range_selects_grid() {
-    use pycanopy::stats::collector::collect;
+    use pycanopy::stats::collector::collect_points;
 
-    let geoms: Vec<Geometry<f64>> = (0..1000)
-        .map(|i| {
-            let x = (i % 50) as f64 * 2.0;
-            let y = (i / 50) as f64 * 2.0;
-            Geometry::Point(Point::new(x, y))
-        })
-        .collect();
+    let xs: Vec<f64> = (0..1000).map(|i| (i % 50) as f64 * 2.0).collect();
+    let ys: Vec<f64> = (0..1000).map(|i| (i / 50) as f64 * 2.0).collect();
 
-    let stats = collect(&geoms);
+    let stats = collect_points(&xs, &ys);
     assert_eq!(stats.kind, GeometryKind::Point);
     assert_eq!(stats.distribution, Distribution::Uniform);
-
-    let q = small_range_query();
-    let kind = select_index(&stats, &q);
-    assert_eq!(kind, IndexKind::Grid);
+    assert_eq!(select_index(&stats, &small_range_query()), IndexKind::Grid);
 }

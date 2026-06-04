@@ -1,4 +1,4 @@
-.PHONY: fmt lint test build check
+.PHONY: fmt lint test build release check
 
 # Auto-fix formatting for Rust and Python
 fmt:
@@ -10,14 +10,18 @@ lint:
 	cargo clippy -- -D warnings
 	ruff check python/ tests/python/
 
-# Build the release extension then run all tests
+# Build the Python extension (fast: no LTO, parallel codegen)
+build:
+	maturin develop --profile dev-release
+
+# Build with full release optimisations (slow: LTO + single codegen unit)
+release:
+	maturin develop --release
+
+# Build the fast extension then run all tests
 test: build
 	cargo test
-	pytest tests/python/
-
-# Build the Python extension in release mode
-build:
-	maturin develop --release
+	.venv/bin/pytest tests/python/
 
 # Full pre-commit check: format, lint, test
 check: fmt lint test
