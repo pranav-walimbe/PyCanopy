@@ -2,10 +2,13 @@
 //! Each function crosses the Python/Rust boundary once and loops via rayon.
 //! Returns Vec<u64> or Vec<(u64, u64)> to avoid per-element Python int allocation.
 
+use std::sync::Arc;
+
 use geo::Contains;
 use rayon::prelude::*;
 
 use crate::index::brute::BruteForce;
+use crate::index::kdtree::PackedKdTree;
 use crate::index::SpatialIndex;
 use crate::query::range::make_polygon;
 
@@ -79,6 +82,65 @@ pub fn par_contains(
                 .into_iter()
                 .filter(move |&ei| make_polygon(xs, ys, ring_offsets, ei).contains(&qpt))
                 .map(move |ei| (qi as u64, ei as u64))
+        })
+        .collect()
+}
+
+/// For each query point, return (query_idx, engine_idx) for every engine point within `distance`.
+/// Uses a bbox pre-filter via the spatial index, then an exact Euclidean distance check.
+/// Returns a flat array of interleaved pairs [q0, e0, q1, e1, ...].
+pub fn par_within_distance<I: SpatialIndex + Sync>(
+    index: &I,
+    qxs: &[f64],
+    qys: &[f64],
+    xs: &[f64],
+    ys: &[f64],
+    distance: f64,
+) -> Vec<u64> {
+    let d2 = distance * distance;
+    qxs.par_iter()
+        .zip(qys.par_iter())
+        .enumerate()
+        .flat_map_iter(|(qi, (&qx, &qy))| {
+            index
+                .range(qx - distance, qy - distance, qx + distance, qy + distance)
+                .into_iter()
+                .filter(move |&ei| {
+                    let dx = xs[ei] - qx;
+                    let dy = ys[ei] - qy;
+                    dx * dx + dy * dy <= d2
+                })
+                .flat_map(move |ei| [qi as u64, ei as u64])
+        })
+        .collect()
+}
+
+/// Flipped variant of par_within_distance: indexes the query points and iterates
+/// engine points. Produces the same (query_idx, engine_idx) pairs as par_within_distance
+/// but is cheaper when the number of query points is much smaller than engine points.
+pub fn par_within_distance_flipped(
+    qxs: &[f64],
+    qys: &[f64],
+    xs: &[f64],
+    ys: &[f64],
+    distance: f64,
+) -> Vec<u64> {
+    let d2 = distance * distance;
+    // Build a KD-tree on the (smaller) query side.
+    let q_index = PackedKdTree::build(Arc::from(qxs.to_vec()), Arc::from(qys.to_vec()));
+    xs.par_iter()
+        .zip(ys.par_iter())
+        .enumerate()
+        .flat_map_iter(|(ei, (&sx, &sy))| {
+            q_index
+                .range(sx - distance, sy - distance, sx + distance, sy + distance)
+                .into_iter()
+                .filter(move |&qi| {
+                    let dx = qxs[qi] - sx;
+                    let dy = qys[qi] - sy;
+                    dx * dx + dy * dy <= d2
+                })
+                .flat_map(move |qi| [qi as u64, ei as u64])
         })
         .collect()
 }

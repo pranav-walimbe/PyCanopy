@@ -104,6 +104,30 @@ query_df = pl.DataFrame({"qx": [5.5, 12.3], "qy": [0.5, 0.5]})
 result = sf.lazy().within_join(query_df, x_col="qx", y_col="qy").collect()
 ```
 
+### Within-distance join
+
+```python
+# For each query point, find all sf points within 50 km.
+query_df = pl.DataFrame({"qx": [2.35, 13.4], "qy": [48.85, 52.5]})
+result = sf.lazy().within_distance_join(query_df, x_col="qx", y_col="qy", distance=50.0).collect()
+```
+
+### Live updates via delta buffer
+
+```python
+# Append new points — visible to queries immediately, no index rebuild yet.
+import numpy as np
+sf.engine.append_delta(np.array([2.5]), np.array([48.9]))
+
+# Queries probe the main index and scan the delta in parallel.
+result = sf.lazy().range_query(-10.0, 35.0, 40.0, 70.0).collect()
+
+# The buffer flushes automatically when accumulated query cost exceeds
+# the estimated index rebuild cost, or when it exceeds 10% of N.
+# Force a flush manually if needed.
+sf.engine.flush()
+```
+
 ---
 
 ## Accepted input formats
@@ -131,6 +155,7 @@ result = sf.lazy().within_join(query_df, x_col="qx", y_col="qy").collect()
                  │  • reorder ops by cost  │
                  │  • fuse spatial preds   │
                  │  • select index type    │
+                 │  • spatial join order   │
                  └────────────┬────────────┘
                               │
                  ┌────────────▼────────────┐
@@ -149,7 +174,7 @@ result = sf.lazy().within_join(query_df, x_col="qx", y_col="qy").collect()
 - **Predicate Pushdown:** scalar predicates are placed before spatial ones. They cost nothing extra and shrink the row count before any index is touched.
 - **Fusion:** consecutive spatial predicates on large datasets are merged into a single index build and one pass over the data.
 - **Index type:** selected per query based on geometry type, data distribution, and selectivity (see Index Management below).
-- **Spatial Join Order:** for `knn_join` and `within_join`, the optimizer selects which side to index based on relative dataset sizes and query selectivity, minimizing index build cost.
+- **Spatial Join Order:** for symmetric joins (`within_join`, `within_distance_join`), the optimizer indexes the smaller side when it is less than half the size of the other, minimizing index build cost. `knn_join` is asymmetric and always indexes the engine side.
 
 **Index Management**
 

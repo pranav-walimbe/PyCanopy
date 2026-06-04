@@ -17,7 +17,10 @@ use index::{
 };
 use planner::{cost::IndexKind, selector::select_index};
 use query::{
-    batch::{par_bbox_filter, par_contains, par_knn, par_knn_with_delta},
+    batch::{
+        par_bbox_filter, par_contains, par_knn, par_knn_with_delta, par_within_distance,
+        par_within_distance_flipped,
+    },
     nearest::query_nearest,
     range::{query_contains_polygons, query_range_points, query_range_polygons},
     types::Query,
@@ -543,6 +546,67 @@ impl Engine {
             out
         };
         Ok(PyArray1::from_vec(py, results))
+    }
+
+    /// For each query point, return (query_idx, engine_idx) pairs for every engine
+    /// point within `distance` of it (Euclidean). Point datasets only.
+    ///
+    /// `flipped`: when true, indexes the query points and iterates engine points instead.
+    /// Produces identical results but is cheaper when len(query) << engine.n.
+    ///
+    /// Returns a flat u64 array of shape (M * 2,) interleaved [q0, e0, q1, e1, ...].
+    fn batch_within_distance<'py>(
+        &mut self,
+        py: Python<'py>,
+        query_xs: PyReadonlyArray1<f64>,
+        query_ys: PyReadonlyArray1<f64>,
+        distance: f64,
+        flipped: bool,
+    ) -> PyResult<Bound<'py, PyArray1<u64>>> {
+        if self.ring_offsets.is_some() {
+            return Err(PyValueError::new_err(
+                "batch_within_distance requires a point dataset",
+            ));
+        }
+        let qxs = query_xs
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("query_xs must be a contiguous float64 array"))?;
+        let qys = query_ys
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("query_ys must be a contiguous float64 array"))?;
+        if qxs.len() != qys.len() {
+            return Err(PyValueError::new_err(
+                "query_xs and query_ys must have the same length",
+            ));
+        }
+        if flipped {
+            let pairs = par_within_distance_flipped(qxs, qys, &self.xs, &self.ys, distance);
+            return Ok(PyArray1::from_vec(py, pairs));
+        }
+        let kind = if self.stats.n < 500 {
+            IndexKind::BruteForce
+        } else {
+            match self.stats.distribution {
+                stats::types::Distribution::Uniform => IndexKind::Grid,
+                _ => IndexKind::KdTree,
+            }
+        };
+        self.build_index_if_needed(kind);
+        let pairs = match kind {
+            IndexKind::BruteForce => {
+                par_within_distance(self.brute.as_ref().unwrap(), qxs, qys, &self.xs, &self.ys, distance)
+            }
+            IndexKind::RTree => {
+                par_within_distance(self.rtree.as_ref().unwrap(), qxs, qys, &self.xs, &self.ys, distance)
+            }
+            IndexKind::KdTree => {
+                par_within_distance(self.kdtree.as_ref().unwrap(), qxs, qys, &self.xs, &self.ys, distance)
+            }
+            IndexKind::Grid => {
+                par_within_distance(self.grid.as_ref().unwrap(), qxs, qys, &self.xs, &self.ys, distance)
+            }
+        };
+        Ok(PyArray1::from_vec(py, pairs))
     }
 
     /// For each query point, return its position in the query array if it falls

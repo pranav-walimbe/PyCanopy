@@ -240,6 +240,32 @@ class Engine:
             approximate,
         )
 
+    def batch_within_distance(
+        self,
+        query_xs,
+        query_ys,
+        distance: float,
+        flipped: bool = False,
+    ) -> np.ndarray:
+        """For each query point return (query_idx, engine_idx) pairs within distance.
+
+        Args:
+            query_xs: x coordinates of query points.
+            query_ys: y coordinates of query points.
+            distance: Maximum Euclidean distance for a match.
+            flipped: Index query side and iterate engine points (faster when
+                len(query) << engine.n).
+
+        Returns:
+            Flat uint64 array of shape (M * 2,) interleaved [q0, e0, q1, e1, ...].
+        """
+        return self._core.batch_within_distance(
+            np.ascontiguousarray(query_xs, dtype=np.float64),
+            np.ascontiguousarray(query_ys, dtype=np.float64),
+            distance,
+            flipped,
+        )
+
     def batch_within(
         self,
         query_xs: np.ndarray,

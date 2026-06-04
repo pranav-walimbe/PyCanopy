@@ -14,6 +14,7 @@ from pycanopy.nodes import (
     PluginPath,
     RangeNode,
     ScalarNode,
+    WithinDistanceJoinNode,
     WithinJoinNode,
 )
 
@@ -145,7 +146,12 @@ class SpatialExecutor:
         # EXPR path requires x_col/y_col as real DataFrame columns (point datasets).
         # Polygon SpatialFrames use synthetic coordinate column names that don't
         # exist in df; degrade gracefully to the IO path in that case.
-        if plugin_path == PluginPath.EXPR and sf.x_col not in sf.df.columns:
+        # Exception: join nodes are handled directly by the executor and do not
+        # use the plugin expression machinery, so they stay on EXPR path.
+        has_joins = any(
+            isinstance(n, (KnnJoinNode, WithinJoinNode, WithinDistanceJoinNode)) for n in plan
+        )
+        if plugin_path == PluginPath.EXPR and sf.x_col not in sf.df.columns and not has_joins:
             plugin_path = PluginPath.IO
 
         if plugin_path == PluginPath.IO:
@@ -230,6 +236,8 @@ class SpatialExecutor:
             return self._emit_knn_join(node, sf, lf)
         if isinstance(node, WithinJoinNode):
             return self._emit_within_join(node, sf, lf)
+        if isinstance(node, WithinDistanceJoinNode):
+            return self._emit_within_distance_join(node, sf, lf)
         raise TypeError(f"Unknown plan node type: {type(node)}")
 
     # --- filter nodes ---
@@ -311,6 +319,34 @@ class SpatialExecutor:
 
         if len(pairs_flat) == 0:
             # No matches — return empty DataFrame with correct schema
+            empty_q = node.query_df.clear()
+            empty_t = _resolve_column_conflicts(empty_q, sf.df.clear())
+            return pl.concat([empty_q, empty_t], how="horizontal").lazy()
+
+        pairs = pairs_flat.reshape(-1, 2)
+        query_row_indices = pairs[:, 0].tolist()
+        target_row_indices = pairs[:, 1].tolist()
+
+        query_part = node.query_df[query_row_indices]
+        target_part = sf.df[target_row_indices]
+
+        target_part = _resolve_column_conflicts(query_part, target_part)
+        return pl.concat([query_part, target_part], how="horizontal").lazy()
+
+    def _emit_within_distance_join(
+        self, node: WithinDistanceJoinNode, sf, lf: pl.LazyFrame
+    ) -> pl.LazyFrame:
+        """For each query point find Engine points within node.distance.
+
+        When node.flip is True the query side is indexed and engine points are
+        iterated — cheaper when len(query_df) << engine.n.
+        """
+        query_xs = node.query_df[node.x_col].to_numpy()
+        query_ys = node.query_df[node.y_col].to_numpy()
+
+        pairs_flat = sf.engine.batch_within_distance(query_xs, query_ys, node.distance, node.flip)
+
+        if len(pairs_flat) == 0:
             empty_q = node.query_df.clear()
             empty_t = _resolve_column_conflicts(empty_q, sf.df.clear())
             return pl.concat([empty_q, empty_t], how="horizontal").lazy()

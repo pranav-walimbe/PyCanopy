@@ -95,6 +95,23 @@ class WithinJoinNode:
     query_df: pl.DataFrame
     x_col: str
     y_col: str
+    flip: bool = False
+
+
+@dataclass
+class WithinDistanceJoinNode:
+    """Spatial join: for each point in query_df find Engine points within `distance`.
+
+    Acts as a barrier in the plan. Engine must be a point dataset.
+    Result columns: all query_df columns followed by all Engine df columns
+    (conflicting names in the right side are prefixed with 'right_').
+    """
+
+    query_df: pl.DataFrame
+    x_col: str
+    y_col: str
+    distance: float
+    flip: bool = False
 
 
 # Type alias for a complete plan
@@ -106,4 +123,5 @@ Plan = list[
     | FusedSpatialNode
     | KnnJoinNode
     | WithinJoinNode
+    | WithinDistanceJoinNode
 ]

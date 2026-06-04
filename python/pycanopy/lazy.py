@@ -12,6 +12,7 @@ from pycanopy.nodes import (
     Plan,
     RangeNode,
     ScalarNode,
+    WithinDistanceJoinNode,
     WithinJoinNode,
 )
 from pycanopy.optimizer import SpatialOptimizer
@@ -134,6 +135,33 @@ class SpatialLazyFrame:
         return SpatialLazyFrame(
             self._sf,
             [*self._plan, KnnJoinNode(query_df, x_col, y_col, k, approximate)],
+        )
+
+    def within_distance_join(
+        self,
+        query_df: pl.DataFrame,
+        x_col: str,
+        y_col: str,
+        distance: float,
+    ) -> SpatialLazyFrame:
+        """Spatial join: for each point in query_df find Engine points within `distance`.
+
+        Acts as a barrier — no plan nodes are reordered past a join.
+        Result has query_df columns followed by Engine df columns (right-side
+        columns that conflict are prefixed with 'right_').
+
+        Args:
+            query_df: DataFrame of query points.
+            x_col: Column in query_df holding x coordinates.
+            y_col: Column in query_df holding y coordinates.
+            distance: Maximum Euclidean distance for a match.
+
+        Returns:
+            New SpatialLazyFrame with the within-distance join node appended.
+        """
+        return SpatialLazyFrame(
+            self._sf,
+            [*self._plan, WithinDistanceJoinNode(query_df, x_col, y_col, distance)],
         )
 
     def within_join(

@@ -19,6 +19,7 @@ from pycanopy.nodes import (
     PluginPath,
     RangeNode,
     ScalarNode,
+    WithinDistanceJoinNode,
     WithinJoinNode,
 )
 
@@ -55,6 +56,7 @@ class SpatialOptimizer:
         plan = self._assign_selectivity(plan, engine)
         plan = self._cost_sort(plan)
         plan = self._fusion_pass(plan, engine)
+        plan = self._join_side_pass(plan, engine)
         return plan
 
     def _assign_selectivity(self, plan: Plan, engine) -> Plan:
@@ -117,7 +119,7 @@ class SpatialOptimizer:
         result: Plan = []
         run: Plan = []
         for node in plan:
-            if isinstance(node, (KnnNode, KnnJoinNode, WithinJoinNode)):
+            if isinstance(node, (KnnNode, KnnJoinNode, WithinJoinNode, WithinDistanceJoinNode)):
                 result.extend(self._sort_run(run))
                 result.append(node)
                 run = []
@@ -181,6 +183,28 @@ class SpatialOptimizer:
             and node.selectivity >= _FUSION_SELECTIVITY_FLOOR
         )
 
+    def _join_side_pass(self, plan: Plan, engine) -> Plan:
+        """Set flip=True on join nodes where indexing the query side is cheaper.
+
+        Flips when len(query_df) < engine.n // 2 so the existing Engine index
+        is not abandoned for a marginal size difference. knn_join is asymmetric
+        and never flipped; within_join and within_distance_join are symmetric.
+
+        Args:
+            plan: Fusion-sorted plan.
+            engine: Engine instance for dataset size.
+
+        Returns:
+            Plan with flip flags set on eligible join nodes.
+        """
+        result = []
+        for node in plan:
+            if isinstance(node, (WithinJoinNode, WithinDistanceJoinNode)):
+                if len(node.query_df) < engine.n // 2:
+                    node = dataclasses.replace(node, flip=True)
+            result.append(node)
+        return result
+
     def _select_plugin_path(self, plan: Plan, engine) -> PluginPath:
         """Choose expression plugin (default) or IO plugin.
 
@@ -203,7 +227,10 @@ class SpatialOptimizer:
         Returns:
             PluginPath.IO or PluginPath.EXPR.
         """
-        if any(isinstance(n, (KnnNode, KnnJoinNode, WithinJoinNode)) for n in plan):
+        if any(
+            isinstance(n, (KnnNode, KnnJoinNode, WithinJoinNode, WithinDistanceJoinNode))
+            for n in plan
+        ):
             return PluginPath.EXPR
 
         for node in plan:
