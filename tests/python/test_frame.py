@@ -15,6 +15,7 @@ from pycanopy.optimizer import SpatialOptimizer
 
 # fixtures
 
+
 # 5-point dataset: (0,0),(1,0),(2,0),(0,1),(1,1) with values 10-50.
 # Extent (0,0)-(2,1), area=2. Moderate queries have selectivity >= 0.05 → EXPR path.
 @pytest.fixture(scope="session")
@@ -100,12 +101,7 @@ def test_no_predicates_returns_all_rows(sf):
 
 def test_two_range_queries_intersect(sf):
     # First range: all 5 points. Second range: x in [0.5,2.5], y in [-0.1,0.5] → (1,0) and (2,0).
-    result = (
-        sf.lazy()
-        .range_query(0.0, 0.0, 2.0, 1.0)
-        .range_query(0.5, -0.1, 2.5, 0.5)
-        .collect()
-    )
+    result = sf.lazy().range_query(0.0, 0.0, 2.0, 1.0).range_query(0.5, -0.1, 2.5, 0.5).collect()
     assert sorted(result["v"].to_list()) == [20, 30]
 
 
@@ -134,22 +130,14 @@ def test_io_scalar_applied_to_candidates(sf_large):
 
 def test_io_two_contains_intersect(sf_large):
     # Two contains predicates on the same point: still returns that point.
-    result = (
-        sf_large.lazy()
-        .contains(3.0, 4.0)
-        .contains(3.0, 4.0)
-        .collect()
-    )
+    result = sf_large.lazy().contains(3.0, 4.0).contains(3.0, 4.0).collect()
     assert result["v"].to_list() == [43]
 
 
 def test_io_disjoint_ranges_return_empty(sf_large):
     # First range has a candidate; second is disjoint → intersection is empty.
     result = (
-        sf_large.lazy()
-        .range_query(0.0, 0.0, 0.5, 0.5)
-        .range_query(5.0, 5.0, 9.5, 9.5)
-        .collect()
+        sf_large.lazy().range_query(0.0, 0.0, 0.5, 0.5).range_query(5.0, 5.0, 9.5, 9.5).collect()
     )
     assert result.is_empty()
 

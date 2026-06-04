@@ -131,9 +131,7 @@ class SpatialExecutor:
         (K << N) and re-building a fresh index on M rows would be wasteful.
     """
 
-    def execute(
-        self, plan: Plan, sf, plugin_path: PluginPath = PluginPath.EXPR
-    ) -> pl.DataFrame:
+    def execute(self, plan: Plan, sf, plugin_path: PluginPath = PluginPath.EXPR) -> pl.DataFrame:
         """Execute the optimised plan against sf.
 
         Args:
@@ -187,9 +185,7 @@ class SpatialExecutor:
                         continue
                     pred_set = set(pred_hits)
                     candidate_indices = (
-                        pred_set
-                        if candidate_indices is None
-                        else candidate_indices & pred_set
+                        pred_set if candidate_indices is None else candidate_indices & pred_set
                     )
                 continue
             elif isinstance(node, ScalarNode):
@@ -219,9 +215,7 @@ class SpatialExecutor:
             lf = self._emit_node(node, sf, lf, plugin_path)
         return lf
 
-    def _emit_node(
-        self, node, sf, lf: pl.LazyFrame, plugin_path: PluginPath
-    ) -> pl.LazyFrame:
+    def _emit_node(self, node, sf, lf: pl.LazyFrame, plugin_path: PluginPath) -> pl.LazyFrame:
         if isinstance(node, ScalarNode):
             return lf.filter(node.expr)
         if isinstance(node, RangeNode):
