@@ -23,7 +23,7 @@ classifiers = [
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
 ]
-dependencies = ["pyarrow>=12.0", "numpy>=1.24"]
+dependencies = ["pyarrow>=12.0", "numpy>=1.24", "polars>=0.20"]
 
 [project.urls]
 Repository = "https://github.com/pranavwalimbe/pycanopy"
@@ -40,6 +40,7 @@ dev = [
     "pytest>=8.0",
     "numpy>=1.24",
     "pyarrow>=12.0",
+    "polars>=0.20",
     "ruff>=0.4",
     "shapely>=2.0",
 ]
