@@ -21,12 +21,3 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 
-# Fast iteration profile: maturin develop --profile dev-release
-# Same as release but skips LTO and uses parallel codegen.
-# Cold build ~2-3 min instead of ~10; runtime within ~10% of release.
-[profile.dev-release]
-inherits = "release"
-lto = false
-codegen-units = 16
-
-[dev-dependencies]

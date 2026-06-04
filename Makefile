@@ -10,11 +10,9 @@ lint:
 	cargo clippy -- -D warnings
 	ruff check python/ tests/python/
 
-# Build the Python extension (fast: no LTO, parallel codegen)
 build:
-	maturin develop --profile dev-release
+	maturin develop
 
-# Build with full release optimisations (slow: LTO + single codegen unit)
 release:
 	maturin develop --release
 

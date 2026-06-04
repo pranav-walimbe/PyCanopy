@@ -29,14 +29,20 @@ SQUARES = [
 ]
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def engine():
     return Engine.from_coords(XS, YS)
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def poly_engine():
     return Engine.from_polygons(SQUARES)
+
+
+@pytest.fixture(scope="session")
+def large_poly_engine():
+    polys = [Polygon([(i, 0), (i + 0.9, 0), (i + 0.9, 0.9), (i, 0.9)]) for i in range(600)]
+    return Engine.from_polygons(polys)
 
 
 # point construction
@@ -240,13 +246,9 @@ def test_polygon_contains_outside_returns_empty(poly_engine):
 # large polygon dataset — N > 500 exercises the R-tree path
 
 
-def test_large_polygon_dataset_range():
-    polys = [Polygon([(i, 0), (i + 0.9, 0), (i + 0.9, 0.9), (i, 0.9)]) for i in range(600)]
-    eng = Engine.from_polygons(polys)
-    assert len(eng.range_query(0.0, 0.0, 9.5, 1.0)) == 10
+def test_large_polygon_dataset_range(large_poly_engine):
+    assert len(large_poly_engine.range_query(0.0, 0.0, 9.5, 1.0)) == 10
 
 
-def test_large_polygon_dataset_contains():
-    polys = [Polygon([(i, 0), (i + 0.9, 0), (i + 0.9, 0.9), (i, 0.9)]) for i in range(600)]
-    eng = Engine.from_polygons(polys)
-    assert eng.contains(5.5, 0.5) == [5]
+def test_large_polygon_dataset_contains(large_poly_engine):
+    assert large_poly_engine.contains(5.5, 0.5) == [5]
