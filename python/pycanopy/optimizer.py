@@ -1,9 +1,12 @@
-"""SpatialOptimizer — cost-based plan transformer.
+"""SpatialOptimizer: cost-based plan transformer.
 
 Passes (in order):
-  1. _assign_selectivity  — estimate selectivity for each node from engine stats
-  2. _cost_sort           — reorder scalar vs. spatial based on selectivity
-  3. _fusion_pass         — merge consecutive fusable spatial nodes
+  1. _assign_selectivity: estimate selectivity for each node from engine stats
+  2. _cost_sort: reorder scalar vs. spatial based on selectivity
+  3. _fusion_pass: merge consecutive fusable spatial nodes
+  4. _join_side_pass: set flip=True on symmetric joins where query side is smaller
+  5. _detect_fanout: find the longest shared plan prefix across branches
+     (used by collect_all to insert a Polars .cache() barrier)
 """
 
 from __future__ import annotations
@@ -204,6 +207,32 @@ class SpatialOptimizer:
                     node = dataclasses.replace(node, flip=True)
             result.append(node)
         return result
+
+    def _detect_fanout(self, plans: list[Plan]) -> int:
+        """Return the length of the longest plan prefix shared by all plans.
+
+        Uses Python object identity (is) to detect shared nodes. This works because
+        SpatialLazyFrame builds plans via [*self._plan, new_node], which reuses
+        existing node references rather than copying them.
+
+        A node at position i is shared across all plans if every plan's node at that
+        position is the same Python object. The first position where any plan diverges
+        marks the end of the shared prefix.
+
+        Args:
+            plans: Two or more plans to compare.
+
+        Returns:
+            Number of leading nodes that are the same object across all plans.
+            Returns 0 if fewer than two plans are provided or no prefix is shared.
+        """
+        if len(plans) < 2:
+            return 0
+        min_len = min(len(p) for p in plans)
+        for i in range(min_len):
+            if not all(p[i] is plans[0][i] for p in plans[1:]):
+                return i
+        return min_len
 
     def _select_plugin_path(self, plan: Plan, engine) -> PluginPath:
         """Choose expression plugin (default) or IO plugin.

@@ -240,7 +240,7 @@ class SpatialExecutor:
             return self._emit_within_distance_join(node, sf, lf)
         raise TypeError(f"Unknown plan node type: {type(node)}")
 
-    # --- filter nodes ---
+    # filter nodes
 
     def _emit_range(
         self, node: RangeNode, sf, lf: pl.LazyFrame, plugin_path: PluginPath
@@ -280,7 +280,7 @@ class SpatialExecutor:
             return lf.filter(pl.lit(False))
         return lf.filter(pl.col(_ROW_IDX).is_in(indices))
 
-    # --- join nodes ---
+    # join nodes
 
     def _emit_knn_join(self, node: KnnJoinNode, sf, lf: pl.LazyFrame) -> pl.LazyFrame:
         """For each row in query_df find k nearest in Engine's dataset.

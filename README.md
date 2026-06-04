@@ -112,6 +112,23 @@ query_df = pl.DataFrame({"qx": [2.35, 13.4], "qy": [48.85, 52.5]})
 result = sf.lazy().within_distance_join(query_df, x_col="qx", y_col="qy", distance=50.0).collect()
 ```
 
+### Branching from a shared base
+
+```python
+from pycanopy import SpatialFrame, SpatialLazyFrame
+
+# Expensive filter applied once; two queries branch from the result.
+base = sf.lazy().filter(pl.col("population") > 100_000).range_query(-10.0, 35.0, 40.0, 70.0)
+
+major = base.filter(pl.col("population") > 1_000_000)
+minor = base.filter(pl.col("population") <= 1_000_000)
+
+# collect_all detects the shared prefix, caches it in Polars,
+# and executes both branches in a single pass.
+results = SpatialLazyFrame.collect_all([major, minor])
+df_major, df_minor = results
+```
+
 ### Live updates via delta buffer
 
 ```python
@@ -175,6 +192,7 @@ sf.engine.flush()
 - **Fusion:** consecutive spatial predicates on large datasets are merged into a single index build and one pass over the data.
 - **Index type:** selected per query based on geometry type, data distribution, and selectivity (see Index Management below).
 - **Spatial Join Order:** for symmetric joins (`within_join`, `within_distance_join`), the optimizer indexes the smaller side when it is less than half the size of the other, minimizing index build cost. `knn_join` is asymmetric and always indexes the engine side.
+- **Fan-out caching:** `collect_all` detects when multiple `SpatialLazyFrame` instances were branched from the same base by comparing plan node identity. The shared prefix is emitted once with a Polars `.cache()` barrier, and all branch suffixes execute in a single `pl.collect_all()` call.
 
 **Index Management**
 

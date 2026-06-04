@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import polars as pl
 
-from pycanopy.executor import SpatialExecutor
+from pycanopy.executor import _ROW_IDX, SpatialExecutor
 from pycanopy.nodes import (
     ContainsNode,
     KnnJoinNode,
     KnnNode,
     Plan,
+    PluginPath,
     RangeNode,
     ScalarNode,
     WithinDistanceJoinNode,
@@ -203,3 +204,65 @@ class SpatialLazyFrame:
         optimized = optimizer.optimize(self._plan, self._sf.engine)
         plugin_path = optimizer._select_plugin_path(optimized, self._sf.engine)
         return executor.execute(optimized, self._sf, plugin_path)
+
+    @staticmethod
+    def collect_all(frames: list[SpatialLazyFrame]) -> list[pl.DataFrame]:
+        """Collect multiple SpatialLazyFrames, caching any shared plan prefix.
+
+        When frames were branched from the same base SpatialLazyFrame they share
+        plan nodes as identical Python objects (SpatialLazyFrame builds plans via
+        [*self._plan, new_node], which reuses references rather than copying). This
+        method detects that shared prefix, emits it once as a cached Polars
+        LazyFrame, builds each branch's suffix from the cache, then collects all
+        branches in a single pl.collect_all() call.
+
+        Falls back to independent collect() calls when no common prefix is found.
+
+        All frames must belong to the same SpatialFrame.
+
+        Args:
+            frames: SpatialLazyFrames to collect. Must share a SpatialFrame.
+
+        Returns:
+            List of DataFrames in the same order as frames.
+
+        Raises:
+            ValueError: If frames is empty or frames belong to different SpatialFrames.
+        """
+        if not frames:
+            raise ValueError("collect_all requires at least one frame")
+        if len(frames) == 1:
+            return [frames[0].collect()]
+
+        sf = frames[0]._sf
+        if not all(f._sf is sf for f in frames[1:]):
+            raise ValueError("All frames in collect_all must belong to the same SpatialFrame")
+
+        optimizer = SpatialOptimizer()
+        executor = SpatialExecutor()
+        plans = [f._plan for f in frames]
+        prefix_len = optimizer._detect_fanout(plans)
+
+        if prefix_len == 0:
+            return [f.collect() for f in frames]
+
+        # Optimise the shared prefix as a standalone plan and cache its Polars chain.
+        prefix_plan = plans[0][:prefix_len]
+        optimized_prefix = optimizer.optimize(prefix_plan, sf.engine)
+        base_lf = sf.df.with_row_index(_ROW_IDX).lazy()
+        cached_lf = executor._emit_chain(optimized_prefix, sf, base_lf, PluginPath.EXPR).cache()
+
+        # Build each branch's suffix chain starting from the cached result.
+        branch_lfs: list[pl.LazyFrame] = []
+        for frame in frames:
+            suffix_plan = frame._plan[prefix_len:]
+            if not suffix_plan:
+                branch_lfs.append(cached_lf)
+                continue
+            optimized_suffix = optimizer.optimize(suffix_plan, sf.engine)
+            branch_lfs.append(
+                executor._emit_chain(optimized_suffix, sf, cached_lf, PluginPath.EXPR)
+            )
+
+        collected = pl.collect_all(branch_lfs)
+        return [df.drop(_ROW_IDX) if _ROW_IDX in df.columns else df for df in collected]
