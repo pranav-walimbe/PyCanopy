@@ -10,7 +10,7 @@ import polars as pl
 import pytest
 
 from pycanopy import SpatialFrame
-from pycanopy.nodes import ContainsNode, FusedSpatialNode, KnnNode, PluginPath, RangeNode
+from pycanopy.nodes import PluginPath
 from pycanopy.optimizer import SpatialOptimizer
 
 # fixtures

@@ -23,44 +23,6 @@ PyCanopy adds a declarative lazy query layer directly on Polars DataFrames. You 
 
 ---
 
-## How It Works
-
-PyCanopy sits as a planning and execution layer between your code and Polars. You declare what you want spatially; PyCanopy decides how to run it, then hands a Polars LazyFrame chain back for Polars to execute and return a native DataFrame.
-
-```
-  declare                      plan                       hand to Polars
-  ───────────    ──────────────────────────────────    ──────────────────────────
-
-  SpatialFrame   SpatialLazyFrame   SpatialOptimizer   scalar filter exprs
-  ─────────────  ────────────────   ────────────────   (Polars runs these first,
-  xs, ys         .filter()          reorder by cost     cheaply, reducing rows)
-  stats cached   .range_query()     fuse predicates
-  index lazy     .knn_join()        pick index type    spatial map_batches exprs
-                 ...                pick EXPR or IO     (is_elementwise=False tells
-                                                         Polars to treat these as
-                                    SpatialExecutor      column-level barriers and
-                                    emits Polars chain   not reorder past them)
-                                    dispatches Rust
-                                    batch joins         join results via rayon,
-                                                        concat'd into LazyFrame
-
-                                                        pl.DataFrame  <── .collect()
-```
-
-The optimizer makes four decisions before any data moves:
-
-**Ordering.** Scalar Polars predicates are placed before spatial operations. Running them first costs nothing extra and shrinks the row count before any index is touched.
-
-**Fusion.** Consecutive spatial predicates on a large dataset are merged so the index is built once and all predicates are evaluated in a single pass over the data.
-
-**Index type.** Chosen per query from KD-tree (point KNN), uniform grid (uniform-distribution range), R-tree (polygons), or brute force (small N or full-scan selectivity).
-
-**Execution path.** The EXPR path emits spatial filters as Polars `map_batches` expressions. Polars sees `is_elementwise=False` and treats each expression as a barrier, running scalar predicates above it first and passing the reduced row set to the spatial closure. The IO path is used for tight spatial filters: the pre-built Engine index is queried directly, the DataFrame is sliced to the small candidate set, and scalar filters run on that slice.
-
-Scalar predicates, sorting, projection, and `collect()` are always handled by Polars. PyCanopy does not re-implement any of that.
-
----
-
 ## Installation
 
 ```bash
@@ -157,17 +119,55 @@ result = sf.lazy().within_join(query_df, x_col="qx", y_col="qy").collect()
 
 ---
 
-## Index selection
+## How It Works
 
-PyCanopy inspects the dataset at load time and picks automatically:
+### Query Flow
+
+```
+  sf.lazy().filter(...).range_query(...).knn_join(...).collect()
+                              │
+                 ┌────────────▼────────────┐
+                 │     SpatialOptimizer    │
+                 │  • reorder ops by cost  │
+                 │  • fuse spatial preds   │
+                 │  • select index type    │
+                 └────────────┬────────────┘
+                              │
+                 ┌────────────▼────────────┐
+                 │      Polars executes    │
+                 │  scalar filters first   │
+                 │  then spatial queries   │
+                 └────────────┬────────────┘
+                              │
+                        pl.DataFrame
+```
+
+### Implementation Details
+
+**Optimizer decisions**
+
+- **Predicate Pushdown:** scalar predicates are placed before spatial ones. They cost nothing extra and shrink the row count before any index is touched.
+- **Fusion:** consecutive spatial predicates on large datasets are merged into a single index build and one pass over the data.
+- **Index type:** selected per query based on geometry type, data distribution, and selectivity (see Index Management below).
+- **Spatial Join Order:** for `knn_join` and `within_join`, the optimizer selects which side to index based on relative dataset sizes and query selectivity, minimizing index build cost.
+
+**Index Management**
+
+Indexes are built lazily. Nothing is constructed at load time; stats (extent, point distribution, a 32x32 histogram) are computed eagerly and drive selection at the first query. The selected index is then cached for all subsequent queries.
 
 | Condition | Index |
 |---|---|
 | N < 500 or selectivity > 50% | Brute force |
-| Points + kNN | KD-tree |
-| Points + uniform distribution + range | Uniform grid |
-| Points + clustered distribution + range | KD-tree |
-| Polygons or mixed geometries | R-tree |
+| Point KNN | KD-tree |
+| Point range + uniform distribution | Uniform grid |
+| Point range + clustered distribution | KD-tree |
+| Polygons (any query) | R-tree |
+
+All index types share the same underlying coordinate arrays with no duplication.
+
+**Why Rust**
+
+The hot paths need packed immutable index structures, zero-copy array slices at the Python boundary, and loop-level parallelism. C++ would require a separate FFI layer and loses the native Polars plugin integration that PyO3/Maturin provides for free.
 
 ---
 
