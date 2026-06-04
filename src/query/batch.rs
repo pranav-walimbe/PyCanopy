@@ -23,6 +23,7 @@ pub fn par_knn<I: SpatialIndex + Sync>(index: &I, qxs: &[f64], qys: &[f64], k: u
 
 /// Like par_knn but merges delta candidates into each query result before taking top k.
 /// Used when the Engine has a non-empty delta buffer.
+#[allow(clippy::too_many_arguments)]
 pub fn par_knn_with_delta<I: SpatialIndex + Sync>(
     index: &I,
     qxs: &[f64],
