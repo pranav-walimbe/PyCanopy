@@ -297,6 +297,27 @@ class Engine:
             np.ascontiguousarray(query_ys, dtype=np.float64),
         )
 
+    def append_delta(self, xs, ys) -> None:
+        """Append new points to the delta buffer (point datasets only).
+
+        Args:
+            xs: x coordinates as a float64 array-like.
+            ys: y coordinates as a float64 array-like.
+        """
+        self._core.append_delta(
+            np.ascontiguousarray(xs, dtype=np.float64),
+            np.ascontiguousarray(ys, dtype=np.float64),
+        )
+
+    def flush(self) -> None:
+        """Force the delta buffer to be merged into the main index immediately."""
+        self._core.flush()
+
+    @property
+    def delta_len(self) -> int:
+        """Number of points currently in the delta buffer."""
+        return self._core.delta_len()
+
     @property
     def n(self) -> int:
         """Number of geometries in the dataset."""

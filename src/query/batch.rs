@@ -18,6 +18,43 @@ pub fn par_knn<I: SpatialIndex + Sync>(index: &I, qxs: &[f64], qys: &[f64], k: u
         .collect()
 }
 
+/// Like par_knn but merges delta candidates into each query result before taking top k.
+/// Used when the Engine has a non-empty delta buffer.
+pub fn par_knn_with_delta<I: SpatialIndex + Sync>(
+    index: &I,
+    qxs: &[f64],
+    qys: &[f64],
+    k: usize,
+    xs: &[f64],
+    ys: &[f64],
+    delta_xs: &[f64],
+    delta_ys: &[f64],
+) -> Vec<u64> {
+    let n_main = xs.len();
+    qxs.par_iter()
+        .zip(qys.par_iter())
+        .flat_map_iter(|(&qx, &qy)| {
+            let mut candidates: Vec<(usize, f64)> = index
+                .nearest(qx, qy, k)
+                .into_iter()
+                .map(|i| {
+                    let d = (xs[i] - qx).powi(2) + (ys[i] - qy).powi(2);
+                    (i, d)
+                })
+                .collect();
+            for (di, (&dx, &dy)) in delta_xs.iter().zip(delta_ys.iter()).enumerate() {
+                let d = (dx - qx).powi(2) + (dy - qy).powi(2);
+                candidates.push((n_main + di, d));
+            }
+            candidates.sort_unstable_by(|a, b| {
+                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            candidates.truncate(k);
+            candidates.into_iter().map(|(i, _)| i as u64)
+        })
+        .collect()
+}
+
 /// For each query point, return (query_idx, engine_idx) for every polygon in the
 /// Engine's dataset that contains the point. Used for within joins on polygon datasets.
 ///

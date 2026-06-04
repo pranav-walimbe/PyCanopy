@@ -17,7 +17,7 @@ use index::{
 };
 use planner::{cost::IndexKind, selector::select_index};
 use query::{
-    batch::{par_bbox_filter, par_contains, par_knn},
+    batch::{par_bbox_filter, par_contains, par_knn, par_knn_with_delta},
     nearest::query_nearest,
     range::{query_contains_polygons, query_range_points, query_range_polygons},
     types::Query,
@@ -37,9 +37,13 @@ struct Engine {
     grid: Option<UniformGrid>,
     /// Delta buffer: points appended since last flush (point datasets only).
     /// Queries hit the main index + brute-force scan of delta.
-    /// Flushed when delta exceeds DELTA_FLUSH_FRACTION of the main dataset.
+    /// Flushed when accumulated brute-force scan cost exceeds index rebuild cost,
+    /// or when delta exceeds DELTA_FLUSH_FRACTION of the main dataset (hard cap).
     delta_xs: Vec<f64>,
     delta_ys: Vec<f64>,
+    /// Accumulated brute-force scan cost across all queries that touched the delta.
+    /// Each query increments this by delta_xs.len(). Reset to 0 on flush.
+    delta_query_cost: u64,
 }
 
 const DELTA_FLUSH_FRACTION: f64 = 0.1;
@@ -64,6 +68,7 @@ impl Engine {
         self.ys = new_ys.into();
         self.delta_xs.clear();
         self.delta_ys.clear();
+        self.delta_query_cost = 0;
         self.brute = None;
         self.rtree = None;
         self.kdtree = None;
@@ -86,6 +91,49 @@ impl Engine {
                 }
             })
             .collect()
+    }
+
+    /// Flush if accumulated delta scan cost has exceeded the estimated index rebuild cost.
+    /// Grid: O(N). KD-tree / R-tree: O(N log2 N). BruteForce: never trigger cost flush.
+    fn maybe_flush_on_cost(&mut self, kind: IndexKind) {
+        if self.delta_xs.is_empty() {
+            return;
+        }
+        let n = self.xs.len() as u64;
+        let threshold = match kind {
+            IndexKind::BruteForce => return,
+            IndexKind::Grid => n,
+            IndexKind::KdTree | IndexKind::RTree => {
+                if n <= 1 {
+                    return;
+                }
+                n.saturating_mul((n as f64).log2().ceil() as u64)
+            }
+        };
+        if self.delta_query_cost >= threshold {
+            self.flush_delta();
+        }
+    }
+
+    /// Merge main-index KNN results with delta candidates and return the top k by distance.
+    fn merge_knn_with_delta(&self, main_results: Vec<usize>, x: f64, y: f64, k: usize) -> Vec<usize> {
+        let n_main = self.xs.len();
+        let mut candidates: Vec<(usize, f64)> = main_results
+            .into_iter()
+            .map(|i| {
+                let d = (self.xs[i] - x).powi(2) + (self.ys[i] - y).powi(2);
+                (i, d)
+            })
+            .collect();
+        for (di, (&dx, &dy)) in self.delta_xs.iter().zip(self.delta_ys.iter()).enumerate() {
+            let d = (dx - x).powi(2) + (dy - y).powi(2);
+            candidates.push((n_main + di, d));
+        }
+        candidates.sort_unstable_by(|a, b| {
+            a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        candidates.truncate(k);
+        candidates.into_iter().map(|(i, _)| i).collect()
     }
 
     fn build_index_if_needed(&mut self, kind: IndexKind) {
@@ -149,6 +197,7 @@ impl Engine {
             grid: None,
             delta_xs: Vec::new(),
             delta_ys: Vec::new(),
+            delta_query_cost: 0,
         })
     }
 
@@ -203,6 +252,7 @@ impl Engine {
             grid: None,
             delta_xs: Vec::new(),
             delta_ys: Vec::new(),
+            delta_query_cost: 0,
         })
     }
 
@@ -217,7 +267,7 @@ impl Engine {
             },
         );
         self.build_index_if_needed(kind);
-        let result = match kind {
+        let mut result = match kind {
             IndexKind::BruteForce => {
                 query_nearest(self.brute.as_ref().unwrap(), x, y, k, approximate)
             }
@@ -225,6 +275,11 @@ impl Engine {
             IndexKind::KdTree => query_nearest(self.kdtree.as_ref().unwrap(), x, y, k, approximate),
             IndexKind::Grid => query_nearest(self.grid.as_ref().unwrap(), x, y, k, approximate),
         };
+        if !self.delta_xs.is_empty() {
+            result = self.merge_knn_with_delta(result, x, y, k);
+            self.delta_query_cost += self.delta_xs.len() as u64;
+            self.maybe_flush_on_cost(kind);
+        }
         Ok(result)
     }
 
@@ -237,7 +292,8 @@ impl Engine {
         max_y: f64,
     ) -> PyResult<Vec<usize>> {
         let bbox = Rect::new(coord! { x: min_x, y: min_y }, coord! { x: max_x, y: max_y });
-        if self.stats.kind == GeometryKind::Point {
+        // Skip histogram early-exit when delta is non-empty: delta points are not in the histogram.
+        if self.delta_xs.is_empty() && self.stats.kind == GeometryKind::Point {
             if let Some(hist) = &self.stats.histogram {
                 if !hist.has_any_in_bbox(&bbox) {
                     return Ok(vec![]);
@@ -301,14 +357,19 @@ impl Engine {
                 max_y,
             ),
         };
-        result.extend(self.delta_range(min_x, min_y, max_x, max_y));
+        if !self.delta_xs.is_empty() {
+            result.extend(self.delta_range(min_x, min_y, max_x, max_y));
+            self.delta_query_cost += self.delta_xs.len() as u64;
+            self.maybe_flush_on_cost(kind);
+        }
         Ok(result)
     }
 
     /// Point-in-polygon contains query
     fn contains_query(&mut self, x: f64, y: f64) -> PyResult<Vec<usize>> {
         let point = Point::new(x, y);
-        if self.stats.kind == GeometryKind::Point {
+        // Skip histogram early-exit when delta is non-empty: delta points are not in the histogram.
+        if self.delta_xs.is_empty() && self.stats.kind == GeometryKind::Point {
             if let Some(hist) = &self.stats.histogram {
                 if !hist.has_any_at(x, y) {
                     return Ok(vec![]);
@@ -318,7 +379,7 @@ impl Engine {
         let kind = select_index(&self.stats, &Query::Contains { point });
         self.build_index_if_needed(kind);
 
-        let result = match (kind, self.ring_offsets.as_deref()) {
+        let mut result = match (kind, self.ring_offsets.as_deref()) {
             (IndexKind::BruteForce, Some(off)) => {
                 query_contains_polygons(self.brute.as_ref().unwrap(), &self.xs, &self.ys, off, x, y)
             }
@@ -366,6 +427,13 @@ impl Engine {
                     .range(x - eps, y - eps, x + eps, y + eps)
             }
         };
+        // Delta scan for point datasets only (polygon datasets reject delta appends).
+        if self.ring_offsets.is_none() && !self.delta_xs.is_empty() {
+            let eps = f64::EPSILON * 1000.0;
+            result.extend(self.delta_range(x - eps, y - eps, x + eps, y + eps));
+            self.delta_query_cost += self.delta_xs.len() as u64;
+            self.maybe_flush_on_cost(kind);
+        }
         Ok(result)
     }
 
@@ -448,11 +516,31 @@ impl Engine {
         );
         self.build_index_if_needed(kind);
 
-        let results = match kind {
-            IndexKind::BruteForce => par_knn(self.brute.as_ref().unwrap(), qxs, qys, k),
-            IndexKind::RTree => par_knn(self.rtree.as_ref().unwrap(), qxs, qys, k),
-            IndexKind::KdTree => par_knn(self.kdtree.as_ref().unwrap(), qxs, qys, k),
-            IndexKind::Grid => par_knn(self.grid.as_ref().unwrap(), qxs, qys, k),
+        let results = if self.delta_xs.is_empty() {
+            match kind {
+                IndexKind::BruteForce => par_knn(self.brute.as_ref().unwrap(), qxs, qys, k),
+                IndexKind::RTree => par_knn(self.rtree.as_ref().unwrap(), qxs, qys, k),
+                IndexKind::KdTree => par_knn(self.kdtree.as_ref().unwrap(), qxs, qys, k),
+                IndexKind::Grid => par_knn(self.grid.as_ref().unwrap(), qxs, qys, k),
+            }
+        } else {
+            let out = match kind {
+                IndexKind::BruteForce => par_knn_with_delta(
+                    self.brute.as_ref().unwrap(), qxs, qys, k, &self.xs, &self.ys, &self.delta_xs, &self.delta_ys,
+                ),
+                IndexKind::RTree => par_knn_with_delta(
+                    self.rtree.as_ref().unwrap(), qxs, qys, k, &self.xs, &self.ys, &self.delta_xs, &self.delta_ys,
+                ),
+                IndexKind::KdTree => par_knn_with_delta(
+                    self.kdtree.as_ref().unwrap(), qxs, qys, k, &self.xs, &self.ys, &self.delta_xs, &self.delta_ys,
+                ),
+                IndexKind::Grid => par_knn_with_delta(
+                    self.grid.as_ref().unwrap(), qxs, qys, k, &self.xs, &self.ys, &self.delta_xs, &self.delta_ys,
+                ),
+            };
+            self.delta_query_cost += self.delta_xs.len() as u64 * qxs.len() as u64;
+            self.maybe_flush_on_cost(kind);
+            out
         };
         Ok(PyArray1::from_vec(py, results))
     }
