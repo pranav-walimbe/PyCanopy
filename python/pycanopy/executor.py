@@ -25,8 +25,6 @@ _ROW_IDX = "__orig_row__"
 
 
 def _range_plugin_expr(
-    x_col: str,
-    y_col: str,
     min_x: float,
     min_y: float,
     max_x: float,
@@ -35,105 +33,102 @@ def _range_plugin_expr(
 ) -> pl.Expr:
     """Boolean mask expression for a bounding-box filter via map_batches.
 
-    is_elementwise=False makes Polars treat this as a column-level barrier: any
-    elementwise scalar predicates emitted before it in the LazyFrame chain execute
-    first, so the closure receives only the M already-filtered rows.
-
-    When M == N (no scalar pre-filtering occurred), the pre-built global Engine
-    index is reused directly.  When M < N, a local index is built on the M rows
-    so that the query operates on the reduced set.
+    is_elementwise=False acts as a Polars barrier: scalar predicates upstream
+    execute first, so the closure receives only the M already-filtered rows via
+    their _ROW_IDX values. The pre-built global Engine is queried and the hit
+    bitmap is indexed by the surviving original row positions to produce the mask.
     """
     n_total = engine.n
 
     def _apply(s: pl.Series) -> pl.Series:
-        from pycanopy.engine import Engine
-
-        df = s.struct.unnest()
-        xs = df[x_col].to_numpy()
-        ys = df[y_col].to_numpy()
-        if len(xs) == n_total:
-            hits = engine.range_query(min_x, min_y, max_x, max_y)
-        else:
-            local_eng = Engine.from_coords(xs, ys)
-            hits = local_eng.range_query(min_x, min_y, max_x, max_y)
-        mask = np.zeros(len(xs), dtype=bool)
+        orig_idx = s.to_numpy()
+        if len(orig_idx) == 0:
+            return pl.Series("", [], dtype=pl.Boolean)
+        hits = engine.range_query(min_x, min_y, max_x, max_y)
+        hit_bitmap = np.zeros(n_total, dtype=bool)
         if hits:
-            mask[hits] = True
-        return pl.Series("", mask, dtype=pl.Boolean)
+            hit_bitmap[hits] = True
+        return pl.Series("", hit_bitmap[orig_idx], dtype=pl.Boolean)
 
-    return pl.struct(pl.col(x_col), pl.col(y_col)).map_batches(
-        _apply, return_dtype=pl.Boolean, is_elementwise=False
-    )
+    return pl.col(_ROW_IDX).map_batches(_apply, return_dtype=pl.Boolean, is_elementwise=False)
 
 
-def _contains_plugin_expr(x_col: str, y_col: str, qx: float, qy: float, engine) -> pl.Expr:
+def _contains_plugin_expr(qx: float, qy: float, engine) -> pl.Expr:
     """Boolean mask expression for a point exact-match filter via map_batches.
 
-    Reuses the pre-built global Engine when M == N; builds a local index otherwise.
+    Queries the pre-built global Engine and intersects hits with the surviving
+    _ROW_IDX values from upstream scalar filters via a hit bitmap.
     """
     n_total = engine.n
 
     def _apply(s: pl.Series) -> pl.Series:
-        from pycanopy.engine import Engine
-
-        df = s.struct.unnest()
-        xs = df[x_col].to_numpy()
-        ys = df[y_col].to_numpy()
-        if len(xs) == n_total:
-            hits = engine.contains(qx, qy)
-        else:
-            local_eng = Engine.from_coords(xs, ys)
-            hits = local_eng.contains(qx, qy)
-        mask = np.zeros(len(xs), dtype=bool)
+        orig_idx = s.to_numpy()
+        if len(orig_idx) == 0:
+            return pl.Series("", [], dtype=pl.Boolean)
+        hits = engine.contains(qx, qy)
+        hit_bitmap = np.zeros(n_total, dtype=bool)
         if hits:
-            mask[hits] = True
-        return pl.Series("", mask, dtype=pl.Boolean)
+            hit_bitmap[hits] = True
+        return pl.Series("", hit_bitmap[orig_idx], dtype=pl.Boolean)
 
-    return pl.struct(pl.col(x_col), pl.col(y_col)).map_batches(
-        _apply, return_dtype=pl.Boolean, is_elementwise=False
-    )
+    return pl.col(_ROW_IDX).map_batches(_apply, return_dtype=pl.Boolean, is_elementwise=False)
 
 
-def _fused_plugin_expr(
-    x_col: str, y_col: str, predicates: list[RangeNode | ContainsNode], engine
-) -> pl.Expr:
-    """Boolean mask expression that applies all fused predicates with one index build.
+def _fused_plugin_expr(predicates: list[RangeNode | ContainsNode], engine) -> pl.Expr:
+    """Boolean mask expression applying all fused predicates via sorted merge in Rust.
 
-    Reuses the pre-built global Engine when M == N; builds a local index otherwise.
-    Building the index once for all predicates is the core benefit of fusion: each
-    additional predicate costs only a query, not a rebuild.
+    Range predicates are intersected via engine.intersect_ranges — a Rust sorted merge
+    on hit arrays, O(K * |H|) rather than O(K * N) bitmap AND passes. Contains predicates
+    are intersected separately on the Python side (each returns at most a handful of hits).
+    """
+    n_total = engine.n
+    range_queries = [
+        (pred.min_x, pred.min_y, pred.max_x, pred.max_y)
+        for pred in predicates
+        if isinstance(pred, RangeNode)
+    ]
+    contains_preds = [pred for pred in predicates if isinstance(pred, ContainsNode)]
+
+    def _apply(s: pl.Series) -> pl.Series:
+        orig_idx = s.to_numpy()
+        if len(orig_idx) == 0:
+            return pl.Series("", [], dtype=pl.Boolean)
+        hits: list[int] | None = engine.intersect_ranges(range_queries) if range_queries else None
+        for pred in contains_preds:
+            c_hits = set(engine.contains(pred.qx, pred.qy))
+            hits = sorted(c_hits) if hits is None else sorted(set(hits) & c_hits)
+            if not hits:
+                return pl.Series("", np.zeros(len(orig_idx), dtype=bool), dtype=pl.Boolean)
+        hit_bitmap = np.zeros(n_total, dtype=bool)
+        if hits:
+            hit_bitmap[hits] = True
+        return pl.Series("", hit_bitmap[orig_idx], dtype=pl.Boolean)
+
+    return pl.col(_ROW_IDX).map_batches(_apply, return_dtype=pl.Boolean, is_elementwise=False)
+
+
+def _knn_plugin_expr(qx: float, qy: float, k: int, engine) -> pl.Expr:
+    """Boolean mask for kNN restricted to M survivors from upstream scalar filters.
+
+    is_elementwise=False acts as a Polars barrier — scalar predicates upstream
+    execute first. The closure receives M _ROW_IDX values and delegates to
+    knn_from_candidates: a linear scan over the M survivors that computes squared
+    distances directly from the coordinate arrays and partial-sorts to find the k
+    nearest. O(M + k log k), exact, no global index query.
     """
     n_total = engine.n
 
     def _apply(s: pl.Series) -> pl.Series:
-        from pycanopy.engine import Engine
+        orig_idx = s.to_numpy()  # uint32 — _ROW_IDX is always UInt32 from with_row_index
+        if len(orig_idx) == 0:
+            return pl.Series("", [], dtype=pl.Boolean)
+        hits = engine.knn_from_candidates(qx, qy, k, orig_idx)
+        hit_bitmap = np.zeros(n_total, dtype=bool)
+        if hits:
+            hit_bitmap[hits] = True
+        return pl.Series("", hit_bitmap[orig_idx], dtype=pl.Boolean)
 
-        df = s.struct.unnest()
-        xs = df[x_col].to_numpy()
-        ys = df[y_col].to_numpy()
-        if len(xs) == n_total:
-            eng = engine
-        else:
-            eng = Engine.from_coords(xs, ys)
-
-        mask = np.ones(len(xs), dtype=bool)
-        for pred in predicates:
-            if isinstance(pred, RangeNode):
-                hits = eng.range_query(pred.min_x, pred.min_y, pred.max_x, pred.max_y)
-            elif isinstance(pred, ContainsNode):
-                hits = eng.contains(pred.qx, pred.qy)
-            else:
-                continue
-            pred_mask = np.zeros(len(xs), dtype=bool)
-            if hits:
-                pred_mask[hits] = True
-            mask &= pred_mask
-
-        return pl.Series("", mask, dtype=pl.Boolean)
-
-    return pl.struct(pl.col(x_col), pl.col(y_col)).map_batches(
-        _apply, return_dtype=pl.Boolean, is_elementwise=False
-    )
+    return pl.col(_ROW_IDX).map_batches(_apply, return_dtype=pl.Boolean, is_elementwise=False)
 
 
 class SpatialExecutor:
@@ -143,9 +138,10 @@ class SpatialExecutor:
 
     EXPR path (default): spatial nodes emit map_batches(is_elementwise=False)
         expressions. Polars runs scalar filters first (barrier semantics), then the
-        spatial closure builds a fresh local index on the M remaining rows. A
-        persistent _ROW_IDX column is added for KNN nodes that still need global-index
-        correlation after any scalar pre-filtering.
+        spatial closure receives the M surviving _ROW_IDX values, queries the global
+        Engine, and intersects hits with a boolean bitmap indexed by original row
+        position. No local index is built regardless of how many rows scalar filters
+        retain. A persistent _ROW_IDX column tracks original positions throughout.
 
     IO path: the pre-built Engine (on N rows) is queried directly to get K candidate
         indices. sf.df is sliced to those K rows. Scalar filters run on the K-row
@@ -169,6 +165,15 @@ class SpatialExecutor:
         # exist in df; degrade gracefully to the IO path in that case.
         # Exception: join nodes are handled directly by the executor and do not
         # use the plugin expression machinery, so they stay on EXPR path.
+        # Scalar-only fast path: no spatial ops means no index machinery needed.
+        # Feed filters directly to Polars as a zero-copy lazy chain — no _ROW_IDX
+        # column, no executor dispatch overhead, no bitmap allocation.
+        if all(isinstance(n, ScalarNode) for n in plan):
+            lf = sf.df.lazy()
+            for node in plan:
+                lf = lf.filter(node.expr)
+            return lf.collect()
+
         has_joins = any(
             isinstance(n, (KnnJoinNode, WithinJoinNode, WithinDistanceJoinNode)) for n in plan
         )
@@ -214,6 +219,8 @@ class SpatialExecutor:
                     candidate_indices = (
                         pred_set if candidate_indices is None else candidate_indices & pred_set
                     )
+                    if not candidate_indices:
+                        return sf.df.clear()
                 continue
             elif isinstance(node, ScalarNode):
                 scalar_nodes.append(node)
@@ -224,6 +231,8 @@ class SpatialExecutor:
                 candidate_indices = (
                     hits_set if candidate_indices is None else candidate_indices & hits_set
                 )
+                if not candidate_indices:
+                    return sf.df.clear()
 
         if candidate_indices is None:
             lf = sf.df.lazy()
@@ -238,8 +247,14 @@ class SpatialExecutor:
     def _emit_chain(
         self, plan: Plan, sf, lf: pl.LazyFrame, plugin_path: PluginPath
     ) -> pl.LazyFrame:
+        has_seen_scalar = False
         for node in plan:
-            lf = self._emit_node(node, sf, lf, plugin_path)
+            if isinstance(node, KnnNode):
+                lf = self._emit_knn(node, sf, lf, has_seen_scalar)
+            else:
+                lf = self._emit_node(node, sf, lf, plugin_path)
+            if isinstance(node, ScalarNode):
+                has_seen_scalar = True
         return lf
 
     def _emit_node(self, node, sf, lf: pl.LazyFrame, plugin_path: PluginPath) -> pl.LazyFrame:
@@ -268,15 +283,7 @@ class SpatialExecutor:
     ) -> pl.LazyFrame:
         if plugin_path == PluginPath.EXPR:
             return lf.filter(
-                _range_plugin_expr(
-                    sf.x_col,
-                    sf.y_col,
-                    node.min_x,
-                    node.min_y,
-                    node.max_x,
-                    node.max_y,
-                    sf.engine,
-                )
+                _range_plugin_expr(node.min_x, node.min_y, node.max_x, node.max_y, sf.engine)
             )
         indices = sf.engine.range_query(node.min_x, node.min_y, node.max_x, node.max_y)
         return self._filter_by_indices(lf, indices)
@@ -285,11 +292,17 @@ class SpatialExecutor:
         self, node: ContainsNode, sf, lf: pl.LazyFrame, plugin_path: PluginPath
     ) -> pl.LazyFrame:
         if plugin_path == PluginPath.EXPR:
-            return lf.filter(_contains_plugin_expr(sf.x_col, sf.y_col, node.qx, node.qy, sf.engine))
+            return lf.filter(_contains_plugin_expr(node.qx, node.qy, sf.engine))
         indices = sf.engine.contains(node.qx, node.qy)
         return self._filter_by_indices(lf, indices)
 
-    def _emit_knn(self, node: KnnNode, sf, lf: pl.LazyFrame) -> pl.LazyFrame:
+    def _emit_knn(
+        self, node: KnnNode, sf, lf: pl.LazyFrame, has_prior_scalar: bool = False
+    ) -> pl.LazyFrame:
+        if has_prior_scalar:
+            # Scalars ran first — M survivors arrive via _ROW_IDX. Linear scan over
+            # those M rows to find k nearest; no global index query needed.
+            return lf.filter(_knn_plugin_expr(node.qx, node.qy, node.k, sf.engine))
         indices = sf.engine.knn(node.qx, node.qy, node.k, node.approximate)
         return self._filter_by_indices(lf, indices)
 
@@ -297,7 +310,7 @@ class SpatialExecutor:
         self, node: FusedSpatialNode, sf, lf: pl.LazyFrame, plugin_path: PluginPath
     ) -> pl.LazyFrame:
         if plugin_path == PluginPath.EXPR:
-            return lf.filter(_fused_plugin_expr(sf.x_col, sf.y_col, node.predicates, sf.engine))
+            return lf.filter(_fused_plugin_expr(node.predicates, sf.engine))
         for pred in node.predicates:
             lf = self._emit_node(pred, sf, lf, plugin_path)
         return lf

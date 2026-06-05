@@ -194,6 +194,14 @@ class Engine:
         )
         return eng
 
+    def build_index(self) -> None:
+        """Build the spatial index without issuing any query.
+
+        Forces index construction so the first query pays no build cost. Safe to
+        call multiple times — no-op if the index is already built.
+        """
+        self._core.build_index()
+
     def knn(self, x: float, y: float, k: int, approximate: bool = False) -> list[int]:
         """Return indices of the k nearest points to (x, y).
 
@@ -207,6 +215,36 @@ class Engine:
             Indices into the original dataset, sorted nearest-first.
         """
         return self._core.knn(x, y, k, approximate)
+
+    def knn_from_candidates(
+        self,
+        x: float,
+        y: float,
+        k: int,
+        survivor_indices: np.ndarray,
+    ) -> list[int]:
+        """Return the k nearest indices from a candidate subset of the dataset.
+
+        Computes squared distances from (x, y) to each survivor directly from the
+        coordinate arrays and partial-sorts to find the k nearest. Exact, O(M + k log k).
+        Use when M survivors are already known (e.g. after scalar pre-filtering).
+
+        Args:
+            x: X coordinate of the query point.
+            y: Y coordinate of the query point.
+            k: Number of neighbours to return.
+            survivor_indices: Contiguous uint32 array of M row positions in the
+                full dataset.
+
+        Returns:
+            Up to k indices into the original dataset, sorted nearest-first.
+        """
+        return self._core.knn_from_candidates(
+            x,
+            y,
+            k,
+            np.ascontiguousarray(survivor_indices, dtype=np.uint32),
+        )
 
     def range_query(self, min_x: float, min_y: float, max_x: float, max_y: float) -> list[int]:
         """Return indices of all points inside the bounding box.
@@ -233,6 +271,21 @@ class Engine:
             Indices of matching polygons in no guaranteed order.
         """
         return self._core.contains_query(x, y)
+
+    def intersect_ranges(self, queries: list[tuple[float, float, float, float]]) -> list[int]:
+        """Return the sorted intersection of multiple bounding-box queries.
+
+        More efficient than calling range_query per predicate and intersecting in
+        Python: performs sorted merge in Rust, operating on O(K * |H|) elements
+        rather than O(K * N) bitmap AND passes.
+
+        Args:
+            queries: List of (min_x, min_y, max_x, max_y) bounding-box tuples.
+
+        Returns:
+            Sorted list of indices present in all query results.
+        """
+        return self._core.intersect_ranges(queries)
 
     def batch_knn_join(
         self,

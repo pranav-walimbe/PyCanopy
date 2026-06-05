@@ -149,6 +149,25 @@ impl Engine {
         candidates.into_iter().map(|(i, _)| i).collect()
     }
 
+    /// Two-pointer sorted-merge intersection of two sorted index slices.
+    /// Both inputs must be sorted ascending. Returns indices present in both.
+    fn sorted_intersect(a: Vec<usize>, b: Vec<usize>) -> Vec<usize> {
+        let mut result = Vec::with_capacity(a.len().min(b.len()));
+        let (mut i, mut j) = (0, 0);
+        while i < a.len() && j < b.len() {
+            match a[i].cmp(&b[j]) {
+                std::cmp::Ordering::Equal => {
+                    result.push(a[i]);
+                    i += 1;
+                    j += 1;
+                }
+                std::cmp::Ordering::Less => i += 1,
+                std::cmp::Ordering::Greater => j += 1,
+            }
+        }
+        result
+    }
+
     fn build_index_if_needed(&mut self, kind: IndexKind) {
         match kind {
             IndexKind::BruteForce if self.brute.is_none() => {
@@ -295,6 +314,21 @@ impl Engine {
         })
     }
 
+    /// Build the optimal index for this dataset without issuing any query.
+    ///
+    /// Uses a representative range query to select and construct the index. Safe
+    /// to call multiple times; no-op if the index is already built.
+    fn build_index(&mut self) -> PyResult<()> {
+        let kind = select_index(
+            &self.stats,
+            &Query::Range {
+                bbox: Rect::new(coord! { x: 0.0, y: 0.0 }, coord! { x: 1.0, y: 1.0 }),
+            },
+        );
+        self.build_index_if_needed(kind);
+        Ok(())
+    }
+
     /// k-nearest-neighbour query
     fn knn(&mut self, x: f64, y: f64, k: usize, approximate: bool) -> PyResult<Vec<usize>> {
         let kind = select_index(
@@ -406,6 +440,70 @@ impl Engine {
             self.maybe_flush_on_cost(kind);
         }
         Ok(result)
+    }
+
+    /// Intersect multiple bounding-box queries using sorted merge on hit arrays.
+    ///
+    /// Runs each range query independently then intersects results via a two-pointer
+    /// sorted merge. Operates in O(K * |H|) rather than O(K * N) bitmap AND passes,
+    /// where |H| is the per-predicate hit count and K is the predicate count.
+    /// Short-circuits when the running intersection becomes empty.
+    fn intersect_ranges(&mut self, queries: Vec<(f64, f64, f64, f64)>) -> PyResult<Vec<usize>> {
+        if queries.is_empty() {
+            return Ok(vec![]);
+        }
+        let (min_x, min_y, max_x, max_y) = queries[0];
+        let mut acc = self.range_query(min_x, min_y, max_x, max_y)?;
+        acc.sort_unstable();
+        for &(min_x, min_y, max_x, max_y) in &queries[1..] {
+            if acc.is_empty() {
+                return Ok(vec![]);
+            }
+            let mut hits = self.range_query(min_x, min_y, max_x, max_y)?;
+            hits.sort_unstable();
+            acc = Self::sorted_intersect(acc, hits);
+        }
+        Ok(acc)
+    }
+
+    /// k-nearest-neighbour query restricted to a candidate subset of the dataset.
+    ///
+    /// survivor_indices is a contiguous uint32 array of M row positions in the full
+    /// dataset. Computes squared distances from (x, y) to each survivor directly
+    /// from the coordinate arrays, then partial-sorts to find the k nearest.
+    /// O(M + k log k) — exact, no index traversal, no oversampling.
+    fn knn_from_candidates(
+        &self,
+        x: f64,
+        y: f64,
+        k: usize,
+        survivor_indices: PyReadonlyArray1<u32>,
+    ) -> PyResult<Vec<usize>> {
+        let indices = survivor_indices.as_slice().map_err(|_| {
+            PyValueError::new_err("survivor_indices must be a contiguous uint32 array")
+        })?;
+        if indices.is_empty() || k == 0 {
+            return Ok(vec![]);
+        }
+        let k_actual = k.min(indices.len());
+
+        let mut dist_idx: Vec<(f64, usize)> = indices
+            .iter()
+            .map(|&i| {
+                let i = i as usize;
+                let d = (self.xs[i] - x).powi(2) + (self.ys[i] - y).powi(2);
+                (d, i)
+            })
+            .collect();
+
+        // Partial sort: O(M) to place the k_actual-th element, O(k log k) to sort the top slice.
+        dist_idx.select_nth_unstable_by(k_actual - 1, |a, b| {
+            a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        dist_idx[..k_actual]
+            .sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        Ok(dist_idx[..k_actual].iter().map(|&(_, i)| i).collect())
     }
 
     /// Point-in-polygon contains query
