@@ -755,7 +755,7 @@ impl Engine {
     /// where M is the total number of (query, polygon) matches: pairs are interleaved
     /// [q0, e0, q1, e1, ...] for easy reshaping to (-1, 2) in Python.
     fn batch_contains<'py>(
-        &self,
+        &mut self,
         py: Python<'py>,
         query_xs: PyReadonlyArray1<f64>,
         query_ys: PyReadonlyArray1<f64>,
@@ -771,12 +771,23 @@ impl Engine {
                 "query_xs and query_ys must have the same length",
             ));
         }
-        let ring_off = self
-            .ring_offsets
-            .as_deref()
-            .ok_or_else(|| PyValueError::new_err("batch_contains requires a polygon dataset"))?;
+        if self.ring_offsets.is_none() {
+            return Err(PyValueError::new_err(
+                "batch_contains requires a polygon dataset",
+            ));
+        }
+        self.build_index_if_needed(IndexKind::RTree);
+        let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
-        let pairs = par_contains(qxs, qys, &self.xs, &self.ys, ring_off, poly_off);
+        let pairs = par_contains(
+            self.rtree.as_ref().unwrap(),
+            qxs,
+            qys,
+            &self.xs,
+            &self.ys,
+            ring_off,
+            poly_off,
+        );
         let flat: Vec<u64> = pairs.into_iter().flat_map(|(q, e)| [q, e]).collect();
         Ok(PyArray1::from_vec(py, flat))
     }

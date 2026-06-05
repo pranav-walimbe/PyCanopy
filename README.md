@@ -179,6 +179,41 @@ sf.engine.flush()
 
 ---
 
+## Benchmarks
+
+All measurements on Apple M-series, uniform random data. **Warm** = second call with cached index. **Index build** = cold minus warm (one-time cost amortised across queries). Naive baseline is GeoPandas for single-query ops and Python for-loops (O(N·Q)) for batch joins.
+
+### Single-query ops (N=100,000)
+
+| Operation | Index build | Warm | GeoPandas | Speedup |
+|---|---|---|---|---|
+| Range query | 9 ms | 177 µs | 5.68 ms | **32×** |
+| kNN k=10 | 73 ms | 22 µs | 6.35 ms | **289×** |
+| Polygon contains | 127 ms | 20 µs | 6.54 ms | **326×** |
+| Polygon range | 129 ms | 333 µs | 4.31 ms | **13×** |
+
+### Batch joins (N=Q=10,000)
+
+| Operation | Index build | Warm | Naive loop | Speedup |
+|---|---|---|---|---|
+| kNN join k=5 | 17 ms | 16.7 ms | 6.11 s | **366×** |
+| Within-distance join | 2 ms | 67.8 ms | 1.60 s | **24×** |
+| Within join (polygon) | 19 ms | 10.1 ms | 4.68 s | **463×** |
+
+### Sample Chained lazy queries (N=100,000)
+
+Each row is a multi-predicate chain run through the optimizer. GeoPandas applies all predicates manually with no lazy planning.
+
+| Chain | Index build | Warm | GeoPandas | Speedup |
+|---|---|---|---|---|
+| `circ_scalar → range³` | 19 ms | 1.03 ms | 9.31 ms | **9×** |
+| `3× scalar → range² → scalar` | 8 ms | 0.70 ms | 5.74 ms | **8×** |
+| `range² → 3× scalar` (reordered) | 7 ms | 0.56 ms | 5.71 ms | **10×** |
+| `circ_scalar + diag → kNN k=50` | 85 ms | 2.09 ms | 5.14 ms | **2×** |
+| `circ_scalar → range → scalar → range²` | 7 ms | 0.78 ms | 8.20 ms | **11×** |
+
+---
+
 ## How It Works
 
 ### Query Flow
@@ -219,11 +254,11 @@ Indexes are built lazily. Nothing is constructed at load time; stats (extent, po
 
 | Condition | Index |
 |---|---|
-| N < 500 or selectivity > 50% | Brute force |
-| Point KNN | KD-tree |
-| Point range + uniform distribution | Uniform grid |
-| Point range + clustered distribution | KD-tree |
-| Polygons (any query) | R-tree |
+| N < 500, selectivity > 50%, or k/N > 10% | Brute force |
+| Point range, uniform distribution | Uniform grid |
+| Point range, clustered distribution | KD-tree |
+| Point KNN or contains | KD-tree |
+| Polygons, any query | R-tree |
 
 All index types share the same underlying coordinate arrays with no duplication.
 

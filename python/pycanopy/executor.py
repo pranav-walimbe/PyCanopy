@@ -323,11 +323,11 @@ class SpatialExecutor:
         match_indices = sf.engine.batch_knn_join(query_xs, query_ys, node.k, node.approximate)
 
         # Expand query rows: each query row repeats k times
-        query_row_indices = np.repeat(np.arange(n_queries), node.k).tolist()
-        target_row_indices = match_indices.tolist()
+        q_idx = pl.Series("", np.repeat(np.arange(n_queries, dtype=np.uint32), node.k))
+        t_idx = pl.Series("", match_indices.astype(np.uint32))
 
-        query_part = node.query_df[query_row_indices]
-        target_part = sf.df[target_row_indices]
+        query_part = node.query_df.gather(q_idx)
+        target_part = sf.df.gather(t_idx)
 
         target_part = _resolve_column_conflicts(query_part, target_part)
         return pl.concat([query_part, target_part], how="horizontal").lazy()
@@ -351,11 +351,11 @@ class SpatialExecutor:
             return pl.concat([empty_q, empty_t], how="horizontal").lazy()
 
         pairs = pairs_flat.reshape(-1, 2)
-        query_row_indices = pairs[:, 0].tolist()
-        target_row_indices = pairs[:, 1].tolist()
+        q_idx = pl.Series("", pairs[:, 0].astype(np.uint32))
+        t_idx = pl.Series("", pairs[:, 1].astype(np.uint32))
 
-        query_part = node.query_df[query_row_indices]
-        target_part = sf.df[target_row_indices]
+        query_part = node.query_df.gather(q_idx)
+        target_part = sf.df.gather(t_idx)
 
         target_part = _resolve_column_conflicts(query_part, target_part)
         return pl.concat([query_part, target_part], how="horizontal").lazy()
@@ -379,11 +379,11 @@ class SpatialExecutor:
             return pl.concat([empty_q, empty_t], how="horizontal").lazy()
 
         pairs = pairs_flat.reshape(-1, 2)
-        query_row_indices = pairs[:, 0].tolist()
-        target_row_indices = pairs[:, 1].tolist()
+        q_idx = pl.Series("", pairs[:, 0].astype(np.uint32))
+        t_idx = pl.Series("", pairs[:, 1].astype(np.uint32))
 
-        query_part = node.query_df[query_row_indices]
-        target_part = sf.df[target_row_indices]
+        query_part = node.query_df.gather(q_idx)
+        target_part = sf.df.gather(t_idx)
 
         target_part = _resolve_column_conflicts(query_part, target_part)
         return pl.concat([query_part, target_part], how="horizontal").lazy()

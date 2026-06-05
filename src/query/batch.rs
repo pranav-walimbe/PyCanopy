@@ -7,7 +7,6 @@ use std::sync::Arc;
 use geo::Contains;
 use rayon::prelude::*;
 
-use crate::index::brute::BruteForce;
 use crate::index::kdtree::PackedKdTree;
 use crate::index::SpatialIndex;
 use crate::query::range::make_polygon;
@@ -63,7 +62,8 @@ pub fn par_knn_with_delta<I: SpatialIndex + Sync>(
 /// Engine's dataset that contains the point. Used for within joins on polygon datasets.
 ///
 /// Results are in ascending query_idx order; pairs for the same query point are adjacent.
-pub fn par_contains(
+pub fn par_contains<I: SpatialIndex + Sync>(
+    index: &I,
     qxs: &[f64],
     qys: &[f64],
     xs: &[f64],
@@ -71,15 +71,13 @@ pub fn par_contains(
     ring_offsets: &[i64],
     poly_offsets: &[i64],
 ) -> Vec<(u64, u64)> {
-    let brute = BruteForce::build_polygons(xs, ys, ring_offsets, poly_offsets);
-
     qxs.par_iter()
         .zip(qys.par_iter())
         .enumerate()
         .flat_map_iter(|(qi, (&qx, &qy))| {
             let qpt = geo::Point::new(qx, qy);
-            // MBR pre-filter via BruteForce, then exact PIP
-            brute
+            // MBR pre-filter via index, then exact PIP
+            index
                 .range(qx, qy, qx, qy)
                 .into_iter()
                 .filter(move |&ei| {
