@@ -118,18 +118,19 @@ def test_within_distance_join_flip_matches_standard(sf):
 # join-side selection
 
 
-def test_optimizer_sets_flip_when_query_much_smaller(sf):
+def test_optimizer_does_not_flip_when_query_much_smaller(sf):
+    # Q=1 << N=1000: use existing engine index, iterate Q queries. No flip.
     query_df = pl.DataFrame({"qx": [0.0], "qy": [0.0]})
     plan = sf.lazy().within_distance_join(query_df, "qx", "qy", distance=1.0)._plan
     optimized = SpatialOptimizer().optimize(plan, sf.engine)
     node = next(n for n in optimized if isinstance(n, WithinDistanceJoinNode))
-    assert node.flip is True
+    assert node.flip is False
 
 
-def test_optimizer_does_not_flip_when_query_not_much_smaller(sf):
-    # 600 query points is not < 1000 // 2 = 500, so no flip.
+def test_optimizer_sets_flip_when_query_larger_than_half_engine(sf):
+    # Q=600 > N//2=500: index query side, iterate N engine points. Flip.
     query_df = pl.DataFrame({"qx": [float(i) for i in range(600)], "qy": [0.0] * 600})
     plan = sf.lazy().within_distance_join(query_df, "qx", "qy", distance=1.0)._plan
     optimized = SpatialOptimizer().optimize(plan, sf.engine)
     node = next(n for n in optimized if isinstance(n, WithinDistanceJoinNode))
-    assert node.flip is False
+    assert node.flip is True
