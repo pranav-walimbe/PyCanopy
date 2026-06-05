@@ -31,13 +31,19 @@ def _range_plugin_expr(
     min_y: float,
     max_x: float,
     max_y: float,
+    engine,
 ) -> pl.Expr:
     """Boolean mask expression for a bounding-box filter via map_batches.
 
     is_elementwise=False makes Polars treat this as a column-level barrier: any
     elementwise scalar predicates emitted before it in the LazyFrame chain execute
-    first, so the local index is built on the M already-filtered rows rather than N.
+    first, so the closure receives only the M already-filtered rows.
+
+    When M == N (no scalar pre-filtering occurred), the pre-built global Engine
+    index is reused directly.  When M < N, a local index is built on the M rows
+    so that the query operates on the reduced set.
     """
+    n_total = engine.n
 
     def _apply(s: pl.Series) -> pl.Series:
         from pycanopy.engine import Engine
@@ -45,8 +51,11 @@ def _range_plugin_expr(
         df = s.struct.unnest()
         xs = df[x_col].to_numpy()
         ys = df[y_col].to_numpy()
-        local_eng = Engine.from_coords(xs, ys)
-        hits = local_eng.range_query(min_x, min_y, max_x, max_y)
+        if len(xs) == n_total:
+            hits = engine.range_query(min_x, min_y, max_x, max_y)
+        else:
+            local_eng = Engine.from_coords(xs, ys)
+            hits = local_eng.range_query(min_x, min_y, max_x, max_y)
         mask = np.zeros(len(xs), dtype=bool)
         if hits:
             mask[hits] = True
@@ -57,8 +66,12 @@ def _range_plugin_expr(
     )
 
 
-def _contains_plugin_expr(x_col: str, y_col: str, qx: float, qy: float) -> pl.Expr:
-    """Boolean mask expression for a point exact-match filter via map_batches."""
+def _contains_plugin_expr(x_col: str, y_col: str, qx: float, qy: float, engine) -> pl.Expr:
+    """Boolean mask expression for a point exact-match filter via map_batches.
+
+    Reuses the pre-built global Engine when M == N; builds a local index otherwise.
+    """
+    n_total = engine.n
 
     def _apply(s: pl.Series) -> pl.Series:
         from pycanopy.engine import Engine
@@ -66,8 +79,11 @@ def _contains_plugin_expr(x_col: str, y_col: str, qx: float, qy: float) -> pl.Ex
         df = s.struct.unnest()
         xs = df[x_col].to_numpy()
         ys = df[y_col].to_numpy()
-        local_eng = Engine.from_coords(xs, ys)
-        hits = local_eng.contains(qx, qy)
+        if len(xs) == n_total:
+            hits = engine.contains(qx, qy)
+        else:
+            local_eng = Engine.from_coords(xs, ys)
+            hits = local_eng.contains(qx, qy)
         mask = np.zeros(len(xs), dtype=bool)
         if hits:
             mask[hits] = True
@@ -79,13 +95,15 @@ def _contains_plugin_expr(x_col: str, y_col: str, qx: float, qy: float) -> pl.Ex
 
 
 def _fused_plugin_expr(
-    x_col: str, y_col: str, predicates: list[RangeNode | ContainsNode]
+    x_col: str, y_col: str, predicates: list[RangeNode | ContainsNode], engine
 ) -> pl.Expr:
     """Boolean mask expression that applies all fused predicates with one index build.
 
-    Building the local index once for all predicates is the core benefit of fusion:
-    each additional predicate costs only a query, not an index rebuild.
+    Reuses the pre-built global Engine when M == N; builds a local index otherwise.
+    Building the index once for all predicates is the core benefit of fusion: each
+    additional predicate costs only a query, not a rebuild.
     """
+    n_total = engine.n
 
     def _apply(s: pl.Series) -> pl.Series:
         from pycanopy.engine import Engine
@@ -93,14 +111,17 @@ def _fused_plugin_expr(
         df = s.struct.unnest()
         xs = df[x_col].to_numpy()
         ys = df[y_col].to_numpy()
-        local_eng = Engine.from_coords(xs, ys)
+        if len(xs) == n_total:
+            eng = engine
+        else:
+            eng = Engine.from_coords(xs, ys)
 
         mask = np.ones(len(xs), dtype=bool)
         for pred in predicates:
             if isinstance(pred, RangeNode):
-                hits = local_eng.range_query(pred.min_x, pred.min_y, pred.max_x, pred.max_y)
+                hits = eng.range_query(pred.min_x, pred.min_y, pred.max_x, pred.max_y)
             elif isinstance(pred, ContainsNode):
-                hits = local_eng.contains(pred.qx, pred.qy)
+                hits = eng.contains(pred.qx, pred.qy)
             else:
                 continue
             pred_mask = np.zeros(len(xs), dtype=bool)
@@ -248,7 +269,13 @@ class SpatialExecutor:
         if plugin_path == PluginPath.EXPR:
             return lf.filter(
                 _range_plugin_expr(
-                    sf.x_col, sf.y_col, node.min_x, node.min_y, node.max_x, node.max_y
+                    sf.x_col,
+                    sf.y_col,
+                    node.min_x,
+                    node.min_y,
+                    node.max_x,
+                    node.max_y,
+                    sf.engine,
                 )
             )
         indices = sf.engine.range_query(node.min_x, node.min_y, node.max_x, node.max_y)
@@ -258,7 +285,7 @@ class SpatialExecutor:
         self, node: ContainsNode, sf, lf: pl.LazyFrame, plugin_path: PluginPath
     ) -> pl.LazyFrame:
         if plugin_path == PluginPath.EXPR:
-            return lf.filter(_contains_plugin_expr(sf.x_col, sf.y_col, node.qx, node.qy))
+            return lf.filter(_contains_plugin_expr(sf.x_col, sf.y_col, node.qx, node.qy, sf.engine))
         indices = sf.engine.contains(node.qx, node.qy)
         return self._filter_by_indices(lf, indices)
 
@@ -270,7 +297,7 @@ class SpatialExecutor:
         self, node: FusedSpatialNode, sf, lf: pl.LazyFrame, plugin_path: PluginPath
     ) -> pl.LazyFrame:
         if plugin_path == PluginPath.EXPR:
-            return lf.filter(_fused_plugin_expr(sf.x_col, sf.y_col, node.predicates))
+            return lf.filter(_fused_plugin_expr(sf.x_col, sf.y_col, node.predicates, sf.engine))
         for pred in node.predicates:
             lf = self._emit_node(pred, sf, lf, plugin_path)
         return lf
