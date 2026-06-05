@@ -181,7 +181,7 @@ sf.engine.flush()
 
 ## Benchmarks
 
-All measurements on Apple M-series, uniform random data. **Warm** = second call with cached index. **Index build** = cold minus warm (one-time cost amortised across queries). Naive baseline is GeoPandas for single-query ops and Python for-loops (O(N·Q)) for batch joins.
+All measurements on Apple M-series, uniform random data. **Warm** = second call with cached index. **Index build** = cold minus warm (one-time cost amortised across queries). Naive baseline is GeoPandas.
 
 ### Single-query ops (N=100,000)
 
@@ -209,7 +209,6 @@ Each row is a multi-predicate chain run through the optimizer. GeoPandas applies
 | `circ_scalar → range³` | 19 ms | 1.03 ms | 9.31 ms | **9×** |
 | `3× scalar → range² → scalar` | 8 ms | 0.70 ms | 5.74 ms | **8×** |
 | `range² → 3× scalar` (reordered) | 7 ms | 0.56 ms | 5.71 ms | **10×** |
-| `circ_scalar + diag → kNN k=50` | 85 ms | 2.09 ms | 5.14 ms | **2×** |
 | `circ_scalar → range → scalar → range²` | 7 ms | 0.78 ms | 8.20 ms | **11×** |
 
 ---
@@ -246,7 +245,6 @@ Each row is a multi-predicate chain run through the optimizer. GeoPandas applies
 - **Fusion:** consecutive spatial predicates on large datasets are merged into a single index build and one pass over the data.
 - **Index type:** selected per query based on geometry type, data distribution, and selectivity (see Index Management below).
 - **Spatial Join Order:** for symmetric joins (`within_join`, `within_distance_join`), the optimizer indexes the smaller side when it is less than half the size of the other, minimizing index build cost. `knn_join` is asymmetric and always indexes the engine side.
-- **Fan-out caching:** `collect_all` detects when multiple `SpatialLazyFrame` instances were branched from the same base by comparing plan node identity. The shared prefix is emitted once with a Polars `.cache()` barrier, and all branch suffixes execute in a single `pl.collect_all()` call.
 
 **Index Management**
 
