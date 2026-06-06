@@ -12,6 +12,7 @@ Passes (in order):
 from __future__ import annotations
 
 import dataclasses
+import json
 
 from pycanopy.nodes import (
     ContainsNode,
@@ -39,6 +40,80 @@ _FUSION_MIN_N = 500
 # that slicing sf.df directly (IO path) is cheaper than rebuilding a local index on
 # M post-scalar rows and running a map_batches expression (EXPR path).
 _IO_SELECTIVITY_THRESHOLD = 0.05
+
+
+_BINARY_OP_COST: dict[str, int] = {
+    "Gt": 1,
+    "Lt": 1,
+    "Eq": 1,
+    "GtEq": 1,
+    "LtEq": 1,
+    "NotEq": 1,
+    "Plus": 1,
+    "Minus": 1,
+    "Multiply": 2,
+    "Divide": 2,
+    "Modulus": 2,
+    "And": 1,
+    "Or": 1,
+}
+
+_FUNCTION_KEY_COST: dict[str, int] = {
+    "Pow": 4,
+    "StringExpr": 10,
+    "ListExpr": 8,
+}
+
+_BOOLEAN_FUNCTION_COST: dict[str, int] = {
+    "IsBetween": 2,
+    "IsIn": 5,
+    "IsNull": 1,
+    "IsNotNull": 1,
+}
+
+
+def _function_cost(fn: object) -> int:
+    if not isinstance(fn, dict):
+        return 1
+    for key, val in fn.items():
+        if key in _FUNCTION_KEY_COST:
+            return _FUNCTION_KEY_COST[key]
+        if key == "Boolean":
+            if isinstance(val, str):
+                return _BOOLEAN_FUNCTION_COST.get(val, 1)
+            if isinstance(val, dict):
+                return _BOOLEAN_FUNCTION_COST.get(next(iter(val), ""), 1)
+    return 1
+
+
+def _walk_ast_cost(node: object) -> int:
+    if isinstance(node, dict):
+        if "BinaryExpr" in node:
+            expr = node["BinaryExpr"]
+            return (
+                _BINARY_OP_COST.get(expr.get("op", ""), 0)
+                + _walk_ast_cost(expr.get("left"))
+                + _walk_ast_cost(expr.get("right"))
+            )
+        if "Function" in node:
+            fn = node["Function"]
+            return _function_cost(fn.get("function", {})) + sum(
+                _walk_ast_cost(inp) for inp in fn.get("input", [])
+            )
+        if "Cast" in node:
+            return 2 + _walk_ast_cost(node["Cast"].get("expr"))
+        return sum(_walk_ast_cost(v) for v in node.values())
+    if isinstance(node, list):
+        return sum(_walk_ast_cost(item) for item in node)
+    return 0
+
+
+def _scalar_cost(expr) -> int:
+    try:
+        tree = json.loads(expr.meta.serialize(format="json"))
+        return max(1, _walk_ast_cost(tree))
+    except Exception:
+        return 1
 
 
 class SpatialOptimizer:
@@ -88,7 +163,9 @@ class SpatialOptimizer:
                 node = dataclasses.replace(node, selectivity=1.0 / max(n, 1))
             elif isinstance(node, KnnNode):
                 node = dataclasses.replace(node, selectivity=min(1.0, node.k / max(n, 1)))
-            # ScalarNode stays at 1.0; join nodes have no selectivity field
+            elif isinstance(node, ScalarNode):
+                node = dataclasses.replace(node, cost=_scalar_cost(node.expr))
+            # join nodes have no selectivity field
             result.append(node)
         return result
 
@@ -132,10 +209,10 @@ class SpatialOptimizer:
         return result
 
     def _sort_run(self, run: Plan) -> Plan:
-        """Sort a barrier-separated run: scalars first, then spatials by selectivity."""
+        """Sort a barrier-separated run: scalars first by cost, then spatials by selectivity."""
         scalars = [n for n in run if isinstance(n, ScalarNode)]
         spatials = [n for n in run if not isinstance(n, ScalarNode)]
-        return scalars + sorted(spatials, key=lambda n: n.selectivity)
+        return sorted(scalars, key=lambda n: n.cost) + sorted(spatials, key=lambda n: n.selectivity)
 
     def _fusion_pass(self, plan: Plan, engine) -> Plan:
         """Merge consecutive fusable spatial filter nodes into FusedSpatialNode.

@@ -23,6 +23,7 @@ class ScalarNode:
 
     expr: pl.Expr
     selectivity: float = 1.0
+    cost: int = 0
 
 
 @dataclass
