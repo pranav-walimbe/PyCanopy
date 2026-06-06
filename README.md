@@ -187,29 +187,30 @@ All measurements on Apple M-series, uniform random data. **Warm** = second call 
 
 | Operation | Index build | Warm | GeoPandas | Speedup |
 |---|---|---|---|---|
-| Range query | 9 ms | 177 µs | 5.68 ms | **32×** |
-| kNN k=10 | 73 ms | 22 µs | 6.35 ms | **289×** |
-| Polygon contains | 127 ms | 20 µs | 6.54 ms | **326×** |
-| Polygon range | 129 ms | 333 µs | 4.31 ms | **13×** |
+| Range query | 1.2 ms | 30 µs | 5.1 ms | **173×** |
+| kNN k=10 | 9.9 ms | 7 µs | 6.3 ms | **881×** |
+| Polygon contains | 5.8 ms | 5 µs | 7.2 ms | **1382×** |
+| Polygon range | 5.4 ms | 9 µs | 3.5 ms | **407×** |
 
 ### Batch joins (N=Q=10,000)
 
 | Operation | Index build | Warm | Naive loop | Speedup |
 |---|---|---|---|---|
-| kNN join k=5 | 17 ms | 16.7 ms | 6.11 s | **366×** |
-| Within-distance join | 2 ms | 67.8 ms | 1.60 s | **24×** |
-| Within join (polygon) | 19 ms | 10.1 ms | 4.68 s | **463×** |
+| kNN join k=5 | 7.6 ms | 4.1 ms | 5.83 s | **1429×** |
+| Within-distance join | 3.7 ms | 13.7 ms | 1.48 s | **108×** |
+| Within join (polygon) | 2.1 ms | 0.7 ms | 4.99 s | **6901×** |
 
-### Sample Chained lazy queries (N=100,000)
+### Chained lazy queries (N=100,000)
 
 Each row is a multi-predicate chain run through the optimizer. GeoPandas applies all predicates manually with no lazy planning.
 
 | Chain | Index build | Warm | GeoPandas | Speedup |
 |---|---|---|---|---|
-| `circ_scalar → range³` | 19 ms | 1.03 ms | 9.31 ms | **9×** |
-| `3× scalar → range² → scalar` | 8 ms | 0.70 ms | 5.74 ms | **8×** |
-| `range² → 3× scalar` (reordered) | 7 ms | 0.56 ms | 5.71 ms | **10×** |
-| `circ_scalar → range → scalar → range²` | 7 ms | 0.78 ms | 8.20 ms | **11×** |
+| `circ_scalar → range³` | 2.4 ms | 0.19 ms | 9.4 ms | **49×** |
+| `3× scalar → range² → scalar` | 0.9 ms | 0.22 ms | 6.0 ms | **28×** |
+| `range² → 3× scalar` (reordered) | 0.9 ms | 0.20 ms | 5.7 ms | **29×** |
+| `circ_scalar → range → scalar → range²` | 0.8 ms | 0.17 ms | 8.0 ms | **47×** |
+| `range⁴ 10% (fusion)` | 1.1 ms | 0.93 ms | 13.1 ms | **14×** |
 
 ---
 
@@ -241,7 +242,7 @@ Each row is a multi-predicate chain run through the optimizer. GeoPandas applies
 
 **Optimizer decisions**
 
-- **Predicate Pushdown:** scalar predicates are placed before spatial ones. They cost nothing extra and shrink the row count before any index is touched.
+- **Predicate Pushdown:** scalar predicates are placed before spatial ones, and sorted cheapest-first using AST cost estimation. They cost nothing extra and shrink the row count before any index is touched.
 - **Fusion:** consecutive spatial predicates on large datasets are merged into a single index build and one pass over the data.
 - **Index type:** selected per query based on geometry type, data distribution, and selectivity (see Index Management below).
 - **Spatial Join Order:** for symmetric joins (`within_join`, `within_distance_join`), the optimizer indexes the smaller side when it is less than half the size of the other, minimizing index build cost. `knn_join` is asymmetric and always indexes the engine side.
