@@ -40,7 +40,7 @@ result = sf.lazy().filter(pl.col("population") > 100_000).range_query(-10.0, 35.
 
 Polars has no native spatial query support. Getting bounding-box filters, k-nearest neighbours, or point-in-polygon tests typically means converting to GeoPandas, managing an index manually, or scanning every row in Python. GeoPandas applies linear scans by default for containment and range tests; its STRtree requires explicit opt-in via `.sindex` and is the only available index type regardless of data distribution. KNN has no built-in path at all.
 
-PyCanopy adds a declarative lazy query layer directly on Polars DataFrames. You describe the operations you want, and PyCanopy decides which index to build, in what order to run each operation, and what to hand off to Polars to execute.
+PyCanopy adds a declarative lazy query layer directly on Polars DataFrames. You describe the operations you want, and PyCanopy decides which index to build, in what order to run each operation, and what to hand off to Polars to execute. It is designed for in-memory workloads at the moment. 
 
 |                             | PyCanopy      | GeoPandas        | Manual STRtree |
 |:----------------------------|:-------------:|:----------------:|:--------------:|
