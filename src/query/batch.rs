@@ -40,13 +40,15 @@ pub fn par_knn_with_delta<I: SpatialIndex + Sync>(
                 .nearest(qx, qy, k)
                 .into_iter()
                 .map(|i| {
-                    let d = (xs[i] - qx).powi(2) + (ys[i] - qy).powi(2);
-                    (i, d)
+                    let dx = xs[i] - qx;
+                    let dy = ys[i] - qy;
+                    (i, dx * dx + dy * dy)
                 })
                 .collect();
-            for (di, (&dx, &dy)) in delta_xs.iter().zip(delta_ys.iter()).enumerate() {
-                let d = (dx - qx).powi(2) + (dy - qy).powi(2);
-                candidates.push((n_main + di, d));
+            for (di, (&ex, &ey)) in delta_xs.iter().zip(delta_ys.iter()).enumerate() {
+                let dx = ex - qx;
+                let dy = ey - qy;
+                candidates.push((n_main + di, dx * dx + dy * dy));
             }
             candidates.sort_unstable_by(|a, b| {
                 a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)

@@ -42,7 +42,11 @@ impl SpatialIndex for BruteForce {
             .iter()
             .zip(self.ys.iter())
             .enumerate()
-            .map(|(i, (&x, &y))| (i, (x - qx).powi(2) + (y - qy).powi(2)))
+            .map(|(i, (&x, &y))| {
+                let dx = x - qx;
+                let dy = y - qy;
+                (i, dx * dx + dy * dy)
+            })
             .collect();
         dists.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         dists.into_iter().take(k).map(|(i, _)| i).collect()
@@ -94,10 +98,17 @@ impl BruteForce {
             }
             let ring_xs = &xs[start..end];
             let ring_ys = &ys[start..end];
-            let mn_x = ring_xs.iter().cloned().fold(f64::INFINITY, f64::min);
-            let mn_y = ring_ys.iter().cloned().fold(f64::INFINITY, f64::min);
-            let mx_x = ring_xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            let mx_y = ring_ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let (mn_x, mn_y, mx_x, mx_y) = ring_xs.iter().zip(ring_ys.iter()).fold(
+                (
+                    f64::INFINITY,
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                    f64::NEG_INFINITY,
+                ),
+                |(lo_x, lo_y, hi_x, hi_y), (&x, &y)| {
+                    (lo_x.min(x), lo_y.min(y), hi_x.max(x), hi_y.max(y))
+                },
+            );
             cxs.push((mn_x + mx_x) / 2.0);
             cys.push((mn_y + mx_y) / 2.0);
             mn_xs.push(mn_x);

@@ -86,10 +86,15 @@ pub fn collect_polygons(
 }
 
 fn compute_extent(xs: &[f64], ys: &[f64]) -> Option<Rect<f64>> {
-    let min_x = xs.iter().cloned().fold(f64::INFINITY, f64::min);
-    let min_y = ys.iter().cloned().fold(f64::INFINITY, f64::min);
-    let max_x = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let max_y = ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let (min_x, min_y, max_x, max_y) = xs.iter().zip(ys.iter()).fold(
+        (
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ),
+        |(mn_x, mn_y, mx_x, mx_y), (&x, &y)| (mn_x.min(x), mn_y.min(y), mx_x.max(x), mx_y.max(y)),
+    );
     if min_x.is_finite() {
         Some(Rect::new(
             coord! { x: min_x, y: min_y },

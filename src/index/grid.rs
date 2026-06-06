@@ -165,9 +165,9 @@ impl SpatialIndex for UniformGrid {
                     let start = self.cell_offsets[cell] as usize;
                     let end = self.cell_offsets[cell + 1] as usize;
                     for &idx in &self.indices[start..end] {
-                        let x = self.xs[idx as usize];
-                        let y = self.ys[idx as usize];
-                        candidates.push((idx as usize, (x - qx).powi(2) + (y - qy).powi(2)));
+                        let dx = self.xs[idx as usize] - qx;
+                        let dy = self.ys[idx as usize] - qy;
+                        candidates.push((idx as usize, dx * dx + dy * dy));
                     }
                 }
             }
@@ -209,9 +209,10 @@ impl SpatialIndex for UniformGrid {
                     min_unvisited_sq = min_unvisited_sq.min(d * d);
                 }
 
-                let mut dists: Vec<f64> = candidates.iter().map(|c| c.1).collect();
-                dists.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-                let kth_dist_sq = dists[k - 1];
+                candidates.select_nth_unstable_by(k - 1, |a, b| {
+                    a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                let kth_dist_sq = candidates[k - 1].1;
                 if min_unvisited_sq > kth_dist_sq {
                     break;
                 }

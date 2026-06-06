@@ -81,9 +81,9 @@ impl SpatialIndex for PackedKdTree {
                 let mut with_dist: Vec<(u32, f64)> = hits
                     .iter()
                     .map(|&i| {
-                        let d =
-                            (self.xs[i as usize] - qx).powi(2) + (self.ys[i as usize] - qy).powi(2);
-                        (i, d)
+                        let dx = self.xs[i as usize] - qx;
+                        let dy = self.ys[i as usize] - qy;
+                        (i, dx * dx + dy * dy)
                     })
                     .collect();
                 with_dist.sort_unstable_by(|a, b| {

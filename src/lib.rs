@@ -135,13 +135,15 @@ impl Engine {
         let mut candidates: Vec<(usize, f64)> = main_results
             .into_iter()
             .map(|i| {
-                let d = (self.xs[i] - x).powi(2) + (self.ys[i] - y).powi(2);
-                (i, d)
+                let dx = self.xs[i] - x;
+                let dy = self.ys[i] - y;
+                (i, dx * dx + dy * dy)
             })
             .collect();
-        for (di, (&dx, &dy)) in self.delta_xs.iter().zip(self.delta_ys.iter()).enumerate() {
-            let d = (dx - x).powi(2) + (dy - y).powi(2);
-            candidates.push((n_main + di, d));
+        for (di, (&ex, &ey)) in self.delta_xs.iter().zip(self.delta_ys.iter()).enumerate() {
+            let dx = ex - x;
+            let dy = ey - y;
+            candidates.push((n_main + di, dx * dx + dy * dy));
         }
         candidates
             .sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
