@@ -7,6 +7,7 @@ import polars as pl
 from pycanopy.executor import _ROW_IDX, SpatialExecutor
 from pycanopy.nodes import (
     ContainsNode,
+    FusedSpatialNode,
     KnnJoinNode,
     KnnNode,
     Plan,
@@ -17,6 +18,76 @@ from pycanopy.nodes import (
     WithinJoinNode,
 )
 from pycanopy.optimizer import SpatialOptimizer
+
+
+def _fmt_expr(expr: pl.Expr) -> str:
+    s = str(expr)
+    if s.startswith("[") and s.endswith("]"):
+        s = s[1:-1]
+    return s.strip()
+
+
+def _fmt_node(node) -> str:
+    if isinstance(node, ScalarNode):
+        return f"FILTER [{_fmt_expr(node.expr)}]"
+    if isinstance(node, RangeNode):
+        return (
+            f"RANGE_QUERY [({node.min_x:.4g}, {node.min_y:.4g})"
+            f" → ({node.max_x:.4g}, {node.max_y:.4g})]"
+        )
+    if isinstance(node, ContainsNode):
+        return f"CONTAINS [({node.qx:.4g}, {node.qy:.4g})]"
+    if isinstance(node, KnnNode):
+        approx = ", approximate" if node.approximate else ""
+        return f"KNN [k={node.k}, ({node.qx:.4g}, {node.qy:.4g}){approx}]"
+    if isinstance(node, FusedSpatialNode):
+        count = len(node.predicates)
+        pred_strs = []
+        for pred in node.predicates:
+            if isinstance(pred, RangeNode):
+                pred_strs.append(
+                    f"  ({pred.min_x:.4g}, {pred.min_y:.4g}) → ({pred.max_x:.4g}, {pred.max_y:.4g})"
+                )
+            elif isinstance(pred, ContainsNode):
+                pred_strs.append(f"  ({pred.qx:.4g}, {pred.qy:.4g})")
+        return "\n".join([f"FUSED_SPATIAL [x{count}]", *pred_strs])
+    if isinstance(node, KnnJoinNode):
+        approx = ", approximate" if node.approximate else ""
+        return f"KNN_JOIN [k={node.k}, query_rows={len(node.query_df):,}, barrier{approx}]"
+    if isinstance(node, WithinJoinNode):
+        flip = ", flip" if node.flip else ""
+        return f"WITHIN_JOIN [query_rows={len(node.query_df):,}, barrier{flip}]"
+    if isinstance(node, WithinDistanceJoinNode):
+        flip = ", flip" if node.flip else ""
+        return f"WITHIN_DIST_JOIN [dist={node.distance:.4g}, query_rows={len(node.query_df):,}, barrier{flip}]"
+    return f"UNKNOWN [{type(node).__name__}]"
+
+
+def _fmt_plan(plan: Plan, path: PluginPath | None, n: int, *, optimized: bool) -> str:
+    path_suffix = ""
+    if path is not None:
+        path_label = "EXPR" if path == PluginPath.EXPR else "IO"
+        path_suffix = f"; path: {path_label}"
+    df_line = f"DF [N={n:,}{path_suffix}]"
+
+    if not plan:
+        return df_line
+
+    # Polars convention: outermost (last executed) op at top, source at bottom.
+    # Each op is followed by FROM at the same indent level, then its source indented
+    # one level deeper — matching how Polars formats single-path plans.
+    reversed_plan = list(reversed(plan))
+    lines = []
+    for depth, node in enumerate(reversed_plan):
+        indent = "  " * depth
+        node_str = _fmt_node(node)
+        first, *rest = node_str.split("\n")
+        lines.append(f"{indent}{first}")
+        for r in rest:
+            lines.append(f"{indent}{r}")
+        lines.append(f"{indent}FROM")
+    lines.append(f"{'  ' * len(reversed_plan)}{df_line}")
+    return "\n".join(lines)
 
 
 class SpatialLazyFrame:
@@ -190,6 +261,31 @@ class SpatialLazyFrame:
             self._sf,
             [*self._plan, WithinJoinNode(query_df, x_col, y_col)],
         )
+
+    def explain(self, optimized: bool = True) -> str:
+        """Return a human-readable description of the query plan.
+
+        Mirrors the interface of Polars' LazyFrame.explain(). By default shows
+        the plan after the optimizer has run: reordered operations, any fused
+        spatial predicates, and the chosen execution path (EXPR or IO). Pass
+        optimized=False to see the plan in declaration order instead.
+
+        Args:
+            optimized: If True, show the optimizer's execution order with path
+                selection. If False, show operations in declaration order.
+
+        Returns:
+            Multi-line string describing the plan. Print it for readable output.
+        """
+        engine = self._sf.engine
+        if optimized:
+            opt = SpatialOptimizer()
+            plan = opt.optimize(self._plan, engine)
+            path = opt._select_plugin_path(plan, engine)
+        else:
+            plan = self._plan
+            path = None
+        return _fmt_plan(plan, path, engine.n, optimized=optimized)
 
     def collect(self) -> pl.DataFrame:
         """Optimise and execute the plan. Returns a Polars DataFrame.

@@ -98,6 +98,33 @@ result = (
 )
 ```
 
+### Inspecting the optimizer plan
+
+```python
+# Declare ops in any order — explain() shows what the optimizer will actually run.
+lf = (
+    sf.lazy()
+    .range_query(min_x=-10.0, min_y=35.0, max_x=40.0, max_y=70.0)
+    .filter(pl.col("population") > 100_000)
+)
+
+print(lf.explain())
+# RANGE_QUERY [(-10, 35) → (40, 70)]
+# FROM
+#   FILTER [(col("population")) > (dyn int: 100000)]
+#   FROM
+#     DF [N=100,000; path: EXPR]
+
+print(lf.explain(optimized=False))
+# FILTER [(col("population")) > (dyn int: 100000)]
+# FROM
+#   RANGE_QUERY [(-10, 35) → (40, 70)]
+#   FROM
+#     DF [N=100,000]
+```
+
+Follows Polars' FROM-chain convention: bottom = runs first, top = outermost result. In the optimized plan, FILTER appears below RANGE_QUERY — the scalar filter runs first on raw data, and RANGE_QUERY receives the already-filtered subset. `explain(optimized=False)` shows declaration order for comparison.
+
 ### KNN join
 
 ```python
