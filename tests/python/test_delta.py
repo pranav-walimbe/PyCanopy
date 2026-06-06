@@ -69,27 +69,33 @@ def test_size_cap_flushes_delta(engine):
     assert engine.n > n_before
 
 
-def test_cost_flush_fires(engine):
+def test_cost_flush_fires():
     import math
 
-    n = engine.n
+    # Fresh uniform grid so select_index reliably picks Grid (cost threshold = N).
+    # The shared module engine has accumulated flushed points from prior tests,
+    # shifting its distribution to Clustered (KD-tree, cost = N*log2 N), which
+    # would require ~140 queries to trigger — too expensive for a unit test.
+    _n = 529  # 23x23 uniform grid, above the 500 brute-force threshold
+    eng = Engine.from_coords(
+        np.array([float(i % 23) for i in range(_n)], dtype=np.float64),
+        np.array([float(i // 23) for i in range(_n)], dtype=np.float64),
+    )
     delta_size = 50
-    assert delta_size < n * 0.1, "delta must stay below hard size cap for this test"
-    # Use KD-tree cost (N * log2 N) as the upper bound — covers Grid (N) too.
-    queries_needed = math.ceil(n * math.ceil(math.log2(n)) / delta_size) + 1
+    assert delta_size < _n * 0.1
+    # Grid cost threshold = N → flush fires after ceil(N / delta_size) queries.
+    queries_needed = math.ceil(_n / delta_size) + 1
 
-    engine.append_delta(
+    eng.append_delta(
         np.full(delta_size, 6000.0, dtype=np.float64),
         np.arange(delta_size, dtype=np.float64),
     )
-    assert engine.delta_len == delta_size
+    assert eng.delta_len == delta_size
 
-    # Query the sparse region around the delta points so the histogram returns
-    # low selectivity and select_index picks KD-tree (not BruteForce).
     for _ in range(queries_needed):
-        engine.range_query(5999.0, -1.0, 6001.0, 51.0)
+        eng.range_query(5999.0, -1.0, 6001.0, 51.0)
 
-    assert engine.delta_len == 0
+    assert eng.delta_len == 0
 
 
 def test_flushed_points_queryable_from_main_index(engine):

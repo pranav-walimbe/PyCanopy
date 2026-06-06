@@ -892,6 +892,29 @@ impl Engine {
         Ok(PyArray1::from_vec(py, flat))
     }
 
+    /// Heap bytes allocated by all currently-built spatial indexes.
+    ///
+    /// Excludes the coordinate arrays (xs/ys), which exist regardless of whether an
+    /// index has been built. Returns 0 if no index has been built yet. Sums all built
+    /// indexes — in practice at most one is built per query type, but multiple can
+    /// coexist if different query kinds were issued.
+    fn index_bytes(&self) -> usize {
+        let mut total = 0;
+        if let Some(ref b) = self.brute {
+            total += b.heap_bytes();
+        }
+        if let Some(ref r) = self.rtree {
+            total += r.heap_bytes();
+        }
+        if let Some(ref k) = self.kdtree {
+            total += k.heap_bytes();
+        }
+        if let Some(ref g) = self.grid {
+            total += g.heap_bytes();
+        }
+        total
+    }
+
     /// Number of geometries in the dataset
     fn n(&self) -> usize {
         self.stats.n

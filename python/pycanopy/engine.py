@@ -419,6 +419,16 @@ class Engine:
         return self._core.delta_len()
 
     @property
+    def index_bytes(self) -> int:
+        """Heap bytes allocated by all currently-built spatial indexes.
+
+        Excludes the coordinate arrays (xs/ys), which exist regardless of index
+        construction. Returns 0 if no query has been issued yet (indexes are built
+        lazily). Use this to measure the marginal memory cost of index construction.
+        """
+        return self._core.index_bytes()
+
+    @property
     def n(self) -> int:
         """Number of geometries in the dataset."""
         return self._core.n()

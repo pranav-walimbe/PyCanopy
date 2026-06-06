@@ -113,6 +113,15 @@ impl PackedKdTree {
     pub fn set_histogram(&mut self, histogram: Option<SpatialHistogram>) {
         self.histogram = histogram;
     }
+
+    /// Heap bytes allocated by this index, excluding coordinates shared with the Engine.
+    ///
+    /// Counts the geo-index internal flat buffer plus the histogram clone if present.
+    /// xs/ys Arcs are shared from the Engine and are not counted.
+    pub fn heap_bytes(&self) -> usize {
+        self.tree.metadata().data_buffer_length()
+            + self.histogram.as_ref().map_or(0, |h| h.heap_bytes())
+    }
 }
 
 #[cfg(test)]

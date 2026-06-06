@@ -65,6 +65,18 @@ impl SpatialIndex for BruteForce {
 }
 
 impl BruteForce {
+    /// Heap bytes allocated by this index, excluding coordinates shared with the Engine.
+    ///
+    /// Point datasets share all bbox arcs with the Engine's xs/ys — marginal cost is zero.
+    /// Polygon datasets allocate new centroid and MBR arrays — 6 * N * 8 bytes.
+    pub fn heap_bytes(&self) -> usize {
+        if Arc::ptr_eq(&self.xs, &self.bbox_min_x) {
+            0
+        } else {
+            self.xs.len() * std::mem::size_of::<f64>() * 6
+        }
+    }
+
     /// Build from two-level polygon ring arrays. Computes per-polygon MBRs and centroids
     /// from exterior rings only. Holes do not expand the MBR.
     /// These are derived allocations (N = n_polygons, not N = n_ring_vertices).

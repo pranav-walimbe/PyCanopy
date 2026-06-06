@@ -47,6 +47,7 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]
+addopts = "-x -q --tb=short"
 
 [tool.ruff]
 line-length = 100

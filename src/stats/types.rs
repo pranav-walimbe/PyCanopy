@@ -13,6 +13,11 @@ pub struct SpatialHistogram {
 }
 
 impl SpatialHistogram {
+    /// Heap bytes allocated by this histogram (the counts Vec)
+    pub fn heap_bytes(&self) -> usize {
+        self.counts.capacity() * std::mem::size_of::<u32>()
+    }
+
     /// Fraction of N expected to fall within bbox, based on histogram cell counts
     pub fn selectivity(&self, bbox: &Rect<f64>, n: usize) -> f64 {
         if n == 0 {

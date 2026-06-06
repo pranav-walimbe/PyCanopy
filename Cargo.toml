@@ -21,3 +21,10 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 
+# Local dev builds: same opt-level as release but skips LTO and uses more
+# codegen units to stay within 8GB RAM. Use for make check / make build.
+[profile.dev-release]
+inherits = "release"
+lto = false
+codegen-units = 8
+

@@ -24,6 +24,15 @@ pub struct UniformGrid {
 }
 
 impl UniformGrid {
+    /// Heap bytes allocated by this index, excluding coordinates shared with the Engine.
+    ///
+    /// Counts the CSR cell_offsets and indices Vecs. xs/ys Arcs are shared from
+    /// the Engine and are not counted.
+    pub fn heap_bytes(&self) -> usize {
+        self.cell_offsets.capacity() * std::mem::size_of::<u32>()
+            + self.indices.capacity() * std::mem::size_of::<u32>()
+    }
+
     fn bbox_cell_range(
         &self,
         min_x: f64,

@@ -47,6 +47,14 @@ impl SpatialIndex for PackedRTree {
 }
 
 impl PackedRTree {
+    /// Heap bytes allocated by this index (the geo-index internal flat buffer).
+    ///
+    /// The coordinate Arcs passed to build() are not retained — they're dropped
+    /// after the builder consumes them, so there is nothing shared to exclude.
+    pub fn heap_bytes(&self) -> usize {
+        self.tree.metadata().data_buffer_length()
+    }
+
     /// Build from two-level polygon ring arrays. Each polygon's MBR is computed from
     /// its exterior ring only. Holes do not expand the MBR.
     pub fn build_polygons(

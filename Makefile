@@ -1,25 +1,60 @@
-.PHONY: fmt lint test build release check
+.DEFAULT_GOAL := check
 
-# Auto-fix formatting for Rust and Python
-fmt:
+sources = python/ tests/python/ benchmarks/
+
+# Preserve colour in cargo output when running from a tty.
+export CARGO_TERM_COLOR=$(shell (test -t 0 && echo "always") || echo "auto")
+
+.PHONY: format ## Auto-format Rust and Python source files
+format:
 	cargo fmt
-	ruff format python/ tests/python/ benchmarks/
+	.venv/bin/ruff check --fix $(sources)
+	.venv/bin/ruff format $(sources)
 
-# Lint without modifying files
-lint:
-	cargo clippy -- -D warnings
-	ruff check python/ tests/python/
+.PHONY: lint-python ## Lint Python source files
+lint-python:
+	.venv/bin/ruff check $(sources)
+	.venv/bin/ruff format --check $(sources)
 
+.PHONY: lint-rust ## Lint Rust source files (fmt check + clippy over all code incl. tests)
+lint-rust:
+	cargo fmt --all -- --check
+	cargo clippy --tests -- -D warnings
+
+.PHONY: lint ## Lint Rust and Python source files
+lint: lint-python lint-rust
+
+.PHONY: build ## Debug build — fast compile, use for local iteration
 build:
+	@rm -f python/pycanopy/*.so
 	maturin develop
 
-release:
+.PHONY: build-prod ## Optimised build — use for benchmarks and profiling
+build-prod:
+	@rm -f python/pycanopy/*.so
 	maturin develop --release
 
-# Build the fast extension then run all tests
+# Build first so clippy and cargo nextest reuse compiled objects from maturin
+# instead of each triggering a second Rust compile pass.
+# sccache (via RUSTC_WRAPPER in .cargo/config.toml) caches across runs.
+.PHONY: check ## Format, build, lint, and test — run before every commit
+check: format build lint
+	cargo nextest run
+	.venv/bin/pytest tests/python/ --durations=5
+
+.PHONY: test ## Build and run all tests without formatting or linting
 test: build
-	cargo test
+	cargo nextest run
 	.venv/bin/pytest tests/python/
 
-# Full pre-commit check: format, lint, test
-check: fmt lint test
+.PHONY: clean ## Remove build artifacts and caches
+clean:
+	rm -rf `find . -name __pycache__`
+	rm -f `find . -type f -name '*.py[co]'`
+	rm -rf .pytest_cache .ruff_cache
+	rm -f python/pycanopy/*.so
+
+.PHONY: help ## Display this help message
+help:
+	@grep -E '^\.PHONY: .*?## .*$$' $(MAKEFILE_LIST) | \
+	awk 'BEGIN {FS = ".PHONY: |## "}; {printf "\033[36m%-15s\033[0m %s\n", $$2, $$3}'
