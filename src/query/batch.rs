@@ -62,7 +62,8 @@ pub fn par_knn_with_delta<I: SpatialIndex + Sync>(
 /// For each query point, return (query_idx, engine_idx) for every polygon in the
 /// Engine's dataset that contains the point. Used for within joins on polygon datasets.
 ///
-/// Results are in ascending query_idx order; pairs for the same query point are adjacent.
+/// Returns a flat array of interleaved pairs [q0, e0, q1, e1, ...] matching the
+/// layout of par_within_distance and par_within_distance_flipped.
 pub fn par_contains<I: SpatialIndex + Sync>(
     index: &I,
     qxs: &[f64],
@@ -71,7 +72,7 @@ pub fn par_contains<I: SpatialIndex + Sync>(
     ys: &[f64],
     ring_offsets: &[i64],
     poly_offsets: &[i64],
-) -> Vec<(u64, u64)> {
+) -> Vec<u64> {
     qxs.par_iter()
         .zip(qys.par_iter())
         .enumerate()
@@ -81,7 +82,7 @@ pub fn par_contains<I: SpatialIndex + Sync>(
                 .range(qx, qy, qx, qy)
                 .into_iter()
                 .filter(move |&ei| pip_raw(qx, qy, xs, ys, ring_offsets, poly_offsets, ei))
-                .map(move |ei| (qi as u64, ei as u64))
+                .flat_map(move |ei| [qi as u64, ei as u64])
         })
         .collect()
 }

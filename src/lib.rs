@@ -493,8 +493,9 @@ impl Engine {
             .iter()
             .map(|&i| {
                 let i = i as usize;
-                let d = (self.xs[i] - x).powi(2) + (self.ys[i] - y).powi(2);
-                (d, i)
+                let dx = self.xs[i] - x;
+                let dy = self.ys[i] - y;
+                (dx * dx + dy * dy, i)
             })
             .collect();
 
@@ -879,7 +880,7 @@ impl Engine {
         self.build_index_if_needed(IndexKind::RTree);
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
-        let pairs = par_contains(
+        let flat = par_contains(
             self.rtree.as_ref().unwrap(),
             qxs,
             qys,
@@ -888,7 +889,6 @@ impl Engine {
             ring_off,
             poly_off,
         );
-        let flat: Vec<u64> = pairs.into_iter().flat_map(|(q, e)| [q, e]).collect();
         Ok(PyArray1::from_vec(py, flat))
     }
 
