@@ -1,5 +1,3 @@
-use geo::{coord, Contains, Intersects, LineString, Point, Polygon, Rect};
-
 use crate::index::SpatialIndex;
 
 /// Range query against a point dataset. The index performs the exact coordinate check.
@@ -27,11 +25,22 @@ pub fn query_range_polygons<I: SpatialIndex>(
     max_x: f64,
     max_y: f64,
 ) -> Vec<usize> {
-    let bbox = Rect::new(coord! { x: min_x, y: min_y }, coord! { x: max_x, y: max_y });
     index
         .range(min_x, min_y, max_x, max_y)
         .into_iter()
-        .filter(|&i| make_polygon(xs, ys, ring_offsets, poly_offsets, i).intersects(&bbox))
+        .filter(|&i| {
+            polygon_intersects_bbox_raw(
+                xs,
+                ys,
+                ring_offsets,
+                poly_offsets,
+                i,
+                min_x,
+                min_y,
+                max_x,
+                max_y,
+            )
+        })
         .collect()
 }
 
@@ -46,50 +55,156 @@ pub fn query_contains_polygons<I: SpatialIndex>(
     qx: f64,
     qy: f64,
 ) -> Vec<usize> {
-    let qpt = Point::new(qx, qy);
     index
         .range(qx, qy, qx, qy)
         .into_iter()
-        .filter(|&i| make_polygon(xs, ys, ring_offsets, poly_offsets, i).contains(&qpt))
+        .filter(|&i| pip_raw(qx, qy, xs, ys, ring_offsets, poly_offsets, i))
         .collect()
 }
 
-/// Reconstruct polygon i from two-level ring arrays, including any interior holes.
+/// Ray-casting point-in-ring test. Zero allocation, operates directly on coordinate slices.
+fn ring_contains(qx: f64, qy: f64, xs: &[f64], ys: &[f64]) -> bool {
+    let n = xs.len();
+    if n < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        if (ys[i] > qy) != (ys[j] > qy)
+            && qx < (xs[j] - xs[i]) * (qy - ys[i]) / (ys[j] - ys[i]) + xs[i]
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+/// Point-in-polygon test for polygon i, including hole handling. Zero allocation.
 ///
-/// ring_offsets[r]..ring_offsets[r+1] gives ring r's coordinate range in xs/ys.
-/// poly_offsets[i]..poly_offsets[i+1] gives polygon i's ring range in ring_offsets.
-/// The first ring is the exterior; any remaining rings are interior holes.
-pub fn make_polygon(
+/// A point is inside the polygon if it is inside the exterior ring and outside
+/// all interior rings (holes). Operates directly on the flat coordinate arrays
+/// via ring_offsets and poly_offsets — no heap allocation per call.
+pub fn pip_raw(
+    qx: f64,
+    qy: f64,
     xs: &[f64],
     ys: &[f64],
     ring_offsets: &[i64],
     poly_offsets: &[i64],
     i: usize,
-) -> Polygon<f64> {
+) -> bool {
     let r_start = poly_offsets[i] as usize;
     let r_end = poly_offsets[i + 1] as usize;
 
     let ext_start = ring_offsets[r_start] as usize;
     let ext_end = ring_offsets[r_start + 1] as usize;
-    let exterior = LineString::new(
-        (ext_start..ext_end)
-            .map(|j| coord! { x: xs[j], y: ys[j] })
-            .collect(),
-    );
+    if !ring_contains(qx, qy, &xs[ext_start..ext_end], &ys[ext_start..ext_end]) {
+        return false;
+    }
 
-    let holes = (r_start + 1..r_end)
-        .map(|r| {
-            let h_start = ring_offsets[r] as usize;
-            let h_end = ring_offsets[r + 1] as usize;
-            LineString::new(
-                (h_start..h_end)
-                    .map(|j| coord! { x: xs[j], y: ys[j] })
-                    .collect(),
-            )
-        })
-        .collect();
+    for r in (r_start + 1)..r_end {
+        let h_start = ring_offsets[r] as usize;
+        let h_end = ring_offsets[r + 1] as usize;
+        if ring_contains(qx, qy, &xs[h_start..h_end], &ys[h_start..h_end]) {
+            return false;
+        }
+    }
 
-    Polygon::new(exterior, holes)
+    true
+}
+
+/// Segment intersection test using cross products. Returns false for parallel segments.
+#[allow(clippy::too_many_arguments)]
+fn segments_intersect(
+    ax1: f64,
+    ay1: f64,
+    ax2: f64,
+    ay2: f64,
+    bx1: f64,
+    by1: f64,
+    bx2: f64,
+    by2: f64,
+) -> bool {
+    let d1x = ax2 - ax1;
+    let d1y = ay2 - ay1;
+    let d2x = bx2 - bx1;
+    let d2y = by2 - by1;
+    let denom = d1x * d2y - d1y * d2x;
+    if denom.abs() < f64::EPSILON {
+        return false;
+    }
+    let t = ((bx1 - ax1) * d2y - (by1 - ay1) * d2x) / denom;
+    let u = ((bx1 - ax1) * d1y - (by1 - ay1) * d1x) / denom;
+    (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u)
+}
+
+/// Exact polygon-bbox intersection test. Zero allocation, operates on flat coordinate arrays.
+///
+/// Three conditions are checked in order:
+///   1. Any polygon vertex inside the bbox.
+///   2. Any bbox corner inside the polygon exterior ring.
+///   3. Any polygon edge crosses any bbox edge.
+///
+/// Only the exterior ring is tested; holes cannot contribute to intersection.
+#[allow(clippy::too_many_arguments)]
+pub fn polygon_intersects_bbox_raw(
+    xs: &[f64],
+    ys: &[f64],
+    ring_offsets: &[i64],
+    poly_offsets: &[i64],
+    i: usize,
+    min_x: f64,
+    min_y: f64,
+    max_x: f64,
+    max_y: f64,
+) -> bool {
+    let r_start = poly_offsets[i] as usize;
+    let ext_start = ring_offsets[r_start] as usize;
+    let ext_end = ring_offsets[r_start + 1] as usize;
+    let vxs = &xs[ext_start..ext_end];
+    let vys = &ys[ext_start..ext_end];
+    let n = vxs.len();
+    if n == 0 {
+        return false;
+    }
+
+    for k in 0..n {
+        if vxs[k] >= min_x && vxs[k] <= max_x && vys[k] >= min_y && vys[k] <= max_y {
+            return true;
+        }
+    }
+
+    let corners = [
+        (min_x, min_y),
+        (max_x, min_y),
+        (max_x, max_y),
+        (min_x, max_y),
+    ];
+    for (cx, cy) in corners {
+        if ring_contains(cx, cy, vxs, vys) {
+            return true;
+        }
+    }
+
+    let bbox_edges = [
+        (min_x, min_y, max_x, min_y),
+        (max_x, min_y, max_x, max_y),
+        (max_x, max_y, min_x, max_y),
+        (min_x, max_y, min_x, min_y),
+    ];
+    let mut j = n - 1;
+    for k in 0..n {
+        for &(bx1, by1, bx2, by2) in &bbox_edges {
+            if segments_intersect(vxs[j], vys[j], vxs[k], vys[k], bx1, by1, bx2, by2) {
+                return true;
+            }
+        }
+        j = k;
+    }
+
+    false
 }
 
 #[cfg(test)]

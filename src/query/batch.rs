@@ -4,12 +4,11 @@
 
 use std::sync::Arc;
 
-use geo::Contains;
 use rayon::prelude::*;
 
 use crate::index::kdtree::PackedKdTree;
 use crate::index::SpatialIndex;
-use crate::query::range::make_polygon;
+use crate::query::range::pip_raw;
 
 /// For each query point, find the k nearest neighbours in the index.
 /// Returns a flat array of shape (n_queries * k,): block i holds results for query i.
@@ -75,14 +74,11 @@ pub fn par_contains<I: SpatialIndex + Sync>(
         .zip(qys.par_iter())
         .enumerate()
         .flat_map_iter(|(qi, (&qx, &qy))| {
-            let qpt = geo::Point::new(qx, qy);
             // MBR pre-filter via index, then exact PIP
             index
                 .range(qx, qy, qx, qy)
                 .into_iter()
-                .filter(move |&ei| {
-                    make_polygon(xs, ys, ring_offsets, poly_offsets, ei).contains(&qpt)
-                })
+                .filter(move |&ei| pip_raw(qx, qy, xs, ys, ring_offsets, poly_offsets, ei))
                 .map(move |ei| (qi as u64, ei as u64))
         })
         .collect()
