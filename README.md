@@ -14,7 +14,7 @@
 ---
 
 > [!NOTE]
-> Range queries **100x+** faster than GeoPandas · KNN joins **1,000x+** · Polygon within joins **1,000x+** · [Full benchmarks](#benchmarks)
+> Up to **155x** on range queries · up to **1,949x** on kNN · up to **1,521x** on polygon contains · up to **8,522x** on within joins · [Full benchmarks](#benchmarks)
 
 ---
 
@@ -198,36 +198,31 @@ sf.engine.flush()
 
 ## Benchmarks
 
-All measurements on Apple M-series, uniform random data. **Warm** = second call with cached index. **Index build** = cold minus warm (one-time cost amortised across queries). Naive baseline is GeoPandas.
+Apple M-series used for benchmarking. **Warm** = cached index, second call. **Index build** = one-time cost, amortised across queries. Uniform distribution; clustered note below.
 
-### Single-query ops (N=100,000)
+### Single-query operations
 
-| Operation          |   Index build |    Warm | GeoPandas |   Speedup |
-|:-------------------|--------------:|--------:|----------:|----------:|
-| Range query        |        1.2 ms |   30 µs |    5.1 ms |  **173x** |
-| kNN k=10           |        9.9 ms |    7 µs |    6.3 ms |  **881x** |
-| Polygon contains   |        5.8 ms |    5 µs |    7.2 ms | **1382x** |
-| Polygon range      |        5.4 ms |    9 µs |    3.5 ms |  **407x** |
+| Operation              |       N | Index build |    Warm |   Naive | Speedup    | Idx mem |
+|:-----------------------|--------:|------------:|--------:|--------:|-----------:|--------:|
+| Range query (points)   | 100,000 |      1.3 ms |   29 µs |  4.4 ms |   **155x** | 783 KB  |
+| kNN k=10               | 100,000 |      9.3 ms |    3 µs |  5.4 ms | **1,949x** | 1.9 MB  |
+| Polygon contains       | 100,000 |      6.2 ms |    5 µs |  7.0 ms | **1,521x** | 3.7 MB  |
+| Polygon range          | 100,000 |      5.6 ms |    8 µs |  3.3 ms |   **391x** | 3.7 MB  |
+| kNN join k=5           |  10,000 |      7.3 ms |  2.1 ms |   5.4 s | **2,601x** | 180 KB  |
+| Within-distance join   |  10,000 |      0.5 ms | 12.6 ms |   1.3 s |   **102x** | —       |
+| Within join (polygons) |  10,000 |      1.6 ms | 0.52 ms |   4.4 s | **8,522x** | 354 KB  |
 
-### Batch joins (N=Q=10,000)
+### Chained lazy queries (N = 100,000, uniform)
 
-| Operation             |   Index build |    Warm | Naive loop |   Speedup |
-|:----------------------|--------------:|--------:|-----------:|----------:|
-| kNN join k=5          |        7.6 ms |  4.1 ms |     5.83 s | **1429x** |
-| Within-distance join  |        3.7 ms | 13.7 ms |     1.48 s |  **108x** |
-| Within join (polygon) |        2.1 ms |  0.7 ms |     4.99 s | **6901x** |
+The optimizer reorders scalars before spatial ops regardless of declared order, and fuses consecutive wide spatial predicates into one index pass.
 
-### Chained lazy queries (N=100,000)
-
-Each row is a multi-predicate chain declared in a specific order, then optimized before execution. **Scalar** = a Polars expression filter (e.g. `x > 0.5` or a circular region test) with no spatial index. **Range (1%)** = a bounding box covering ~1% of the data. The optimizer always places scalars before spatial ops regardless of declared order, and fuses multiple wide spatial predicates into one index pass.
-
-| Chain (declared order)                               | Optimizer    |   Index build |    Warm | GeoPandas |  Speedup |
-|:-----------------------------------------------------|:-------------|--------------:|--------:|----------:|---------:|
-| circular scalar + 3 range queries                    | scalar first |        2.4 ms | 0.19 ms |    9.4 ms |  **49x** |
-| 3 scalars + 2 ranges + 1 scalar (mixed order)        | scalars first |       0.9 ms | 0.22 ms |    6.0 ms |  **28x** |
-| 2 ranges + 3 scalars (spatial declared first)        | scalars first |       0.9 ms | 0.20 ms |    5.7 ms |  **29x** |
-| 2 scalars + 3 ranges interleaved                     | scalars first |       0.8 ms | 0.17 ms |    8.0 ms |  **47x** |
-| 4 range queries at 10% selectivity each              | fused        |        1.1 ms | 0.93 ms |   13.1 ms |  **14x** |
+| Chain                                        | Optimizer action | Index build |    Warm | GeoPandas | Speedup  |
+|:---------------------------------------------|:-----------------|------------:|--------:|----------:|---------:|
+| circ\_scalar → range³                        | scalar first     |      2.5 ms | 0.19 ms |    9.2 ms |  **50x** |
+| range² → 3× scalar (spatial declared first)  | scalars first    |      1.0 ms | 0.23 ms |    6.0 ms |  **26x** |
+| range⁴ at 10% selectivity                   | fused            |      1.0 ms | 0.92 ms |     13 ms |  **14x** |
+| wide\_scalar (95%) → tight\_range (1%)       | scalar first     |      4.1 ms | 0.30 ms |    3.1 ms |  **11x** |
+| circ\_scalar + diag\_scalar → kNN k=50       | scalar first     |       15 ms | 1.25 ms |    3.6 ms |   **3x** |
 
 ---
 
