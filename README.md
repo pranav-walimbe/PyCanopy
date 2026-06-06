@@ -13,8 +13,8 @@
 
 ---
 
-> [!TIP]
-> Range query **173x** faster than GeoPandas · KNN join **1,429x** · Polygon within join **6,901x** · [Benchmark details](#benchmarks)
+> [!NOTE]
+> Range queries **100x+** faster than GeoPandas · KNN joins **1,000x+** · Polygon within joins **1,000x+** · [Full benchmarks](#benchmarks)
 
 ---
 
@@ -219,15 +219,15 @@ All measurements on Apple M-series, uniform random data. **Warm** = second call 
 
 ### Chained lazy queries (N=100,000)
 
-Each row is a multi-predicate chain run through the optimizer. GeoPandas applies all predicates manually with no lazy planning.
+Each row is a multi-predicate chain declared in a specific order, then optimized before execution. **Scalar** = a Polars expression filter (e.g. `x > 0.5` or a circular region test) with no spatial index. **Range (1%)** = a bounding box covering ~1% of the data. The optimizer always places scalars before spatial ops regardless of declared order, and fuses multiple wide spatial predicates into one index pass.
 
-| Chain                                        |   Index build |    Warm | GeoPandas |  Speedup |
-|:---------------------------------------------|--------------:|--------:|----------:|---------:|
-| `circ_scalar + range³`                       |        2.4 ms | 0.19 ms |    9.4 ms |  **49x** |
-| `3x scalar + range² + scalar`                |        0.9 ms | 0.22 ms |    6.0 ms |  **28x** |
-| `range² + 3x scalar` (reordered)             |        0.9 ms | 0.20 ms |    5.7 ms |  **29x** |
-| `circ_scalar + range + scalar + range²`      |        0.8 ms | 0.17 ms |    8.0 ms |  **47x** |
-| `range⁴ 10% (fusion)`                       |        1.1 ms | 0.93 ms |   13.1 ms |  **14x** |
+| Chain (declared order)                               | Optimizer    |   Index build |    Warm | GeoPandas |  Speedup |
+|:-----------------------------------------------------|:-------------|--------------:|--------:|----------:|---------:|
+| circular scalar + 3 range queries                    | scalar first |        2.4 ms | 0.19 ms |    9.4 ms |  **49x** |
+| 3 scalars + 2 ranges + 1 scalar (mixed order)        | scalars first |       0.9 ms | 0.22 ms |    6.0 ms |  **28x** |
+| 2 ranges + 3 scalars (spatial declared first)        | scalars first |       0.9 ms | 0.20 ms |    5.7 ms |  **29x** |
+| 2 scalars + 3 ranges interleaved                     | scalars first |       0.8 ms | 0.17 ms |    8.0 ms |  **47x** |
+| 4 range queries at 10% selectivity each              | fused        |        1.1 ms | 0.93 ms |   13.1 ms |  **14x** |
 
 ---
 
