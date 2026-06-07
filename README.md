@@ -38,15 +38,15 @@ result = sf.lazy().filter(pl.col("population") > 100_000).range_query(-10.0, 35.
 
 ## Why PyCanopy
 
-Polars has no native spatial query support. Getting bounding-box filters, k-nearest neighbours, or point-in-polygon tests require us to rely on other solutions (e.g. GeoPandas, DuckDB, etc). The alternatives each leave something on the table.
+- Polars has no native spatial query support. Spatial operations (e.g. bounding box queries, finding k-nearest neigbhors, doing polygon contains, etc) requires other solutions, which have limitations
 
-GeoPandas applies linear scans by default; its STRtree requires explicit opt-in via `.sindex` and is the only available index type regardless of data distribution.
+- GeoPandas applies linear scans by default; its STRtree requires explicit opt-in via `.sindex` and is the only available index type regardless of data distribution (not optimal / applicable for all queries)
 
-GeoPolars (currently alpha) is a Polars plugin with Polars-native expressions and lazy evaluation, and it ships an R*-tree index, but the index is manually managed, only one type is available, and Polars' general-purpose optimizer applies no spatial query planning / ordering.
+- GeoPolars is a Polars plugin with Polars-native expressions and lazy evaluation, and it ships an R*-tree index, but the index is manually managed, only one type is available, and Polars' general-purpose optimizer applies no spatial query planning / ordering
 
-DuckDB spatial has a mature R-tree, but it requires the user to interface with it using SQL (less intuitive than Polars), the index must be created explicitly, one index type is available (not optimal for all queries), and also does not perform spatial query planning / ordering.
+- DuckDB spatial has a mature R-tree, but it requires the user to interface with it using SQL (less intuitive than Polars), the index must be created explicitly and is the single index available, and also does not perform spatial query planning / ordering
 
-PyCanopy adds a declarative lazy query layer directly on Polars DataFrames. You describe the operations you want, and PyCanopy decides which index to build, in what order to run each operation, and delegates non-spatial operations to Polars. It is designed for in-memory workloads at the moment.
+- PyCanopy adds a declarative lazy query layer directly on Polars DataFrames. You describe the operations you want, and PyCanopy decides which index to build / use, in what order to run each operation, and delegates non-spatial operations to Polars. It is designed for in-memory workloads at the moment.
 
 |                              | PyCanopy      | GeoPandas        | GeoPolars (alpha)  | DuckDB spatial      |
 |:-----------------------------|:-------------:|:----------------:|:------------------:|:-------------------:|
