@@ -48,6 +48,7 @@ result = sf.lazy().filter(pl.col("population") > 100_000).range_query(-10.0, 35.
 
 - PyCanopy adds a declarative lazy query layer directly on Polars DataFrames. You describe the operations you want, and PyCanopy decides which index to build / use, in what order to run each operation, and delegates non-spatial operations to Polars. It is designed for in-memory workloads at the moment.
 
+
 |                              | PyCanopy      | GeoPandas        | GeoPolars (alpha)  | DuckDB spatial      |
 |:-----------------------------|:-------------:|:----------------:|:------------------:|:-------------------:|
 | Works natively in Polars     | ✓             | ✗                | ✓                  | ✗ (SQL + convert)   |
@@ -227,7 +228,7 @@ sf.engine.flush()
 
 ## Benchmarks
 
-Apple M-series used for benchmarking. **Warm** = cached index, second call. **Index build** = one-time cost, amortised across queries. Uniform distribution; clustered note below.
+Apple M-series used for benchmarking. **Warm** = cached index, second call. **Index build** = one-time cost, amortised across queries. Naive baseline is GeoPandas. Datasets are mocked from random uniform distribution.
 
 ### Single-query operations
 
@@ -241,17 +242,13 @@ Apple M-series used for benchmarking. **Warm** = cached index, second call. **In
 | Within-distance join   |  10,000 |      0.5 ms | 12.6 ms |   1.3 s |   **102x** | —       |
 | Within join (polygons) |  10,000 |      1.6 ms | 0.52 ms |   4.4 s | **8,522x** | 354 KB  |
 
-### Chained lazy queries (N = 100,000, uniform)
+### Chained lazy queries (N = 100,000)
 
-The optimizer reorders scalars before spatial ops regardless of declared order, and fuses consecutive wide spatial predicates into one index pass.
-
-| Chain                                        | Optimizer action | Index build |    Warm | GeoPandas | Speedup  |
-|:---------------------------------------------|:-----------------|------------:|--------:|----------:|---------:|
-| circ\_scalar → range³                        | scalar first     |      2.5 ms | 0.19 ms |    9.2 ms |  **50x** |
-| range² → 3× scalar (spatial declared first)  | scalars first    |      1.0 ms | 0.23 ms |    6.0 ms |  **26x** |
-| range⁴ at 10% selectivity                   | fused            |      1.0 ms | 0.92 ms |     13 ms |  **14x** |
-| wide\_scalar (95%) → tight\_range (1%)       | scalar first     |      4.1 ms | 0.30 ms |    3.1 ms |  **11x** |
-| circ\_scalar + diag\_scalar → kNN k=50       | scalar first     |       15 ms | 1.25 ms |    3.6 ms |   **3x** |
+| Declared input                                    | Naive execution order         | PyCanopy execution order      |    Warm | GeoPandas | Speedup  |
+|:--------------------------------------------------|:------------------------------|:------------------------------|--------:|----------:|---------:|
+| range × 3 → scalar × 2 (spatial declared first)  | range × 3 → scalar × 2       | scalar × 2 → range × 3       | 0.49 ms |    10 ms  |  **21x** |
+| scalar → range → scalar → range² (interleaved)   | scalar → range → scalar → range² | scalar × 2 → range × 3   | 0.56 ms |   8.4 ms  |  **15x** |
+| knn\_join (Q=50, k=5) → scalar × 2               | join → scalar × 2            | join → scalar × 2            | 1.40 ms |    50 ms  |  **36x** |
 
 ---
 
