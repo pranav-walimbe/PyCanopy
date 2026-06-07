@@ -54,6 +54,7 @@ PyCanopy stays native to Polars and adds a query optimizer on top. The optimizer
 | KNN join built-in            | ✓             | ✗                | ✗                  | ✗ (O(N) scan)       |
 | Spatial operation ordering   | ✓             | ✗                | ✗                  | ✗                   |
 | Spatial predicate fusion     | ✓             | ✗                | ✗                  | ✗                   |
+| Live point ingestion         | ✓             | ✗                | ✗                  | ✗                   |
 
 ---
 
