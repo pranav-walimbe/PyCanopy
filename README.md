@@ -38,23 +38,25 @@ result = sf.lazy().filter(pl.col("population") > 100_000).range_query(-10.0, 35.
 
 ## Why PyCanopy
 
-Polars has no native spatial query support. Getting bounding-box filters, k-nearest neighbours, or point-in-polygon tests typically means converting to GeoPandas, managing an index manually, or scanning every row in Python. GeoPandas applies linear scans by default for containment and range tests; its STRtree requires explicit opt-in via `.sindex` and is the only available index type regardless of data distribution. KNN has no built-in path at all.
+Polars has no native spatial query support. Getting bounding-box filters, k-nearest neighbours, or point-in-polygon tests require us to rely on other solutions (e.g. GeoPandas, DuckDB, etc). The alternatives each leave something on the table.
 
-PyCanopy adds a declarative lazy query layer directly on Polars DataFrames. You describe the operations you want, and PyCanopy decides which index to build, in what order to run each operation, and what to hand off to Polars to execute. It is designed for in-memory workloads at the moment. 
+GeoPandas applies linear scans by default; its STRtree requires explicit opt-in via `.sindex` and is the only available index type regardless of data distribution.
 
-|                             | PyCanopy      | GeoPandas        | Manual STRtree |
-|:----------------------------|:-------------:|:----------------:|:--------------:|
-| Works natively in Polars    | ✓             | ✗                | ✗              |
-| Lazy / declarative API      | ✓             | ✗                | ✗              |
-| Auto index selection        | ✓             | ✗ (STR only)     | ✗              |
-| KNN join built-in           | ✓             | ✗                | ✗              |
-| Delta buffer (live append)  | ✓             | ✗                | ✗              |
+GeoPolars (currently alpha) is a Polars plugin with Polars-native expressions and lazy evaluation, and it ships an R*-tree index, but the index is manually managed, only one type is available, and Polars' general-purpose optimizer applies no spatial query planning / ordering.
 
-- **Lazy planning** -- declare ops, the optimizer reorders and fuses them before any index is built
-- **Auto index selection** -- KD-tree, R-tree, uniform grid, or brute force chosen per query
-- **Native Polars** -- results are `pl.DataFrame`, no round-trip through GeoPandas
-- **Rust hot paths** -- zero-copy at the Python boundary, loop-level parallelism via Rayon
-- **Delta buffer** -- append new points and query immediately without rebuilding the index
+DuckDB spatial has a mature R-tree, but it requires the user to interface with it using SQL (less intuitive than Polars), the index must be created explicitly, one index type is available (not optimal for all queries), and also does not perform spatial query planning / ordering.
+
+PyCanopy adds a declarative lazy query layer directly on Polars DataFrames. You describe the operations you want, and PyCanopy decides which index to build, in what order to run each operation, and delegates non-spatial operations to Polars. It is designed for in-memory workloads at the moment.
+
+|                              | PyCanopy      | GeoPandas        | GeoPolars (alpha)  | DuckDB spatial      |
+|:-----------------------------|:-------------:|:----------------:|:------------------:|:-------------------:|
+| Works natively in Polars     | ✓             | ✗                | ✓                  | ✗ (SQL + convert)   |
+| Lazy / declarative API       | ✓             | ✗                | via Polars         | SQL only            |
+| Auto index selection         | ✓             | ✗ (STR only)     | ✗ (R-tree, manual) | ✗ (R-tree, opt-in)  |
+| KNN join built-in            | ✓             | ✗                | ✗                  | ✗ (O(N) scan)       |
+| Spatial operation ordering   | ✓             | ✗                | ✗                  | ✗                   |
+| Spatial Predicate fusion     | ✓             | ✗                | ✗                  | ✗                   |
+| Zero-copy Python boundary    | ✓             | ✗                | ✓                  | ✗                   |
 
 ---
 
