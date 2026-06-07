@@ -14,7 +14,7 @@
 ---
 
 > [!NOTE]
-> Up to **155x** on range queries · up to **1,949x** on kNN · up to **1,521x** on polygon contains · up to **8,522x** on within joins · [Full benchmarks](#benchmarks)
+> Up to **155x** on range queries · up to **1,949x** on kNN · up to **1,521x** on polygon contains · up to **8,522x** on within joins (vs GeoPandas) · [Full benchmarks](#benchmarks)
 
 ---
 
@@ -38,26 +38,22 @@ result = sf.lazy().filter(pl.col("population") > 100_000).range_query(-10.0, 35.
 
 ## Why PyCanopy
 
-- Polars has no native spatial query support. Spatial operations (e.g. bounding box queries, finding k-nearest neigbhors, doing polygon contains, etc) requires other solutions, which have limitations
+Polars has no native spatial support. The standard alternatives each require a tradeoff:
 
-- GeoPandas applies linear scans by default; its STRtree requires explicit opt-in via `.sindex` and is the only available index type regardless of data distribution (not optimal / applicable for all queries)
+- **GeoPandas** applies linear scans by default; STRtree requires explicit `.sindex` opt-in and is the only index type available
+- **GeoPolars** is Polars-native and ships an R*-tree, but the index is manually managed and Polars' optimizer applies no spatial query planning
+- **DuckDB spatial** has a mature R-tree and good performance, but requires leaving Polars for SQL and explicit index creation
 
-- GeoPolars is a Polars plugin with Polars-native expressions and lazy evaluation, and it ships an R*-tree index, but the index is manually managed, only one type is available, and Polars' general-purpose optimizer applies no spatial query planning / ordering
+PyCanopy stays native to Polars and adds a query optimizer on top. The optimizer decides execution order, picks the right index type automatically, and fuses consecutive spatial predicates where possible.
 
-- DuckDB spatial has a mature R-tree, but it requires the user to interface with it using SQL (less intuitive than Polars), the index must be created explicitly and is the single index available, and also does not perform spatial query planning / ordering
-
-- PyCanopy adds a declarative lazy query layer directly on Polars DataFrames. You describe the operations you want, and PyCanopy decides which index to build / use, in what order to run each operation, and delegates non-spatial operations to Polars. It is designed for in-memory workloads at the moment.
-
-
-|                              | PyCanopy      | GeoPandas        | GeoPolars (alpha)  | DuckDB spatial      |
+|                              | PyCanopy      | GeoPandas        | GeoPolars          | DuckDB spatial      |
 |:-----------------------------|:-------------:|:----------------:|:------------------:|:-------------------:|
 | Works natively in Polars     | ✓             | ✗                | ✓                  | ✗ (SQL + convert)   |
 | Lazy / declarative API       | ✓             | ✗                | via Polars         | SQL only            |
 | Auto index selection         | ✓             | ✗ (STR only)     | ✗ (R-tree, manual) | ✗ (R-tree, opt-in)  |
 | KNN join built-in            | ✓             | ✗                | ✗                  | ✗ (O(N) scan)       |
 | Spatial operation ordering   | ✓             | ✗                | ✗                  | ✗                   |
-| Spatial Predicate fusion     | ✓             | ✗                | ✗                  | ✗                   |
-| Zero-copy Python boundary    | ✓             | ✗                | ✓                  | ✗                   |
+| Spatial predicate fusion     | ✓             | ✗                | ✗                  | ✗                   |
 
 ---
 
@@ -86,22 +82,7 @@ result = (
 nearest = sf.lazy().knn(x=2.35, y=48.85, k=5).collect()
 ```
 
-<details>
-<summary>More examples -- KNN join, polygon contains, within-distance join, branching, delta buffer</summary>
-
-### Chaining multiple spatial predicates
-
-```python
-# Two range predicates are fused into a single index build on large datasets.
-result = (
-    sf.lazy()
-    .range_query(0.0, 0.0, 50.0, 50.0)
-    .range_query(10.0, 10.0, 40.0, 40.0)
-    .collect()
-)
-```
-
-### Inspecting the optimizer plan
+### Inspecting the plan
 
 ```python
 # Declare ops in any order — explain() shows what the optimizer will actually run.
@@ -126,7 +107,22 @@ print(lf.explain(optimized=False))
 #     DF [N=100,000]
 ```
 
-Follows Polars' FROM-chain convention: bottom = runs first, top = outermost result. In the optimized plan, FILTER appears below RANGE_QUERY — the scalar filter runs first on raw data, and RANGE_QUERY receives the already-filtered subset. `explain(optimized=False)` shows declaration order for comparison.
+The optimizer flipped the declaration order: the scalar filter runs first on all rows, then the spatial query runs on the smaller survivor set. `explain(optimized=False)` shows declaration order for comparison. Follows Polars' FROM-chain convention — bottom runs first, top is the outermost result.
+
+<details>
+<summary>More examples — KNN join, polygon contains, within-distance join, branching, delta buffer</summary>
+
+### Chaining multiple spatial predicates
+
+```python
+# Two range predicates are fused into a single index build on large datasets.
+result = (
+    sf.lazy()
+    .range_query(0.0, 0.0, 50.0, 50.0)
+    .range_query(10.0, 10.0, 40.0, 40.0)
+    .collect()
+)
+```
 
 ### KNN join
 
