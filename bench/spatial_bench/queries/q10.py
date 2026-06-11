@@ -3,6 +3,11 @@
 PyCanopy: within-join trip pickups against zones and aggregate, then left-join the
 aggregates back onto all zones so empty zones survive with num_trips = 0. The
 reference uses a right sjoin and fills zeros.
+
+The trip points are streamed through the zone index in batches and reduced to
+per-zone partial aggregates each batch, so the join intermediate is bounded by the
+batch size rather than trips times zone-overlap. Counts and sums are additive, so
+combining the per-batch partials yields the exact single-pass result.
 """
 
 from __future__ import annotations
@@ -18,6 +23,8 @@ id = "q10"
 title = "Per-zone trip stats (zones with zero trips retained)"
 
 _TRIP_COLS = ["t_tripkey", "t_pickuploc", "t_pickuptime", "t_dropofftime", "t_distance"]
+# Trip points streamed through the spatial join this many at a time.
+_BATCH = 1_000_000
 
 
 def pycanopy(tables) -> pl.DataFrame:
@@ -26,18 +33,37 @@ def pycanopy(tables) -> pl.DataFrame:
 
     trip = tables.table("trip", _TRIP_COLS)
     qx, qy = wkb_points_to_xy(trip["t_pickuploc"])
-    qdf = trip.select(["t_tripkey", "t_pickuptime", "t_dropofftime", "t_distance"]).with_columns(
-        pl.Series("qx", qx), pl.Series("qy", qy)
-    )
+    qdf = trip.with_columns(
+        pl.Series("qx", qx),
+        pl.Series("qy", qy),
+        duration_seconds=(pl.col("t_dropofftime") - pl.col("t_pickuptime")).dt.total_seconds(),
+    ).select(["qx", "qy", "t_distance", "duration_seconds"])
 
-    joined = sf.lazy().within_join(qdf, "qx", "qy").collect()
-    joined = joined.with_columns(
-        duration_seconds=(pl.col("t_dropofftime") - pl.col("t_pickuptime")).dt.total_seconds()
-    )
-    agg = joined.group_by(["z_zonekey", "z_name"]).agg(
-        avg_duration=pl.col("duration_seconds").mean(),
-        avg_distance=pl.col("t_distance").mean(),
-        num_trips=pl.len(),
+    # Each batch reduces to per-zone partial sums and counts, which combine additively.
+    partials = []
+    for chunk in qdf.iter_slices(_BATCH):
+        joined = sf.lazy().within_join(chunk, "qx", "qy").collect()
+        partials.append(
+            joined.group_by(["z_zonekey", "z_name"]).agg(
+                sum_duration=pl.col("duration_seconds").sum(),
+                sum_distance=pl.col("t_distance").sum(),
+                num_trips=pl.len(),
+            )
+        )
+
+    agg = (
+        pl.concat(partials)
+        .group_by(["z_zonekey", "z_name"])
+        .agg(
+            sum_duration=pl.col("sum_duration").sum(),
+            sum_distance=pl.col("sum_distance").sum(),
+            num_trips=pl.col("num_trips").sum(),
+        )
+        .with_columns(
+            avg_duration=pl.col("sum_duration") / pl.col("num_trips"),
+            avg_distance=pl.col("sum_distance") / pl.col("num_trips"),
+        )
+        .select(["z_zonekey", "z_name", "avg_duration", "avg_distance", "num_trips"])
     )
 
     all_zones = zone.select(["z_zonekey", "z_name"])

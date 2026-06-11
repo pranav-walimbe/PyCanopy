@@ -4,6 +4,10 @@ PyCanopy: within-join trip pickups and dropoffs against zones separately, join o
 trip, and count differing zone pairs. Mirrors the reference, which forms the
 pickup-zone x dropoff-zone cross product per trip (zones are tiered and overlap)
 and counts pairs whose zones differ.
+
+The probe side is streamed in trip-aligned batches: a trip's pickup and dropoff
+always land in the same batch (we slice trip rows), so the per-trip cross product
+is local to a batch and the summed count is exact.
 """
 
 from __future__ import annotations
@@ -19,10 +23,13 @@ id = "q11"
 title = "Count trips that cross between different zones"
 
 
-def _zone_of(sf, trip, wkb_col, zone_col) -> pl.DataFrame:
-    qx, qy = wkb_points_to_xy(trip[wkb_col])
-    q = trip.select("t_tripkey").with_columns(pl.Series("qx", qx), pl.Series("qy", qy))
-    joined = sf.lazy().within_join(q, "qx", "qy").collect()
+# Trips streamed through the spatial join this many at a time (pickup + dropoff together).
+_BATCH = 1_000_000
+
+
+def _zones_of(sf, chunk, x_col, y_col, zone_col) -> pl.DataFrame:
+    """Return (t_tripkey, zone_col) for every zone containing each point of chunk."""
+    joined = sf.lazy().within_join(chunk, x_col, y_col).collect()
     return joined.select(["t_tripkey", "z_zonekey"]).rename({"z_zonekey": zone_col})
 
 
@@ -31,11 +38,22 @@ def pycanopy(tables) -> pl.DataFrame:
     zone = tables.table("zone", ["z_zonekey", "z_boundary"])
     sf = tables.polygon_frame(zone, "z_boundary")
 
-    pickup = _zone_of(sf, trip, "t_pickuploc", "pickup_zone")
-    dropoff = _zone_of(sf, trip, "t_dropoffloc", "dropoff_zone")
+    px, py = wkb_points_to_xy(trip["t_pickuploc"])
+    dx, dy = wkb_points_to_xy(trip["t_dropoffloc"])
+    qdf = trip.select("t_tripkey").with_columns(
+        pl.Series("px", px),
+        pl.Series("py", py),
+        pl.Series("dx", dx),
+        pl.Series("dy", dy),
+    )
 
-    merged = pickup.join(dropoff, on="t_tripkey", how="inner")
-    count = merged.filter(pl.col("pickup_zone") != pl.col("dropoff_zone")).height
+    count = 0
+    for chunk in qdf.iter_slices(_BATCH):
+        pickup = _zones_of(sf, chunk, "px", "py", "pickup_zone")
+        dropoff = _zones_of(sf, chunk, "dx", "dy", "dropoff_zone")
+        merged = pickup.join(dropoff, on="t_tripkey", how="inner")
+        count += merged.filter(pl.col("pickup_zone") != pl.col("dropoff_zone")).height
+
     return pl.DataFrame({"cross_zone_trip_count": [count]})
 
 

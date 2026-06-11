@@ -170,8 +170,10 @@ class SpatialBenchTables:
         """Build a polygon SpatialFrame from a WKB polygon column of ``df``.
 
         The DataFrame is given a ``_geom`` Object column of shapely Polygons that
-        the polygon Engine indexes.
+        the polygon Engine indexes. The source WKB column is dropped once ``_geom``
+        is built, so spatial joins do not replicate the raw geometry bytes across
+        their matched rows.
         """
         polys = wkb_to_polygons(df[wkb_col])
-        enriched = df.with_columns(pl.Series("_geom", polys, dtype=pl.Object))
+        enriched = df.drop(wkb_col).with_columns(pl.Series("_geom", polys, dtype=pl.Object))
         return SpatialFrame.from_polygons(enriched, geometry_col="_geom")
