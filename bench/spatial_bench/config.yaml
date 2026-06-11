@@ -4,7 +4,7 @@
 # AWS credentials come from your normal AWS setup (AWS_PROFILE / ~/.aws / SSO).
 
 # required
-result_bucket: your-results-bucket
+result_bucket: pycanopy-bench-results
 instance_profile: pycanopy-spatialbench
 
 # run
