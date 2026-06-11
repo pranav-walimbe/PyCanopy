@@ -41,7 +41,6 @@ result = sf.lazy().filter(pl.col("population") > 100_000).range_query(-10.0, 35.
 Polars has no native spatial support. The standard alternatives each require a tradeoff:
 
 - **GeoPandas** applies linear scans by default; STRtree requires explicit `.sindex` opt-in and is the only index type available
-- **GeoPolars** is Polars-native and ships an R*-tree, but the index is manually managed and Polars' optimizer applies no spatial query planning
 - **DuckDB spatial** has a mature R-tree and good performance, but requires leaving Polars for SQL and explicit index creation
 
 PyCanopy stays native to Polars and adds a query optimizer on top. The optimizer decides execution order, picks the right index type automatically, and fuses consecutive spatial predicates where possible.

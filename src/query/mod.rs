@@ -1,4 +1,5 @@
 pub mod batch;
+pub mod geometry;
 pub mod nearest;
 pub mod range;
 pub mod types;

@@ -12,6 +12,8 @@ from pycanopy.nodes import (
     KnnNode,
     Plan,
     PluginPath,
+    PolygonKnnJoinNode,
+    PolygonWithinDistanceJoinNode,
     RangeNode,
     ScalarNode,
     WithinDistanceJoinNode,
@@ -175,7 +177,17 @@ class SpatialExecutor:
             return lf.collect()
 
         has_joins = any(
-            isinstance(n, (KnnJoinNode, WithinJoinNode, WithinDistanceJoinNode)) for n in plan
+            isinstance(
+                n,
+                (
+                    KnnJoinNode,
+                    WithinJoinNode,
+                    WithinDistanceJoinNode,
+                    PolygonWithinDistanceJoinNode,
+                    PolygonKnnJoinNode,
+                ),
+            )
+            for n in plan
         )
         if plugin_path == PluginPath.EXPR and sf.x_col not in sf.df.columns and not has_joins:
             plugin_path = PluginPath.IO
@@ -274,6 +286,10 @@ class SpatialExecutor:
             return self._emit_within_join(node, sf, lf)
         if isinstance(node, WithinDistanceJoinNode):
             return self._emit_within_distance_join(node, sf, lf)
+        if isinstance(node, PolygonWithinDistanceJoinNode):
+            return self._emit_polygon_within_distance_join(node, sf, lf)
+        if isinstance(node, PolygonKnnJoinNode):
+            return self._emit_polygon_knn_join(node, sf, lf)
         raise TypeError(f"Unknown plan node type: {type(node)}")
 
     # filter nodes
@@ -400,6 +416,68 @@ class SpatialExecutor:
 
         target_part = _resolve_column_conflicts(query_part, target_part)
         return pl.concat([query_part, target_part], how="horizontal").lazy()
+
+    def _emit_polygon_within_distance_join(
+        self, node: PolygonWithinDistanceJoinNode, sf, lf: pl.LazyFrame
+    ) -> pl.LazyFrame:
+        """For each query point find Engine polygons within node.distance.
+
+        Engine must be a polygon dataset. One row per (query, polygon) match.
+        """
+        query_xs = node.query_df[node.x_col].to_numpy()
+        query_ys = node.query_df[node.y_col].to_numpy()
+
+        pairs_flat = sf.engine.batch_within_distance_to_polygons(
+            query_xs, query_ys, node.distance
+        )
+
+        if len(pairs_flat) == 0:
+            empty_q = node.query_df.clear()
+            empty_t = _resolve_column_conflicts(empty_q, sf.df.clear())
+            return pl.concat([empty_q, empty_t], how="horizontal").lazy()
+
+        pairs = pairs_flat.reshape(-1, 2)
+        q_idx = pl.Series("", pairs[:, 0].astype(np.uint32))
+        t_idx = pl.Series("", pairs[:, 1].astype(np.uint32))
+
+        query_part = node.query_df.gather(q_idx)
+        target_part = sf.df.gather(t_idx)
+
+        target_part = _resolve_column_conflicts(query_part, target_part)
+        return pl.concat([query_part, target_part], how="horizontal").lazy()
+
+    def _emit_polygon_knn_join(
+        self, node: PolygonKnnJoinNode, sf, lf: pl.LazyFrame
+    ) -> pl.LazyFrame:
+        """For each query point find its k nearest Engine polygons.
+
+        Engine must be a polygon dataset. Appends a 'distance_to_polygon' column.
+        Padding slots (queries with fewer than k polygons available) are dropped.
+        """
+        query_xs = node.query_df[node.x_col].to_numpy()
+        query_ys = node.query_df[node.y_col].to_numpy()
+        n_queries = len(node.query_df)
+
+        indices, dists = sf.engine.batch_knn_to_polygons(query_xs, query_ys, node.k)
+
+        q_idx_full = np.repeat(np.arange(n_queries, dtype=np.uint64), node.k)
+        # Drop padding slots (no polygon for that rank).
+        keep = indices != np.iinfo(np.uint64).max
+        q_idx = pl.Series("", q_idx_full[keep].astype(np.uint32))
+        t_idx = pl.Series("", indices[keep].astype(np.uint32))
+        kept_dists = dists[keep]
+
+        if len(t_idx) == 0:
+            empty_q = node.query_df.clear()
+            empty_t = _resolve_column_conflicts(empty_q, sf.df.clear())
+            out = pl.concat([empty_q, empty_t], how="horizontal")
+            return out.with_columns(pl.Series("distance_to_polygon", [], dtype=pl.Float64)).lazy()
+
+        query_part = node.query_df.gather(q_idx)
+        target_part = sf.df.gather(t_idx)
+        target_part = _resolve_column_conflicts(query_part, target_part)
+        joined = pl.concat([query_part, target_part], how="horizontal")
+        return joined.with_columns(pl.Series("distance_to_polygon", kept_dists)).lazy()
 
 
 def _resolve_column_conflicts(left: pl.DataFrame, right: pl.DataFrame) -> pl.DataFrame:

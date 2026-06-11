@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import polars as pl
 
 from pycanopy.engine import Engine
@@ -67,6 +68,80 @@ class SpatialFrame:
     def lazy(self) -> SpatialLazyFrame:
         """Return a SpatialLazyFrame for declarative plan construction."""
         return SpatialLazyFrame(self, [])
+
+    # Geometry aggregations and transforms (polygon datasets). These produce new
+    # tables or scalar columns rather than filtering, so they live on the frame
+    # rather than the lazy plan.
+
+    def polygon_areas(self) -> pl.DataFrame:
+        """Return this frame's DataFrame with an appended 'area' column.
+
+        Polygon datasets only. Area is the unsigned geometric area of each polygon.
+        """
+        areas = self._engine.polygon_areas()
+        return self._df.with_columns(pl.Series("area", areas))
+
+    def intersects_pairs(self) -> pl.DataFrame:
+        """Return all intersecting polygon pairs with overlap area and IoU.
+
+        Polygon datasets only. One row per unordered intersecting pair (i < j).
+
+        Returns:
+            DataFrame with columns: left, right, area_left, area_right, overlap_area, iou.
+            Empty (correct schema) when no polygons intersect.
+        """
+        flat = self._engine.polygon_intersects_self_join()
+        schema = {
+            "left": pl.UInt32,
+            "right": pl.UInt32,
+            "area_left": pl.Float64,
+            "area_right": pl.Float64,
+            "overlap_area": pl.Float64,
+            "iou": pl.Float64,
+        }
+        if len(flat) == 0:
+            return pl.DataFrame(schema=schema)
+
+        pairs = flat.reshape(-1, 2)
+        i_idx = pairs[:, 0]
+        j_idx = pairs[:, 1]
+        areas = self._engine.polygon_areas()
+        overlap = self._engine.polygon_pairs_intersection_area(i_idx, j_idx)
+        area_i = areas[i_idx]
+        area_j = areas[j_idx]
+        union = area_i + area_j - overlap
+        iou = np.divide(overlap, union, out=np.zeros_like(overlap), where=union > 0.0)
+        return pl.DataFrame(
+            {
+                "left": i_idx.astype(np.uint32),
+                "right": j_idx.astype(np.uint32),
+                "area_left": area_i,
+                "area_right": area_j,
+                "overlap_area": overlap,
+                "iou": iou,
+            },
+            schema=schema,
+        )
+
+    def points_within_distance_of_polygon(self, polygon, distance: float) -> pl.DataFrame:
+        """Return the rows whose point lies within `distance` of a single polygon.
+
+        Point datasets only. Distance is to the polygon boundary (zero inside).
+
+        Args:
+            polygon: A single shapely Polygon (interior holes supported).
+            distance: Maximum point-to-polygon distance for a match.
+
+        Returns:
+            The subset of this frame's DataFrame matching the distance predicate.
+        """
+        idx = self._engine.points_within_distance_of_polygon(polygon, distance)
+        return self._df[pl.Series(idx.astype(np.uint32))]
+
+    @staticmethod
+    def convex_hull_area(xs, ys) -> float:
+        """Return the area of the convex hull of a standalone point set."""
+        return Engine.convex_hull_area(xs, ys)
 
     @property
     def df(self) -> pl.DataFrame:

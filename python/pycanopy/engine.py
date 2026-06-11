@@ -152,6 +152,30 @@ def _extract_polygon_rings(
     )
 
 
+def _extract_single_polygon_rings(polygon) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return (xs, ys, ring_offsets) for a single shapely Polygon (exterior first, then holes).
+
+    ring_offsets[r]..ring_offsets[r+1] is ring r's coordinate range in xs/ys.
+    """
+    if shapely.get_type_id(polygon) != _SHAPELY_POLYGON_TYPE_ID:
+        raise TypeError(
+            f"Expected a single Polygon, got {type(polygon).__name__!r}. "
+            "Split MultiPolygons and pass one Polygon."
+        )
+    rings = [shapely.get_exterior_ring(polygon)]
+    for j in range(int(shapely.get_num_interior_rings(polygon))):
+        rings.append(shapely.get_interior_ring(polygon, j))
+    all_rings = np.asarray(rings)
+    coords = shapely.get_coordinates(all_rings)
+    ring_coord_counts = shapely.get_num_coordinates(all_rings)
+    ring_offsets = np.concatenate([[0], np.cumsum(ring_coord_counts)])
+    return (
+        np.ascontiguousarray(coords[:, 0], dtype=np.float64),
+        np.ascontiguousarray(coords[:, 1], dtype=np.float64),
+        np.ascontiguousarray(ring_offsets, dtype=np.int64),
+    )
+
+
 class Engine:
     """Geospatial query engine with automatic index selection.
 
@@ -395,6 +419,120 @@ class Engine:
         return self._core.batch_contains(
             np.ascontiguousarray(query_xs, dtype=np.float64),
             np.ascontiguousarray(query_ys, dtype=np.float64),
+        )
+
+    def batch_within_distance_to_polygons(
+        self,
+        query_xs: np.ndarray,
+        query_ys: np.ndarray,
+        distance: float,
+    ) -> np.ndarray:
+        """For each query point, return (query_idx, polygon_idx) pairs within distance.
+
+        Engine must be a polygon dataset. Distance is measured to the polygon boundary
+        (zero when the point is inside).
+
+        Args:
+            query_xs: Contiguous float64 array of query x coordinates.
+            query_ys: Contiguous float64 array of query y coordinates.
+            distance: Maximum Euclidean point-to-polygon distance for a match.
+
+        Returns:
+            uint64 array of shape (M * 2,) interleaved [q0, e0, q1, e1, ...].
+        """
+        return self._core.batch_within_distance_to_polygons(
+            np.ascontiguousarray(query_xs, dtype=np.float64),
+            np.ascontiguousarray(query_ys, dtype=np.float64),
+            distance,
+        )
+
+    def batch_knn_to_polygons(
+        self,
+        query_xs: np.ndarray,
+        query_ys: np.ndarray,
+        k: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """For each query point, return the k nearest polygons by point-to-polygon distance.
+
+        Engine must be a polygon dataset.
+
+        Args:
+            query_xs: Contiguous float64 array of query x coordinates.
+            query_ys: Contiguous float64 array of query y coordinates.
+            k: Number of nearest polygons per query point.
+
+        Returns:
+            Pair (engine_indices, distances), each a flat array of shape (N * k,) in
+            per-query blocks. Padding slots use 2**64 - 1 and inf when fewer than k exist.
+        """
+        return self._core.batch_knn_to_polygons(
+            np.ascontiguousarray(query_xs, dtype=np.float64),
+            np.ascontiguousarray(query_ys, dtype=np.float64),
+            k,
+        )
+
+    def polygon_intersects_self_join(self) -> np.ndarray:
+        """Return all intersecting polygon pairs (i, j) with i < j. Polygon datasets only.
+
+        Returns:
+            uint64 array of shape (M * 2,) interleaved [i0, j0, i1, j1, ...].
+        """
+        return self._core.polygon_intersects_self_join()
+
+    def polygon_areas(self) -> np.ndarray:
+        """Return the unsigned area of every polygon in dataset order. Polygon datasets only."""
+        return self._core.polygon_areas()
+
+    def polygon_pairs_intersection_area(
+        self,
+        i_idx: np.ndarray,
+        j_idx: np.ndarray,
+    ) -> np.ndarray:
+        """Return the unsigned intersection area for each (i, j) polygon pair.
+
+        Args:
+            i_idx: uint64 array of left polygon indices.
+            j_idx: uint64 array of right polygon indices, same length as i_idx.
+
+        Returns:
+            float64 array of intersection areas, one per pair.
+        """
+        return self._core.polygon_pairs_intersection_area(
+            np.ascontiguousarray(i_idx, dtype=np.uint64),
+            np.ascontiguousarray(j_idx, dtype=np.uint64),
+        )
+
+    def points_within_distance_of_polygon(self, polygon, distance: float) -> np.ndarray:
+        """Return indices of engine points within `distance` of a single query polygon.
+
+        Engine must be a point dataset.
+
+        Args:
+            polygon: A single shapely Polygon (interior holes supported).
+            distance: Maximum Euclidean point-to-polygon distance for a match.
+
+        Returns:
+            uint64 array of matching point indices.
+        """
+        poly_xs, poly_ys, ring_offsets = _extract_single_polygon_rings(polygon)
+        return self._core.points_within_distance_of_polygon(
+            poly_xs, poly_ys, ring_offsets, distance
+        )
+
+    @staticmethod
+    def convex_hull_area(xs, ys) -> float:
+        """Return the area of the convex hull of a standalone point set.
+
+        Args:
+            xs: x coordinates as a float64 array-like.
+            ys: y coordinates as a float64 array-like.
+
+        Returns:
+            Area of the convex hull. Zero for fewer than three points.
+        """
+        return _CoreEngine.convex_hull_area_of(
+            np.ascontiguousarray(xs, dtype=np.float64),
+            np.ascontiguousarray(ys, dtype=np.float64),
         )
 
     def append_delta(self, xs, ys) -> None:

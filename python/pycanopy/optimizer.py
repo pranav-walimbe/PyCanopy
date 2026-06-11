@@ -21,6 +21,8 @@ from pycanopy.nodes import (
     KnnNode,
     Plan,
     PluginPath,
+    PolygonKnnJoinNode,
+    PolygonWithinDistanceJoinNode,
     RangeNode,
     ScalarNode,
     WithinDistanceJoinNode,
@@ -198,8 +200,16 @@ class SpatialOptimizer:
         """
         result: Plan = []
         run: Plan = []
+        _barrier_types = (
+            KnnNode,
+            KnnJoinNode,
+            WithinJoinNode,
+            WithinDistanceJoinNode,
+            PolygonWithinDistanceJoinNode,
+            PolygonKnnJoinNode,
+        )
         for node in plan:
-            if isinstance(node, (KnnNode, KnnJoinNode, WithinJoinNode, WithinDistanceJoinNode)):
+            if isinstance(node, _barrier_types):
                 result.extend(self._sort_run(run))
                 result.append(node)
                 run = []
@@ -334,7 +344,17 @@ class SpatialOptimizer:
             PluginPath.IO or PluginPath.EXPR.
         """
         if any(
-            isinstance(n, (KnnNode, KnnJoinNode, WithinJoinNode, WithinDistanceJoinNode))
+            isinstance(
+                n,
+                (
+                    KnnNode,
+                    KnnJoinNode,
+                    WithinJoinNode,
+                    WithinDistanceJoinNode,
+                    PolygonWithinDistanceJoinNode,
+                    PolygonKnnJoinNode,
+                ),
+            )
             for n in plan
         ):
             return PluginPath.EXPR

@@ -18,13 +18,16 @@ use index::{
 use planner::{cost::IndexKind, selector::select_index};
 use query::{
     batch::{
-        par_bbox_filter, par_contains, par_knn, par_knn_with_delta, par_within_distance,
-        par_within_distance_flipped,
+        par_bbox_filter, par_contains, par_knn, par_knn_to_polygons, par_knn_with_delta,
+        par_points_within_distance_of_polygon, par_polygon_intersects_join, par_within_distance,
+        par_within_distance_flipped, par_within_distance_to_polygons,
     },
+    geometry::{convex_hull_area, polygon_area, polygon_intersection_area},
     nearest::query_nearest,
     range::{query_contains_polygons, query_range_points, query_range_polygons},
     types::Query,
 };
+use rayon::prelude::*;
 use stats::{collector, types::GeometryKind};
 
 #[pyclass]
@@ -890,6 +893,261 @@ impl Engine {
             poly_off,
         );
         Ok(PyArray1::from_vec(py, flat))
+    }
+
+    /// For each query point, return (query_idx, polygon_idx) pairs for every Engine
+    /// polygon within `distance` of it. Engine must be a polygon dataset.
+    ///
+    /// Returns a flat u64 array interleaved [q0, e0, q1, e1, ...] for reshaping to (-1, 2).
+    fn batch_within_distance_to_polygons<'py>(
+        &mut self,
+        py: Python<'py>,
+        query_xs: PyReadonlyArray1<f64>,
+        query_ys: PyReadonlyArray1<f64>,
+        distance: f64,
+    ) -> PyResult<Bound<'py, PyArray1<u64>>> {
+        let qxs = query_xs
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("query_xs must be a contiguous float64 array"))?;
+        let qys = query_ys
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("query_ys must be a contiguous float64 array"))?;
+        if qxs.len() != qys.len() {
+            return Err(PyValueError::new_err(
+                "query_xs and query_ys must have the same length",
+            ));
+        }
+        if self.ring_offsets.is_none() {
+            return Err(PyValueError::new_err(
+                "batch_within_distance_to_polygons requires a polygon dataset",
+            ));
+        }
+        self.build_index_if_needed(IndexKind::RTree);
+        let ring_off = self.ring_offsets.as_deref().unwrap();
+        let poly_off = self.poly_offsets.as_deref().unwrap();
+        let flat = par_within_distance_to_polygons(
+            self.rtree.as_ref().unwrap(),
+            qxs,
+            qys,
+            &self.xs,
+            &self.ys,
+            ring_off,
+            poly_off,
+            distance,
+        );
+        Ok(PyArray1::from_vec(py, flat))
+    }
+
+    /// For each query point, return the k nearest Engine polygons by exact
+    /// point-to-polygon distance. Engine must be a polygon dataset.
+    ///
+    /// Returns (engine_indices, distances), each a flat array of shape (n_queries * k,)
+    /// in per-query blocks. Padding slots (fewer than k candidates) use u64::MAX and inf.
+    #[allow(clippy::type_complexity)]
+    fn batch_knn_to_polygons<'py>(
+        &mut self,
+        py: Python<'py>,
+        query_xs: PyReadonlyArray1<f64>,
+        query_ys: PyReadonlyArray1<f64>,
+        k: usize,
+    ) -> PyResult<(Bound<'py, PyArray1<u64>>, Bound<'py, PyArray1<f64>>)> {
+        let qxs = query_xs
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("query_xs must be a contiguous float64 array"))?;
+        let qys = query_ys
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("query_ys must be a contiguous float64 array"))?;
+        if qxs.len() != qys.len() {
+            return Err(PyValueError::new_err(
+                "query_xs and query_ys must have the same length",
+            ));
+        }
+        if self.ring_offsets.is_none() {
+            return Err(PyValueError::new_err(
+                "batch_knn_to_polygons requires a polygon dataset",
+            ));
+        }
+        self.build_index_if_needed(IndexKind::RTree);
+        let ring_off = self.ring_offsets.as_deref().unwrap();
+        let poly_off = self.poly_offsets.as_deref().unwrap();
+        let n_polys = poly_off.len().saturating_sub(1);
+        let (idx, dist) = par_knn_to_polygons(
+            self.rtree.as_ref().unwrap(),
+            qxs,
+            qys,
+            &self.xs,
+            &self.ys,
+            ring_off,
+            poly_off,
+            k,
+            n_polys,
+        );
+        Ok((PyArray1::from_vec(py, idx), PyArray1::from_vec(py, dist)))
+    }
+
+    /// Self-join: unordered pairs (i, j) with i < j of Engine polygons that intersect.
+    /// Engine must be a polygon dataset.
+    ///
+    /// Returns a flat u64 array interleaved [i0, j0, i1, j1, ...] for reshaping to (-1, 2).
+    fn polygon_intersects_self_join<'py>(
+        &mut self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyArray1<u64>>> {
+        if self.ring_offsets.is_none() {
+            return Err(PyValueError::new_err(
+                "polygon_intersects_self_join requires a polygon dataset",
+            ));
+        }
+        self.build_index_if_needed(IndexKind::RTree);
+        let ring_off = self.ring_offsets.as_deref().unwrap();
+        let poly_off = self.poly_offsets.as_deref().unwrap();
+        let flat = par_polygon_intersects_join(
+            self.rtree.as_ref().unwrap(),
+            &self.xs,
+            &self.ys,
+            ring_off,
+            poly_off,
+        );
+        Ok(PyArray1::from_vec(py, flat))
+    }
+
+    /// Unsigned area of every Engine polygon, in dataset order. Polygon datasets only.
+    fn polygon_areas<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        if self.ring_offsets.is_none() {
+            return Err(PyValueError::new_err(
+                "polygon_areas requires a polygon dataset",
+            ));
+        }
+        let ring_off = self.ring_offsets.as_deref().unwrap();
+        let poly_off = self.poly_offsets.as_deref().unwrap();
+        let n_polys = poly_off.len().saturating_sub(1);
+        let areas: Vec<f64> = (0..n_polys)
+            .into_par_iter()
+            .map(|i| polygon_area(&self.xs, &self.ys, ring_off, poly_off, i))
+            .collect();
+        Ok(PyArray1::from_vec(py, areas))
+    }
+
+    /// Unsigned intersection area for each (i, j) pair of Engine polygons.
+    /// `i_idx` and `j_idx` must have equal length. Polygon datasets only.
+    fn polygon_pairs_intersection_area<'py>(
+        &self,
+        py: Python<'py>,
+        i_idx: PyReadonlyArray1<u64>,
+        j_idx: PyReadonlyArray1<u64>,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        if self.ring_offsets.is_none() {
+            return Err(PyValueError::new_err(
+                "polygon_pairs_intersection_area requires a polygon dataset",
+            ));
+        }
+        let is = i_idx
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("i_idx must be a contiguous uint64 array"))?;
+        let js = j_idx
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("j_idx must be a contiguous uint64 array"))?;
+        if is.len() != js.len() {
+            return Err(PyValueError::new_err(
+                "i_idx and j_idx must have the same length",
+            ));
+        }
+        let ring_off = self.ring_offsets.as_deref().unwrap();
+        let poly_off = self.poly_offsets.as_deref().unwrap();
+        let areas: Vec<f64> = is
+            .par_iter()
+            .zip(js.par_iter())
+            .map(|(&i, &j)| {
+                polygon_intersection_area(
+                    &self.xs,
+                    &self.ys,
+                    ring_off,
+                    poly_off,
+                    i as usize,
+                    j as usize,
+                )
+            })
+            .collect();
+        Ok(PyArray1::from_vec(py, areas))
+    }
+
+    /// Indices of Engine points within `distance` of a single query polygon.
+    /// The query polygon is given as its own ring arrays (exterior ring first, then
+    /// holes). Engine must be a point dataset.
+    fn points_within_distance_of_polygon<'py>(
+        &mut self,
+        py: Python<'py>,
+        poly_xs: PyReadonlyArray1<f64>,
+        poly_ys: PyReadonlyArray1<f64>,
+        poly_ring_offsets: PyReadonlyArray1<i64>,
+        distance: f64,
+    ) -> PyResult<Bound<'py, PyArray1<u64>>> {
+        if self.ring_offsets.is_some() {
+            return Err(PyValueError::new_err(
+                "points_within_distance_of_polygon requires a point dataset",
+            ));
+        }
+        let pxs = poly_xs
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("poly_xs must be a contiguous float64 array"))?;
+        let pys = poly_ys
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("poly_ys must be a contiguous float64 array"))?;
+        let pring = poly_ring_offsets
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("poly_ring_offsets must be contiguous int64"))?;
+        if pxs.len() != pys.len() {
+            return Err(PyValueError::new_err(
+                "poly_xs and poly_ys must have the same length",
+            ));
+        }
+        // The query polygon is a single polygon spanning all its rings.
+        let single_poly_offsets: Vec<i64> = vec![0, (pring.len() - 1) as i64];
+        let kind = if self.stats.n < 500 {
+            IndexKind::BruteForce
+        } else {
+            IndexKind::RTree
+        };
+        self.build_index_if_needed(kind);
+        let pts = match kind {
+            IndexKind::BruteForce => par_points_within_distance_of_polygon(
+                self.brute.as_ref().unwrap(),
+                &self.xs,
+                &self.ys,
+                pxs,
+                pys,
+                pring,
+                &single_poly_offsets,
+                distance,
+            ),
+            _ => par_points_within_distance_of_polygon(
+                self.rtree.as_ref().unwrap(),
+                &self.xs,
+                &self.ys,
+                pxs,
+                pys,
+                pring,
+                &single_poly_offsets,
+                distance,
+            ),
+        };
+        Ok(PyArray1::from_vec(py, pts))
+    }
+
+    /// Area of the convex hull of a standalone set of points. Used for grouped
+    /// aggregations where the points are not part of any Engine dataset.
+    #[staticmethod]
+    fn convex_hull_area_of(xs: PyReadonlyArray1<f64>, ys: PyReadonlyArray1<f64>) -> PyResult<f64> {
+        let xs_sl = xs
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("xs must be a contiguous float64 array"))?;
+        let ys_sl = ys
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("ys must be a contiguous float64 array"))?;
+        if xs_sl.len() != ys_sl.len() {
+            return Err(PyValueError::new_err("xs and ys must have the same length"));
+        }
+        Ok(convex_hull_area(xs_sl, ys_sl))
     }
 
     /// Heap bytes allocated by all currently-built spatial indexes.

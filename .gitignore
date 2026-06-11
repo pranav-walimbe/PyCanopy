@@ -40,4 +40,3 @@ env/
 # Internal development files
 CLAUDE.md
 pycanopy_logo_files/
-benchmarks/

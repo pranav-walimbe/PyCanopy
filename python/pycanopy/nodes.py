@@ -115,6 +115,38 @@ class WithinDistanceJoinNode:
     flip: bool = False
 
 
+@dataclass
+class PolygonWithinDistanceJoinNode:
+    """Spatial join: for each point in query_df find Engine polygons within `distance`.
+
+    Acts as a barrier in the plan. Engine must be a polygon dataset. Distance is
+    measured to the polygon boundary (zero when the point is inside).
+    Result columns: all query_df columns followed by all Engine df columns
+    (conflicting names in the right side are prefixed with 'right_').
+    """
+
+    query_df: pl.DataFrame
+    x_col: str
+    y_col: str
+    distance: float
+
+
+@dataclass
+class PolygonKnnJoinNode:
+    """Spatial join: for each point in query_df find its k nearest Engine polygons.
+
+    Acts as a barrier in the plan. Engine must be a polygon dataset. Ranking is by
+    exact point-to-polygon distance. A 'distance_to_polygon' column is appended.
+    Result columns: all query_df columns followed by all Engine df columns
+    (conflicting names in the right side are prefixed with 'right_').
+    """
+
+    query_df: pl.DataFrame
+    x_col: str
+    y_col: str
+    k: int
+
+
 # Type alias for a complete plan
 Plan = list[
     ScalarNode
@@ -125,4 +157,6 @@ Plan = list[
     | KnnJoinNode
     | WithinJoinNode
     | WithinDistanceJoinNode
+    | PolygonWithinDistanceJoinNode
+    | PolygonKnnJoinNode
 ]

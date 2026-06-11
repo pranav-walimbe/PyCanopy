@@ -33,6 +33,10 @@ Issues = "https://github.com/pranavwalimbe/pycanopy/issues"
 python-source = "python"
 module-name = "pycanopy._core"
 features = ["pyo3/extension-module"]
+# Development-only trees that are tracked in git but must never ship in the
+# published wheel/sdist. The wheel already only packages python-source; these
+# excludes additionally keep them out of the source distribution.
+exclude = ["bench/**/*", "tests/**/*", "bench", "tests"]
 
 [dependency-groups]
 dev = [
@@ -43,6 +47,16 @@ dev = [
     "polars>=0.20",
     "ruff>=0.4",
     "shapely>=2.0",
+]
+# Everything bench/ needs. Core deps (numpy, polars, pyarrow) are already required.
+bench = [
+    "geopandas>=1.0",
+    "shapely>=2.0",
+    "matplotlib>=3.7",
+    "s3fs>=2024.0",
+    "boto3>=1.34",
+    "pyyaml>=6.0",
+    "duckdb>=1.0",
 ]
 
 [tool.pytest.ini_options]

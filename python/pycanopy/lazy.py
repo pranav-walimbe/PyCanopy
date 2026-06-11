@@ -12,6 +12,8 @@ from pycanopy.nodes import (
     KnnNode,
     Plan,
     PluginPath,
+    PolygonKnnJoinNode,
+    PolygonWithinDistanceJoinNode,
     RangeNode,
     ScalarNode,
     WithinDistanceJoinNode,
@@ -60,6 +62,13 @@ def _fmt_node(node) -> str:
     if isinstance(node, WithinDistanceJoinNode):
         flip = ", flip" if node.flip else ""
         return f"WITHIN_DIST_JOIN [dist={node.distance:.4g}, query_rows={len(node.query_df):,}, barrier{flip}]"
+    if isinstance(node, PolygonWithinDistanceJoinNode):
+        return (
+            f"POLY_WITHIN_DIST_JOIN [dist={node.distance:.4g}, "
+            f"query_rows={len(node.query_df):,}, barrier]"
+        )
+    if isinstance(node, PolygonKnnJoinNode):
+        return f"POLY_KNN_JOIN [k={node.k}, query_rows={len(node.query_df):,}, barrier]"
     return f"UNKNOWN [{type(node).__name__}]"
 
 
@@ -260,6 +269,59 @@ class SpatialLazyFrame:
         return SpatialLazyFrame(
             self._sf,
             [*self._plan, WithinJoinNode(query_df, x_col, y_col)],
+        )
+
+    def polygon_within_distance_join(
+        self,
+        query_df: pl.DataFrame,
+        x_col: str,
+        y_col: str,
+        distance: float,
+    ) -> SpatialLazyFrame:
+        """Spatial join: for each point in query_df find Engine polygons within `distance`.
+
+        Engine must be a polygon dataset. Distance is measured to the polygon
+        boundary (zero when the point is inside). Acts as a barrier — no plan
+        nodes are reordered past a join.
+
+        Args:
+            query_df: DataFrame of query points.
+            x_col: Column in query_df holding x coordinates.
+            y_col: Column in query_df holding y coordinates.
+            distance: Maximum point-to-polygon distance for a match.
+
+        Returns:
+            New SpatialLazyFrame with the polygon within-distance join node appended.
+        """
+        return SpatialLazyFrame(
+            self._sf,
+            [*self._plan, PolygonWithinDistanceJoinNode(query_df, x_col, y_col, distance)],
+        )
+
+    def polygon_knn_join(
+        self,
+        query_df: pl.DataFrame,
+        x_col: str,
+        y_col: str,
+        k: int,
+    ) -> SpatialLazyFrame:
+        """Spatial join: for each point in query_df find its k nearest Engine polygons.
+
+        Engine must be a polygon dataset. Ranking is by exact point-to-polygon
+        distance and a 'distance_to_polygon' column is appended. Acts as a barrier.
+
+        Args:
+            query_df: DataFrame of query points.
+            x_col: Column in query_df holding x coordinates.
+            y_col: Column in query_df holding y coordinates.
+            k: Number of nearest polygons per query point.
+
+        Returns:
+            New SpatialLazyFrame with the polygon kNN join node appended.
+        """
+        return SpatialLazyFrame(
+            self._sf,
+            [*self._plan, PolygonKnnJoinNode(query_df, x_col, y_col, k)],
         )
 
     def explain(self, optimized: bool = True) -> str:
