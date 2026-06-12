@@ -13,8 +13,7 @@ import polars as pl
 from shapely.geometry import MultiPoint
 
 from bench.spatial_bench import check
-from bench.spatial_bench.data import wkb_points_to_xy
-from pycanopy import Engine
+from pycanopy import Engine, wkb_points_to_xy
 
 id = "q5"
 title = "Monthly travel hull area for repeat customers"

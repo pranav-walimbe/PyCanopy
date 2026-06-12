@@ -193,3 +193,36 @@ def test_knn_join_multiple_queries(sf):
     # Each query returns 1 nearest: (1.2,0.1)→(1,0), (0.1,0.1)→(0,0)
     assert len(result) == 2
     assert sorted(result["v"].to_list()) == [10, 20]
+
+
+# SpatialFrame.from_wkb_points
+
+
+def _wkb_point_frame():
+    shapely = pytest.importorskip("shapely")
+    pts = [shapely.Point(x, y).wkb for x, y in zip([0.0, 1.0, 2.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0, 1.0])]
+    return pl.DataFrame({"v": [10, 20, 30, 40, 50], "geom": pts})
+
+
+def test_from_wkb_points_appends_coords_and_keeps_columns():
+    sf = SpatialFrame.from_wkb_points(_wkb_point_frame(), "geom")
+    assert "_x" in sf.df.columns and "_y" in sf.df.columns
+    assert sf.df["v"].to_list() == [10, 20, 30, 40, 50]
+    assert sf.df["_x"].to_list() == pytest.approx([0.0, 1.0, 2.0, 0.0, 1.0])
+
+
+def test_from_wkb_points_frame_answers_spatial_query():
+    sf = SpatialFrame.from_wkb_points(_wkb_point_frame(), "geom")
+    result = sf.lazy().range_query(0.0, 0.0, 1.5, 0.5).collect()
+    assert sorted(result["v"].to_list()) == [10, 20]
+
+
+def test_from_wkb_points_custom_coord_names():
+    sf = SpatialFrame.from_wkb_points(_wkb_point_frame(), "geom", x_col="lon", y_col="lat")
+    assert sf.x_col == "lon" and sf.y_col == "lat"
+    assert "lon" in sf.df.columns and "lat" in sf.df.columns
+
+
+def test_from_wkb_points_missing_column_raises():
+    with pytest.raises(ValueError, match="wkb_col"):
+        SpatialFrame.from_wkb_points(pl.DataFrame({"v": [1]}), "geom")

@@ -427,9 +427,7 @@ class SpatialExecutor:
         query_xs = node.query_df[node.x_col].to_numpy()
         query_ys = node.query_df[node.y_col].to_numpy()
 
-        pairs_flat = sf.engine.batch_within_distance_to_polygons(
-            query_xs, query_ys, node.distance
-        )
+        pairs_flat = sf.engine.batch_within_distance_to_polygons(query_xs, query_ys, node.distance)
 
         if len(pairs_flat) == 0:
             empty_q = node.query_df.clear()

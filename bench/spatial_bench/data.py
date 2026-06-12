@@ -20,7 +20,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import numpy as np
 import polars as pl
 import shapely
 
@@ -86,24 +85,6 @@ def read_table(data_dir: str, table: str, columns: list[str] | None = None) -> p
     return pl.read_parquet(path, columns=columns)
 
 
-def wkb_points_to_xy(series: pl.Series) -> tuple[np.ndarray, np.ndarray]:
-    """Convert a WKB-encoded point column to contiguous float64 x and y arrays.
-
-    Args:
-        series: Polars Binary series of WKB point geometries.
-
-    Returns:
-        Pair (xs, ys) of float64 numpy arrays.
-    """
-    geoms = shapely.from_wkb(series.to_numpy())
-    xs = shapely.get_x(geoms)
-    ys = shapely.get_y(geoms)
-    return (
-        np.ascontiguousarray(xs, dtype=np.float64),
-        np.ascontiguousarray(ys, dtype=np.float64),
-    )
-
-
 def wkb_to_polygons(series: pl.Series) -> list:
     """Convert a WKB-encoded polygon column to a list of shapely Polygons.
 
@@ -159,12 +140,7 @@ class SpatialBenchTables:
         Adds internal ``_x`` / ``_y`` columns and indexes on them. The returned
         frame's DataFrame retains all original columns plus ``_x`` / ``_y``.
         """
-        xs, ys = wkb_points_to_xy(df[wkb_col])
-        enriched = df.with_columns(
-            pl.Series("_x", xs),
-            pl.Series("_y", ys),
-        )
-        return SpatialFrame(enriched, x_col="_x", y_col="_y")
+        return SpatialFrame.from_wkb_points(df, wkb_col)
 
     def polygon_frame(self, df: pl.DataFrame, wkb_col: str) -> SpatialFrame:
         """Build a polygon SpatialFrame from a WKB polygon column of ``df``.

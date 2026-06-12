@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import polars as pl
 
-from pycanopy.engine import Engine
+from pycanopy.engine import Engine, wkb_points_to_xy
 from pycanopy.lazy import SpatialLazyFrame
 
 
@@ -34,6 +34,35 @@ class SpatialFrame:
             df[x_col].to_numpy(),
             df[y_col].to_numpy(),
         )
+
+    @classmethod
+    def from_wkb_points(
+        cls,
+        df: pl.DataFrame,
+        wkb_col: str,
+        x_col: str = "_x",
+        y_col: str = "_y",
+    ) -> SpatialFrame:
+        """Construct a point SpatialFrame from a WKB point column of ``df``.
+
+        The WKB points are decoded to coordinates with a vectorised buffer read
+        (no per-point object allocation for standard 2D little-endian points), and
+        the result is appended as ``x_col`` / ``y_col`` before the index is built.
+
+        Args:
+            df: Materialized Polars DataFrame with a WKB point column.
+            wkb_col: Name of the Binary column holding WKB point geometries.
+            x_col: Internal column name for the extracted x coordinates.
+            y_col: Internal column name for the extracted y coordinates.
+
+        Returns:
+            SpatialFrame backed by a point index.
+        """
+        if wkb_col not in df.columns:
+            raise ValueError(f"wkb_col {wkb_col!r} not found in DataFrame")
+        xs, ys = wkb_points_to_xy(df[wkb_col])
+        enriched = df.with_columns(pl.Series(x_col, xs), pl.Series(y_col, ys))
+        return cls(enriched, x_col=x_col, y_col=y_col)
 
     @classmethod
     def from_polygons(

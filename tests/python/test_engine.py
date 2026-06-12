@@ -97,6 +97,31 @@ def test_from_coords_mismatched_lengths_raises():
         Engine.from_coords([0.0, 1.0], [0.0])
 
 
+# Engine.from_wkb_points
+
+
+def _wkb_points(xs, ys, type_=pa.binary()):
+    return pa.array([ShapelyPoint(x, y).wkb for x, y in zip(xs, ys)], type=type_)
+
+
+def test_from_wkb_points_builds_queryable_index():
+    eng = Engine.from_wkb_points(_wkb_points(XS, YS))
+    assert eng.n == 5
+    assert eng.knn(1.2, 0.1, 1) == [1]
+    assert sorted(eng.range_query(0.0, 0.0, 1.5, 0.5)) == [0, 1]
+
+
+def test_from_wkb_points_matches_from_coords():
+    via_wkb = Engine.from_wkb_points(_wkb_points(XS, YS)).knn(1.2, 0.1, 3)
+    via_coords = Engine.from_coords(XS, YS).knn(1.2, 0.1, 3)
+    assert via_wkb == via_coords == [1, 2, 4]
+
+
+def test_from_wkb_points_accepts_large_binary():
+    eng = Engine.from_wkb_points(_wkb_points(XS, YS, type_=pa.large_binary()))
+    assert eng.knn(1.2, 0.1, 1) == [1]
+
+
 def test_repr_contains_n(engine):
     assert "n=5" in repr(engine)
 

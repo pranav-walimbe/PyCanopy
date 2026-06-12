@@ -11,7 +11,7 @@ import pandas as pd
 import polars as pl
 
 from bench.spatial_bench import check
-from bench.spatial_bench.data import wkb_points_to_xy
+from pycanopy import wkb_points_to_xy
 
 id = "q4"
 title = "Zone distribution of the top 1000 trips by tip"

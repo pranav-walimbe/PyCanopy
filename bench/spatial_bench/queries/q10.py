@@ -17,7 +17,7 @@ import pandas as pd
 import polars as pl
 
 from bench.spatial_bench import check
-from bench.spatial_bench.data import wkb_points_to_xy
+from pycanopy import wkb_points_to_xy
 
 id = "q10"
 title = "Per-zone trip stats (zones with zero trips retained)"

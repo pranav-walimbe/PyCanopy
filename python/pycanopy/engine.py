@@ -1,9 +1,13 @@
 """High-level Python engine wrapping the Rust core.
 
-Accepts GeoArrow arrays, geopandas GeoSeries, shapely geometry lists,
-numpy arrays, or plain coordinate sequences. All point input is normalized
+Accepts GeoArrow arrays, WKB point columns, geopandas GeoSeries, shapely geometry
+lists, numpy arrays, or plain coordinate sequences. All point input is normalized
 to a pair of contiguous float64 numpy arrays before crossing the Python/Rust
 boundary, which the Rust side receives as zero-copy slices via NumPy's C API.
+
+WKB point columns take a vectorised path: standard 2D little-endian points are a
+fixed 21-byte record, so the whole column is one contiguous Arrow value buffer that
+is read with a single strided numpy view, with no per-point object allocation.
 """
 
 from __future__ import annotations
@@ -44,6 +48,8 @@ def _to_numpy_xy(geometries) -> tuple[np.ndarray, np.ndarray]:
         )
 
     if isinstance(geometries, (pa.Array, pa.ChunkedArray)):
+        if pa.types.is_binary(geometries.type) or pa.types.is_large_binary(geometries.type):
+            return wkb_points_to_xy(geometries)
         return _geoarrow_to_numpy_xy(geometries)
 
     if type(geometries).__name__ == "GeoSeries":
@@ -93,6 +99,90 @@ def _geoarrow_to_numpy_xy(array: pa.Array | pa.ChunkedArray) -> tuple[np.ndarray
         )
 
     raise ValueError(f"Unsupported GeoArrow encoding: {arr_type}")
+
+
+# A standard 2D little-endian WKB point is a fixed 21-byte record: a 1-byte byte
+# order flag, a 4-byte geometry type, then the x and y doubles.
+_WKB_POINT_NBYTES = 21
+_WKB_LITTLE_ENDIAN = 1
+_WKB_POINT_TYPE = 1
+_WKB_POINT_RECORD = np.dtype([("order", "u1"), ("type", "<u4"), ("x", "<f8"), ("y", "<f8")])
+
+
+def wkb_points_to_xy(points) -> tuple[np.ndarray, np.ndarray]:
+    """Decode a column of WKB point geometries to contiguous float64 x and y arrays.
+
+    Accepts a polars Binary Series, a pyarrow Binary/LargeBinary array (or
+    ChunkedArray), or a numpy object array of WKB byte strings. Standard 2D
+    little-endian points are decoded with a single vectorised buffer read; any other
+    WKB variant (big-endian, Z/M dimensions, nulls) falls back to shapely.
+
+    Args:
+        points: A column of WKB point geometries in one of the accepted forms.
+
+    Returns:
+        Pair (xs, ys) of contiguous float64 numpy arrays.
+    """
+    if hasattr(points, "to_arrow"):  # e.g. a polars Series
+        points = points.to_arrow()
+    if isinstance(points, pa.ChunkedArray):
+        points = points.combine_chunks()
+
+    if isinstance(points, pa.Array):
+        fast = _wkb_points_fast(points)
+        if fast is not None:
+            return fast
+        points = points.to_numpy(zero_copy_only=False)
+
+    geoms = shapely.from_wkb(np.asarray(points, dtype=object))
+    return (
+        np.ascontiguousarray(shapely.get_x(geoms), dtype=np.float64),
+        np.ascontiguousarray(shapely.get_y(geoms), dtype=np.float64),
+    )
+
+
+def _wkb_points_fast(arr: pa.Array) -> tuple[np.ndarray, np.ndarray] | None:
+    """Read x/y straight from a uniformly 21-byte WKB point column, or None if N/A.
+
+    A pyarrow binary column stores every value's bytes concatenated in one data
+    buffer, with an offsets array marking where each value begins. When every value
+    is a tightly packed 21-byte little-endian point, that data buffer is already a
+    flat array of point records, so we reinterpret it with one numpy view rather than
+    building a shapely object per point. Returns None (so the caller falls back to
+    shapely) for nulls, non-binary input, or any non-uniform or non-point layout.
+    """
+    if not (pa.types.is_binary(arr.type) or pa.types.is_large_binary(arr.type)):
+        return None
+    if arr.null_count != 0:
+        return None
+    n = len(arr)
+    if n == 0:
+        return (np.empty(0, dtype=np.float64), np.empty(0, dtype=np.float64))
+
+    _validity, offsets_buf, data_buf = arr.buffers()
+    if offsets_buf is None or data_buf is None:
+        return None
+
+    # Offsets are int32 for binary, int64 for large_binary (what polars emits). A
+    # sliced array shares its parent's buffers, so index past the slice's offset.
+    offset_dtype = "<i8" if pa.types.is_large_binary(arr.type) else "<i4"
+    offsets = np.frombuffer(offsets_buf, dtype=offset_dtype)[arr.offset : arr.offset + n + 1]
+
+    # Fast path needs every value to be exactly _WKB_POINT_NBYTES, tightly packed.
+    if not np.array_equal(offsets - offsets[0], np.arange(n + 1) * _WKB_POINT_NBYTES):
+        return None
+
+    block = np.frombuffer(data_buf, dtype=np.uint8)[offsets[0] : offsets[-1]]
+    records = block.view(_WKB_POINT_RECORD)
+    if not (
+        np.all(records["order"] == _WKB_LITTLE_ENDIAN)
+        and np.all(records["type"] == _WKB_POINT_TYPE)
+    ):
+        return None
+    return (
+        np.ascontiguousarray(records["x"], dtype=np.float64),
+        np.ascontiguousarray(records["y"], dtype=np.float64),
+    )
 
 
 def _extract_polygon_rings(
@@ -207,6 +297,24 @@ class Engine:
         eng = cls.__new__(cls)
         eng._core = _CoreEngine.from_polygon_rings(xs, ys, ring_offsets, poly_offsets)
         return eng
+
+    @classmethod
+    def from_wkb_points(cls, points) -> Engine:
+        """Construct from a column of WKB point geometries.
+
+        The points are decoded with a vectorised buffer read for standard 2D
+        little-endian WKB (no per-point object allocation), falling back to shapely
+        for other variants.
+
+        Args:
+            points: A polars Binary Series, a pyarrow Binary/LargeBinary array, or a
+                numpy object array of WKB byte strings.
+
+        Returns:
+            Engine ready to answer point queries.
+        """
+        xs, ys = wkb_points_to_xy(points)
+        return cls.from_coords(xs, ys)
 
     @classmethod
     def from_coords(cls, xs: Sequence[float], ys: Sequence[float]) -> Engine:

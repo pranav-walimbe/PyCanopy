@@ -14,7 +14,7 @@ import polars as pl
 from shapely.geometry import LineString
 
 from bench.spatial_bench import check
-from bench.spatial_bench.data import wkb_points_to_xy
+from pycanopy import wkb_points_to_xy
 
 id = "q7"
 title = "Route detour ratio (reported vs straight-line distance)"
