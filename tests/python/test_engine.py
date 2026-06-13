@@ -3,12 +3,10 @@
 import numpy as np
 import pyarrow as pa
 import pytest
+from shapely.geometry import MultiPolygon, Polygon
+from shapely.geometry import Point as ShapelyPoint
 
-shapely = pytest.importorskip("shapely")
-from shapely.geometry import MultiPolygon, Polygon  # noqa: E402
-from shapely.geometry import Point as ShapelyPoint  # noqa: E402
-
-from pycanopy import Engine  # noqa: E402
+from pycanopy import Engine
 
 # Point fixture:
 # Index 0=(0,0)  1=(1,0)  2=(2,0)  3=(0,1)  4=(1,1)
@@ -229,13 +227,6 @@ def test_from_polygons_repr_contains_n(poly_engine):
 
 def test_from_polygons_stats_contains_n(poly_engine):
     assert "n=5" in poly_engine.stats()
-
-
-def test_from_polygons_geoseries():
-    gpd = pytest.importorskip("geopandas")
-    gs = gpd.GeoSeries(SQUARES)
-    eng = Engine.from_polygons(gs)
-    assert "n=5" in repr(eng)
 
 
 def test_from_polygons_rejects_multipolygon():

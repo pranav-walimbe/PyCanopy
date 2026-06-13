@@ -5,9 +5,11 @@ trip, and count differing zone pairs. Mirrors the reference, which forms the
 pickup-zone x dropoff-zone cross product per trip (zones are tiered and overlap)
 and counts pairs whose zones differ.
 
-The probe side is streamed in trip-aligned batches: a trip's pickup and dropoff
-always land in the same batch (we slice trip rows), so the per-trip cross product
-is local to a batch and the summed count is exact.
+The pickup and dropoff joins are streamed separately via collect_batched and zipped:
+both probe sides derive from the same trip table (equal height, same morsel size), so
+their i-th morsels cover the same trips. A trip's pickup and dropoff matches therefore
+land in the same paired morsel, the per-trip cross product is local to it, and the
+summed count is exact.
 """
 
 from __future__ import annotations
@@ -23,13 +25,8 @@ id = "q11"
 title = "Count trips that cross between different zones"
 
 
-# Trips streamed through the spatial join this many at a time (pickup + dropoff together).
-_BATCH = 1_000_000
-
-
-def _zones_of(sf, chunk, x_col, y_col, zone_col) -> pl.DataFrame:
-    """Return (t_tripkey, zone_col) for every zone containing each point of chunk."""
-    joined = sf.lazy().within_join(chunk, x_col, y_col).collect()
+def _zones_of(joined, zone_col) -> pl.DataFrame:
+    """Return (t_tripkey, zone_col) for every zone containing each joined point."""
     return joined.select(["t_tripkey", "z_zonekey"]).rename({"z_zonekey": zone_col})
 
 
@@ -40,17 +37,17 @@ def pycanopy(tables) -> pl.DataFrame:
 
     px, py = wkb_points_to_xy(trip["t_pickuploc"])
     dx, dy = wkb_points_to_xy(trip["t_dropoffloc"])
-    qdf = trip.select("t_tripkey").with_columns(
-        pl.Series("px", px),
-        pl.Series("py", py),
-        pl.Series("dx", dx),
-        pl.Series("dy", dy),
-    )
+    keys = trip.select("t_tripkey")
+    pickup_df = keys.with_columns(pl.Series("px", px), pl.Series("py", py))
+    dropoff_df = keys.with_columns(pl.Series("dx", dx), pl.Series("dy", dy))
+
+    pickup_batches = sf.lazy().within_join(pickup_df, "px", "py").collect_batched()
+    dropoff_batches = sf.lazy().within_join(dropoff_df, "dx", "dy").collect_batched()
 
     count = 0
-    for chunk in qdf.iter_slices(_BATCH):
-        pickup = _zones_of(sf, chunk, "px", "py", "pickup_zone")
-        dropoff = _zones_of(sf, chunk, "dx", "dy", "dropoff_zone")
+    for pickup_joined, dropoff_joined in zip(pickup_batches, dropoff_batches, strict=True):
+        pickup = _zones_of(pickup_joined, "pickup_zone")
+        dropoff = _zones_of(dropoff_joined, "dropoff_zone")
         merged = pickup.join(dropoff, on="t_tripkey", how="inner")
         count += merged.filter(pl.col("pickup_zone") != pl.col("dropoff_zone")).height
 

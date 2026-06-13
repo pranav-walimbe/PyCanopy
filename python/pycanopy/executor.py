@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
+from collections.abc import Iterator
+
 import numpy as np
 import polars as pl
 
@@ -24,6 +27,23 @@ from pycanopy.nodes import (
 # Engine results are always indices into the original dataset, so we need to
 # correlate them with post-filter rows using this persistent index.
 _ROW_IDX = "__orig_row__"
+
+# Join node types. All carry a `query_df` probe side, which is what gets streamed.
+_JOIN_TYPES = (
+    KnnJoinNode,
+    WithinJoinNode,
+    WithinDistanceJoinNode,
+    PolygonWithinDistanceJoinNode,
+    PolygonKnnJoinNode,
+)
+
+# Probe rows processed per morsel when a join's query side is streamed. A fixed,
+# cache and memory friendly constant in the spirit of a vectorised execution unit
+# (DuckDB-style: a tuned constant, not a per-query fanout prediction). At typical
+# fanout the per-morsel transient is a few hundred MB, and the value is validated at
+# SF1. Callers override per query via batch_size on collect / collect_batched. A join
+# whose probe fits in one morsel skips streaming entirely.
+MORSEL_ROWS = 1_048_576
 
 
 def _range_plugin_expr(
@@ -151,13 +171,22 @@ class SpatialExecutor:
         (K << N) and re-building a fresh index on M rows would be wasteful.
     """
 
-    def execute(self, plan: Plan, sf, plugin_path: PluginPath = PluginPath.EXPR) -> pl.DataFrame:
+    def execute(
+        self,
+        plan: Plan,
+        sf,
+        plugin_path: PluginPath = PluginPath.EXPR,
+        batch_size: int | None = None,
+    ) -> pl.DataFrame:
         """Execute the optimised plan against sf.
 
         Args:
             plan: Execution-ordered plan from SpatialOptimizer.
             sf: SpatialFrame owning the Engine and DataFrame.
             plugin_path: Whether to use the expression plugin or IO plugin path.
+            batch_size: Probe rows per morsel for streamed joins. Defaults to
+                MORSEL_ROWS. A join whose probe side exceeds this is streamed in
+                morsels and concatenated, bounding the join intermediate.
 
         Returns:
             Filtered or joined Polars DataFrame.
@@ -176,19 +205,18 @@ class SpatialExecutor:
                 lf = lf.filter(node.expr)
             return lf.collect()
 
-        has_joins = any(
-            isinstance(
-                n,
-                (
-                    KnnJoinNode,
-                    WithinJoinNode,
-                    WithinDistanceJoinNode,
-                    PolygonWithinDistanceJoinNode,
-                    PolygonKnnJoinNode,
-                ),
-            )
-            for n in plan
-        )
+        has_joins = any(isinstance(n, _JOIN_TYPES) for n in plan)
+
+        # Large-probe joins stream the probe in morsels and concatenate, so the join
+        # intermediate is bounded by one morsel rather than the full result. Small
+        # probes fall through to the single-shot path below (no slicing overhead).
+        if has_joins:
+            morsel = batch_size if batch_size is not None else MORSEL_ROWS
+            join_node = next(n for n in plan if isinstance(n, _JOIN_TYPES))
+            if join_node.query_df.height > morsel:
+                frames = self._stream_join_frames(plan, sf, morsel)
+                return pl.concat(frames, how="vertical", rechunk=True)
+
         if plugin_path == PluginPath.EXPR and sf.x_col not in sf.df.columns and not has_joins:
             plugin_path = PluginPath.IO
 
@@ -201,6 +229,62 @@ class SpatialExecutor:
         if _ROW_IDX in df.columns:
             df = df.drop(_ROW_IDX)
         return df
+
+    def stream(self, plan: Plan, sf, batch_size: int | None = None) -> Iterator[pl.DataFrame]:
+        """Yield the plan's result one morsel-frame at a time.
+
+        For a plan containing a spatial join the probe side is sliced into morsels
+        of batch_size rows (default MORSEL_ROWS); each morsel is joined and yielded
+        as its own DataFrame, so a caller can reduce it (group_by, count) before the
+        next morsel is computed and the full join result never materialises at once.
+
+        Plans without a join yield a single frame (the whole result) so the iterator
+        form is always usable.
+
+        Args:
+            plan: Execution-ordered plan from SpatialOptimizer.
+            sf: SpatialFrame owning the Engine and DataFrame.
+            batch_size: Probe rows per morsel. Defaults to MORSEL_ROWS.
+
+        Yields:
+            One DataFrame per morsel (one total for non-join plans).
+        """
+        if not any(isinstance(n, _JOIN_TYPES) for n in plan):
+            yield self.execute(plan, sf)
+            return
+        morsel = batch_size if batch_size is not None else MORSEL_ROWS
+        yield from self._stream_join_frames(plan, sf, morsel)
+
+    def _stream_join_frames(self, plan: Plan, sf, morsel_rows: int) -> Iterator[pl.DataFrame]:
+        """Slice the join's probe into morsels, emit each joined frame in turn.
+
+        The first join node is the streaming axis; its query_df is sliced with
+        iter_slices (a zero-copy view per slice). Each slice is run through the
+        existing join emitter with query_df replaced by the slice, then any nodes
+        after the join are applied to that morsel's result. Streaming is exact
+        because a join is row-independent: a probe row's matches do not depend on
+        which morsel its neighbours fall in, so the morsels partition the result.
+
+        Args:
+            plan: Execution-ordered plan containing at least one join node.
+            sf: SpatialFrame owning the Engine and DataFrame.
+            morsel_rows: Probe rows per morsel.
+
+        Yields:
+            One joined DataFrame per probe morsel.
+        """
+        join_pos = next(i for i, n in enumerate(plan) if isinstance(n, _JOIN_TYPES))
+        join_node = plan[join_pos]
+        post_nodes = plan[join_pos + 1 :]
+        # Join emitters ignore the incoming lf (they gather from sf.df directly), so a
+        # placeholder is fine; post-join nodes receive the real joined lf.
+        placeholder = sf.df.lazy()
+        for chunk in join_node.query_df.iter_slices(morsel_rows):
+            sub = dataclasses.replace(join_node, query_df=chunk)
+            lf = self._emit_node(sub, sf, placeholder, PluginPath.EXPR)
+            for node in post_nodes:
+                lf = self._emit_node(node, sf, lf, PluginPath.EXPR)
+            yield lf.collect()
 
     def _execute_io(self, plan: Plan, sf) -> pl.DataFrame:
         """IO path: query the pre-built Engine first, slice df, then apply scalars.

@@ -4,9 +4,9 @@ PyCanopy: a point-to-polygon kNN join of trip pickups against building footprint
 The reference is a nested-loop join (GeoPandas has no kNN join); it is only
 practical at small scale and times out at SF1 in the published numbers.
 
-The trip points are streamed through the building index in batches; each batch
-emits its k-nearest rows, bounding the candidate over-fetch per batch while the
-final result (k rows per trip) is concatenated.
+The library streams the trip points through the building index in morsels and
+concatenates internally, so the join intermediate stays bounded without the query
+batching by hand (collect auto-streams a large-probe join).
 """
 
 from __future__ import annotations
@@ -23,8 +23,6 @@ id = "q12"
 title = "5 nearest buildings to each trip pickup"
 
 K = 5
-# Trip points streamed through the kNN join this many at a time.
-_BATCH = 1_000_000
 
 
 def pycanopy(tables) -> pl.DataFrame:
@@ -35,11 +33,8 @@ def pycanopy(tables) -> pl.DataFrame:
     qx, qy = wkb_points_to_xy(trip["t_pickuploc"])
     query_df = trip.select("t_tripkey").with_columns(pl.Series("qx", qx), pl.Series("qy", qy))
 
-    parts = [
-        sf.lazy().polygon_knn_join(chunk, "qx", "qy", k=K).collect()
-        for chunk in query_df.iter_slices(_BATCH)
-    ]
-    return pl.concat(parts).sort(["distance_to_polygon", "b_buildingkey"])
+    joined = sf.lazy().polygon_knn_join(query_df, "qx", "qy", k=K).collect()
+    return joined.sort(["distance_to_polygon", "b_buildingkey"])
 
 
 def reference(paths) -> pd.DataFrame:
