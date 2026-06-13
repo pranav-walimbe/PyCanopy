@@ -43,17 +43,49 @@ Polars has no native spatial support. The standard alternatives each require a t
 - **GeoPandas** applies linear scans by default; STRtree requires explicit `.sindex` opt-in and is the only index type available
 - **DuckDB spatial** has a mature R-tree and good performance, but requires leaving Polars for SQL and explicit index creation
 
-PyCanopy stays native to Polars and adds a query optimizer on top. The optimizer decides execution order, picks the right index type automatically, and fuses consecutive spatial predicates where possible.
+PyCanopy stays native to Polars and adds a query optimizer on top. The optimizer decides execution order, decides whether an index is worth building (and which kind) from a cost model, and fuses consecutive spatial predicates where possible.
 
 |                              | PyCanopy      | GeoPandas        | GeoPolars          | DuckDB spatial      |
 |:-----------------------------|:-------------:|:----------------:|:------------------:|:-------------------:|
 | Works natively in Polars     | ✓             | ✗                | ✓                  | ✗ (SQL + convert)   |
 | Lazy / declarative API       | ✓             | ✗                | via Polars         | SQL only            |
 | Auto index selection         | ✓             | ✗ (STR only)     | ✗ (R-tree, manual) | ✗ (R-tree, opt-in)  |
+| Cost-based index vs scan     | ✓             | ✗                | ✗                  | ✗                   |
 | KNN join built-in            | ✓             | ✗                | ✗                  | ✗ (O(N) scan)       |
 | Spatial operation ordering   | ✓             | ✗                | ✗                  | ✗                   |
 | Spatial predicate fusion     | ✓             | ✗                | ✗                  | ✗                   |
 | Live point ingestion         | ✓             | ✗                | ✗                  | ✗                   |
+
+---
+
+## Operations
+
+Spatial operations chain off `sf.lazy()` and mix freely with Polars' own `.filter(expr)`. The optimizer orders the whole chain before anything runs.
+
+**Point datasets**
+
+| Operation              | Call                                                  | Returns                                          |
+|:-----------------------|:------------------------------------------------------|:-------------------------------------------------|
+| Range query            | `.range_query(min_x, min_y, max_x, max_y)`            | Rows inside the bounding box                      |
+| k-nearest neighbours   | `.knn(x, y, k)`                                        | The `k` rows nearest a point                      |
+| kNN join               | `.knn_join(df, x_col, y_col, k)`                       | The `k` nearest rows for each query point         |
+| Within-distance join   | `.within_distance_join(df, x_col, y_col, distance)`   | Rows within `distance` of each query point        |
+| Convex-hull area       | `SpatialFrame.convex_hull_area(xs, ys)`               | Area of the convex hull of a point set            |
+
+**Polygon datasets**
+
+| Operation                     | Call                                                          | Returns                                                 |
+|:------------------------------|:-------------------------------------------------------------|:--------------------------------------------------------|
+| Point in polygon              | `.contains(x, y)`                                            | Polygons that contain the point                         |
+| MBR range                     | `.range_query(min_x, min_y, max_x, max_y)`                  | Polygons whose bounding box meets the query box         |
+| Within join                   | `.within_join(df, x_col, y_col)`                            | Polygons that contain each query point                  |
+| Point→polygon distance join   | `.polygon_within_distance_join(df, x_col, y_col, distance)` | Polygons within `distance` of each query point          |
+| Point→polygon kNN join        | `.polygon_knn_join(df, x_col, y_col, k)`                    | The `k` nearest polygons for each query point           |
+| Intersects self-join          | `.intersects_pairs()`                                       | Intersecting polygon pairs with overlap area and IoU    |
+| Area                          | `.polygon_areas()`                                          | Area of each polygon                                    |
+| Points near a polygon         | `.points_within_distance_of_polygon(polygon, distance)`     | Points within `distance` of a single polygon            |
+
+Joins and aggregations that return tables (`.intersects_pairs`, `.polygon_areas`, `.points_within_distance_of_polygon`) are called directly on the `SpatialFrame`; the filtering operations chain off `.lazy()`.
 
 ---
 
@@ -185,6 +217,32 @@ query_df = pl.DataFrame({"qx": [2.35, 13.4], "qy": [48.85, 52.5]})
 result = sf.lazy().within_distance_join(query_df, x_col="qx", y_col="qy", distance=50.0).collect()
 ```
 
+### Point-to-polygon joins
+
+```python
+# (polygon SpatialFrame) For each query point, the polygons within a distance
+# of it — measured to the polygon boundary, zero when the point is inside.
+query_df = pl.DataFrame({"qx": [5.5, 12.3], "qy": [0.5, 0.5]})
+near = sf.lazy().polygon_within_distance_join(query_df, x_col="qx", y_col="qy", distance=2.0).collect()
+
+# For each query point, its k nearest polygons (adds a distance_to_polygon column).
+nearest = sf.lazy().polygon_knn_join(query_df, x_col="qx", y_col="qy", k=3).collect()
+```
+
+### Polygon aggregations
+
+```python
+# Area of every polygon (appends an 'area' column).
+areas = sf.polygon_areas()
+
+# All intersecting polygon pairs, with overlap area and IoU.
+overlaps = sf.intersects_pairs()
+
+# (point SpatialFrame) rows whose point lies within a distance of one polygon.
+from shapely.geometry import box
+pts = point_sf.points_within_distance_of_polygon(box(0.0, 0.0, 1.0, 1.0), distance=0.5)
+```
+
 ### Branching from a shared base
 
 ```python
@@ -238,50 +296,67 @@ Apple M-series used for benchmarking. **Warm** = cached index, second call. **In
 | Within-distance join   |  10,000 |      0.5 ms | 12.6 ms |   1.3 s |   **102x** | —       |
 | Within join (polygons) |  10,000 |      1.6 ms | 0.52 ms |   4.4 s | **8,522x** | 354 KB  |
 
-### Chained lazy queries (N = 100,000)
-
-| Declared input                                    | Naive execution order         | PyCanopy execution order      |    Warm | GeoPandas | Speedup  |
-|:--------------------------------------------------|:------------------------------|:------------------------------|--------:|----------:|---------:|
-| range × 3 → scalar × 2 (spatial declared first)  | range × 3 → scalar × 2       | scalar × 2 → range × 3       | 0.49 ms |    10 ms  |  **21x** |
-| scalar → range → scalar → range² (interleaved)   | scalar → range → scalar → range² | scalar × 2 → range × 3   | 0.56 ms |   8.4 ms  |  **15x** |
-| knn\_join (Q=50, k=5) → scalar × 2               | join → scalar × 2            | join → scalar × 2            | 1.40 ms |    50 ms  |  **36x** |
-
 ---
 
 ## How It Works
+
+PyCanopy plans a query in two layers, then hands the result to Polars to run.
 
 ### Query flow
 
 ```
   sf.lazy().filter(...).range_query(...).knn_join(...).collect()
                             |
-               +------------+------------+
-               |     SpatialOptimizer    |
-               |  * reorder ops by cost  |
-               |  * fuse spatial preds   |
-               |  * select index type    |
-               |  * spatial join order   |
-               +------------+------------+
+            +---------------+----------------+
+            |   Logical plan (whole chain)   |
+            |   order ops . fuse predicates  |
+            |   . pick join side . EXPR/IO   |
+            +---------------+----------------+
                             |
-               +------------+------------+
-               |      Polars executes    |
-               |  scalar filters first   |
-               |  then spatial queries   |
-               +------------+------------+
+            +---------------+----------------+
+            |   Access path (per operation)  |
+            |   index or scan, and which —   |
+            |   a cost model decides         |
+            +---------------+----------------+
+                            |
+            +---------------+----------------+
+            |   Polars runs the emitted ops  |
+            +---------------+----------------+
                             |
                       pl.DataFrame
 ```
 
-### Optimizer decisions
+### Logical planning
 
-- **Predicate pushdown:** scalar predicates are placed before spatial ones and sorted cheapest-first using AST cost estimation. They cost nothing extra and shrink the row count before any index is touched.
-- **Fusion:** consecutive spatial predicates on large datasets are merged into a single index build and one pass over the data.
-- **Index type:** selected per query based on geometry type, data distribution, and selectivity.
-- **Join order:** for symmetric joins (`within_join`, `within_distance_join`), the optimizer indexes the smaller side when it is less than half the size of the other. `knn_join` is asymmetric and always indexes the engine side.
+Decisions about the shape of the query, made over the whole chain before any data is touched:
+
+- **Predicate pushdown** — scalar filters are placed before spatial ones and sorted cheapest-first (each filter's cost is estimated by walking its Polars expression tree). They cost little and shrink the row count before any index is touched.
+- **Fusion** — consecutive spatial predicates on large datasets are merged into a single index build and one pass over the data.
+- **Join side** — for symmetric joins (`within_join`, `within_distance_join`) the planner indexes the smaller side when it is under half the size of the other. `knn_join` is asymmetric and always indexes the engine side.
+- **Execution path** — a very selective filter slices the prebuilt index directly (IO path); otherwise the work is emitted as Polars expressions that filter first and build a small index on the survivors (EXPR path).
+
+### Cost model — index or scan?
+
+For each spatial operation the planner decides whether to use an index at all. Building one isn't free — a tree costs about `N log N` up front — so it only pays off if the index is queried enough times. The planner compares two estimates, where `N` is the dataset size and `Q` is the number of query points:
+
+```
+  scan    =  Q × N                              every row, for every query point
+  index   =  N log N  (build, once)  +  Q × log N  (probe each query point)
+```
+
+Building wins once `Q` climbs past roughly `log N`: a one-off lookup (`Q = 1`) just scans, while a join with thousands of probes builds the index and reuses it across all of them. **Selectivity** — the fraction of rows a predicate keeps, estimated from the data extent and a 32×32 histogram — sharpens the call: a predicate that keeps most rows skips the index outright, since a tree that prunes nothing is slower than a plain scan.
+
+`index_mode` (set per frame) chooses how that estimate is applied:
+
+- **`eager`** (default) — always build the selected index.
+- **`auto`** — build only when the estimate beats a scan for this query's `Q`.
+- **`none`** — always scan, never build.
 
 ### Index management
 
-Indexes are built lazily. Nothing is constructed at load time; stats (extent, point distribution, a 32x32 histogram) are computed eagerly and drive selection at the first query. The selected index is then cached for all subsequent queries.
+Indexes are built lazily — nothing at load time. The dataset stats (extent, point distribution, a 32×32 histogram) are computed once up front, drive the choice at the first query, and the chosen index is cached for every query after. The build policy is the per-frame `index_mode` described above (`SpatialFrame(..., index_mode=...)`, default `eager`).
+
+When a non-brute index is built, its kind comes from:
 
 | Condition                                     | Index        |
 |:----------------------------------------------|:-------------|
