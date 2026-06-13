@@ -20,6 +20,8 @@ REPO_BRANCH="@@REPO_BRANCH@@"
 DATA_TEMPLATE="@@DATA_TEMPLATE@@"
 SCALE_FACTORS="@@SCALE_FACTORS@@"
 MAX_RUNTIME_MIN="@@MAX_RUNTIME_MIN@@"
+MEASURE_ARGS="@@MEASURE_ARGS@@"
+OUT_SUFFIX="@@OUT_SUFFIX@@"
 
 S3_BASE="s3://${RESULT_BUCKET}/${RESULT_PREFIX}/${RUN_ID}"
 LOG=/var/log/pycanopy-bootstrap.log
@@ -58,9 +60,9 @@ for SF in $SCALE_FACTORS; do
   log "copying data ${SRC} -> /data/sf${SF}"
   aws s3 sync "$SRC" "/data/sf${SF}" --region "$REGION" \
     || aws s3 sync --no-sign-request "$SRC" "/data/sf${SF}" --region "$REGION"
-  OUT="/opt/pycanopy/bench/spatial_bench/results/sf${SF}.json"
-  log "measuring sf${SF}"
-  python -m bench.spatial_bench.measure --data-dir "/data/sf${SF}" --scale-factor "$SF" --output "$OUT"
+  OUT="/opt/pycanopy/bench/spatial_bench/results/sf${SF}${OUT_SUFFIX}.json"
+  log "measuring sf${SF}${OUT_SUFFIX}"
+  python -m bench.spatial_bench.measure --data-dir "/data/sf${SF}" --scale-factor "$SF" --output "$OUT" $MEASURE_ARGS
   aws s3 cp "$OUT" "${S3_BASE}/sf${SF}.json" --region "$REGION"
 done
 

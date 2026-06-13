@@ -14,6 +14,7 @@ standard boto3 chain (AWS_PROFILE / ~/.aws / SSO).
 
 from __future__ import annotations
 
+import argparse
 import sys
 import time
 import uuid
@@ -45,7 +46,7 @@ def load_config() -> dict:
     return cfg
 
 
-def _user_data(cfg: dict, run_id: str) -> str:
+def _user_data(cfg: dict, run_id: str, no_index: bool) -> str:
     """Fill the @@NAME@@ placeholders in bootstrap.sh for this run."""
     script = (_DIR / "bootstrap.sh").read_text()
     repl = {
@@ -58,13 +59,17 @@ def _user_data(cfg: dict, run_id: str) -> str:
         "DATA_TEMPLATE": cfg["data_template"],
         "SCALE_FACTORS": " ".join(str(s) for s in cfg["scale_factors"]),
         "MAX_RUNTIME_MIN": str(cfg["max_runtime_min"]),
+        # Extra measure args + an output suffix so a no-index run does not
+        # overwrite the indexed sf{N}.json from a normal run.
+        "MEASURE_ARGS": "--no-index" if no_index else "",
+        "OUT_SUFFIX": "-noindex" if no_index else "",
     }
     for key, value in repl.items():
         script = script.replace(f"@@{key}@@", value)
     return script
 
 
-def launch(ec2, ssm, cfg: dict, run_id: str) -> str:
+def launch(ec2, ssm, cfg: dict, run_id: str, no_index: bool) -> str:
     """Launch the benchmark instance and return its id."""
     ami = ssm.get_parameter(Name=_SSM_AL2023)["Parameter"]["Value"]
     resp = ec2.run_instances(
@@ -72,7 +77,7 @@ def launch(ec2, ssm, cfg: dict, run_id: str) -> str:
         InstanceType=cfg["instance_type"],
         MinCount=1,
         MaxCount=1,
-        UserData=_user_data(cfg, run_id),
+        UserData=_user_data(cfg, run_id, no_index),
         InstanceInitiatedShutdownBehavior="terminate",
         IamInstanceProfile={"Name": cfg["instance_profile"]},
         BlockDeviceMappings=[
@@ -142,7 +147,16 @@ def download(s3, cfg: dict, run_id: str, dest: Path) -> list[Path]:
     return jsons
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run SpatialBench on an ephemeral EC2 box.")
+    parser.add_argument(
+        "--no-index",
+        action="store_true",
+        help="Run every query index-free (brute-force scan) on the box, writing "
+        "sf{N}-noindex.json instead of sf{N}.json.",
+    )
+    args = parser.parse_args(argv)
+
     cfg = load_config()
     region = cfg["region"]
     ec2 = boto3.client("ec2", region_name=region)
@@ -150,8 +164,9 @@ def main() -> int:
     ssm = boto3.client("ssm", region_name=region)
 
     run_id = uuid.uuid4().hex[:12]
-    log(f"run {run_id}: {cfg['instance_type']} in {region}, scale {cfg['scale_factors']}")
-    instance_id = launch(ec2, ssm, cfg, run_id)
+    mode = " [no-index]" if args.no_index else ""
+    log(f"run {run_id}{mode}: {cfg['instance_type']} in {region}, scale {cfg['scale_factors']}")
+    instance_id = launch(ec2, ssm, cfg, run_id, args.no_index)
     try:
         ok = wait_for_success(s3, ec2, cfg, run_id, instance_id)
         jsons = download(s3, cfg, run_id, _DIR / "results")
