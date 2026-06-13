@@ -40,33 +40,45 @@ _SHAPELY_POLYGON = 3
 _SHAPELY_MULTIPOLYGON = 6
 
 
-def _parquet_glob(data_dir: str, table: str) -> str:
-    """Return a parquet path/glob for ``table`` under ``data_dir``.
+def _resolve_table(data_dir: str, table: str) -> tuple[str, bool]:
+    """Locate ``table`` under ``data_dir``, returning (path, is_directory).
 
-    Supports both the single-file layout (``trip.parquet``) produced by
-    ``spatialbench-cli`` and the directory-of-files layout (``trip/``) used by the
-    public S3 datasets. For directories the caller relies on polars/​pyarrow glob
-    expansion. Works for local paths and ``s3://`` URIs.
+    Handles the single-file layout (``trip.parquet`` from ``spatialbench-cli``) and
+    the directory-of-files layout (``trip/``) of the public S3 datasets. ``s3://``
+    URIs are assumed to be directory-of-files. The single source of truth for path
+    resolution shared by the polars (glob) and pandas (directory) readers below.
     """
     base = data_dir.rstrip("/")
-    # Prefer an explicit single file when it is a local path that exists.
-    if not base.startswith("s3://"):
-        single = f"{base}/{table}.parquet"
-        if os.path.exists(single):
-            return single
-        if os.path.isdir(f"{base}/{table}"):
-            return f"{base}/{table}/**/*.parquet"
-        return single
-    # S3: assume the directory-of-files layout from the published datasets.
-    return f"{base}/{table}/**/*.parquet"
+    if base.startswith("s3://"):
+        return f"{base}/{table}", True
+    single = f"{base}/{table}.parquet"
+    if os.path.exists(single):
+        return single, False
+    if os.path.isdir(f"{base}/{table}"):
+        return f"{base}/{table}", True
+    return single, False
+
+
+def _parquet_glob(data_dir: str, table: str) -> str:
+    """Return a parquet path/glob for ``table``, for the polars reader.
+
+    Directories become a ``**/*.parquet`` glob, which polars (and pyarrow glob)
+    expand. Works for local paths and ``s3://`` URIs.
+    """
+    path, is_dir = _resolve_table(data_dir, table)
+    return f"{path}/**/*.parquet" if is_dir else path
 
 
 def table_path(data_dir: str, table: str) -> str:
-    """Return the parquet path/glob for ``table`` (local or s3://). Public wrapper.
+    """Return a parquet path for ``table`` that pandas/pyarrow reads directly.
 
-    Used by the GeoPandas reference, which reads parquet directly with pandas.
+    The GeoPandas reference loads tables with ``pd.read_parquet``, whose pyarrow
+    engine reads a directory as a dataset but does not expand the ``**/*.parquet``
+    glob that ``_parquet_glob`` hands polars. So a directory-of-files table is
+    returned as the bare directory (pyarrow dataset discovery skips ``_`` and ``.``
+    prefixed files such as ``_SUCCESS``). Works for local paths and ``s3://`` URIs.
     """
-    return _parquet_glob(data_dir, table)
+    return _resolve_table(data_dir, table)[0]
 
 
 def read_table(data_dir: str, table: str, columns: list[str] | None = None) -> pl.DataFrame:

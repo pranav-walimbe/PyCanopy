@@ -35,6 +35,12 @@ trap cleanup EXIT
 # Hard cap: terminate even if a step wedges.
 ( sleep $((MAX_RUNTIME_MIN * 60)); log "watchdog timeout"; shutdown -h now ) &
 
+# Publish the log to S3 every 15s so aws_run can show live step progress.
+( while true; do
+    aws s3 cp "$LOG" "${S3_BASE}/progress.log" --region "$REGION" >/dev/null 2>&1 || true
+    sleep 15
+  done ) &
+
 set -e
 log "installing packages"
 dnf install -y gcc git python3.11 python3.11-pip python3.11-devel >/dev/null

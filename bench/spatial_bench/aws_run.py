@@ -112,19 +112,55 @@ def _alive(ec2, instance_id: str) -> bool:
     return state in ("pending", "running")
 
 
+def _emit_progress(s3, cfg: dict, run_id: str, seen: int) -> int:
+    """Print step-progress lines the box has published since the last poll.
+
+    The box uploads its bootstrap log to progress.log every few seconds. We keep
+    only the meaningful lines (bootstrap steps and per-query measure output),
+    dropping the s3-sync byte-counter spam, and print the ones not shown yet.
+
+    Args:
+        s3: boto3 S3 client.
+        cfg: Loaded config (for the result bucket).
+        run_id: This run's id (S3 key prefix).
+        seen: Count of progress lines already printed.
+
+    Returns:
+        Updated count of progress lines printed so far.
+    """
+    key = f"{_RESULT_PREFIX}/{run_id}/progress.log"
+    try:
+        text = s3.get_object(Bucket=cfg["result_bucket"], Key=key)["Body"].read()
+    except s3.exceptions.ClientError:
+        return seen
+    lines = [
+        line.rstrip()
+        for line in text.decode("utf-8", "replace").splitlines()
+        if "[bootstrap]" in line or "running q" in line or "status=" in line
+    ]
+    for line in lines[seen:]:
+        log(f"box: {line}")
+    return len(lines)
+
+
 def wait_for_success(s3, ec2, cfg: dict, run_id: str, instance_id: str) -> bool:
     """Poll S3 for the _SUCCESS marker until it appears or the box dies/times out."""
     key = f"{_RESULT_PREFIX}/{run_id}/_SUCCESS"
     deadline = time.monotonic() + (cfg["max_runtime_min"] + 15) * 60
+    seen = 0
     while time.monotonic() < deadline:
+        prev = seen
+        seen = _emit_progress(s3, cfg, run_id, seen)
         try:
             s3.head_object(Bucket=cfg["result_bucket"], Key=key)
+            _emit_progress(s3, cfg, run_id, seen)  # flush any trailing lines
             return True
         except s3.exceptions.ClientError:
             pass
         if not _alive(ec2, instance_id):
             return False  # terminated without success: a failed run
-        log("waiting for results ...")
+        if seen == prev:
+            log("waiting for results ...")
         time.sleep(_POLL_SECONDS)
     return False
 

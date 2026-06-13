@@ -354,27 +354,19 @@ class SpatialLazyFrame:
     def collect(
         self, batch_size: int | None = None, auto_index: bool | None = None
     ) -> pl.DataFrame:
-        """Optimise and execute the plan. Returns a Polars DataFrame.
+        """Optimise (SpatialOptimizer) and execute (SpatialExecutor) the plan.
 
-        Triggers:
-          1. SpatialOptimizer: selectivity estimation, cost-based sort, fusion pass.
-          2. SpatialOptimizer: plugin path selection (EXPR vs IO).
-          3. SpatialExecutor: emits the optimised plan via the chosen plugin path.
-
-        When the plan ends in a spatial join whose probe side exceeds the morsel
-        size, the probe is streamed in morsels and the results concatenated, so the
-        join intermediate stays bounded. The returned DataFrame is identical to the
-        unstreamed result. Use collect_batched to reduce per morsel instead of
-        concatenating, which keeps the full join result from materialising at all.
+        If the plan ends in a spatial join whose probe exceeds the morsel size, the
+        probe is streamed in morsels and the results concatenated, keeping the join
+        intermediate bounded; the result is identical to the unstreamed one. Use
+        collect_batched to reduce per morsel instead of concatenating.
 
         Args:
             batch_size: Probe rows per morsel for streamed joins. Defaults to
                 MORSEL_ROWS. Ignored for plans without a join.
             auto_index: True/False overrides the engine's index mode for this call
-                (False answers the query by brute-force scan, building no index);
-                None (default) inherits the frame's configured mode (indexing on
-                unless disabled via engine.set_auto_index). Results are identical
-                either way; only the cost differs.
+                (False scans brute-force, building no index); None (default) inherits
+                the frame's configured mode. Results are identical either way.
 
         Returns:
             The executed result as a Polars DataFrame.
@@ -390,25 +382,20 @@ class SpatialLazyFrame:
     ) -> Iterator[pl.DataFrame]:
         """Execute the plan and yield the result one morsel-frame at a time.
 
-        For a plan ending in a spatial join the probe side is sliced into morsels of
-        batch_size rows (default MORSEL_ROWS); each morsel is joined and yielded as
-        its own DataFrame. A caller reduces each morsel (group_by, count, ...) before
-        requesting the next, so the full join result never materialises at once --
-        the intended path for large joins whose final output is itself too big to
-        hold (it is reduced downstream). Partial reductions of count and sum combine
-        additively across morsels.
-
-        Plans without a join yield a single frame, so the iterator form is always
-        usable. Two joins streamed from the same source table (equal height, equal
-        batch_size) yield morsel-aligned batches, so a per-trip merge of their
-        i-th batches is local and exact.
+        For a plan ending in a spatial join the probe is sliced into morsels of
+        batch_size rows (default MORSEL_ROWS); each morsel is joined and yielded
+        separately, so the full join result never materialises at once. Callers
+        reduce each morsel (group_by, count, ...) before requesting the next; count
+        and sum combine additively across morsels. Plans without a join yield a
+        single frame. Two joins streamed from the same source table (equal height
+        and batch_size) yield morsel-aligned batches, so merging their i-th batches
+        is local and exact.
 
         Args:
             batch_size: Probe rows per morsel. Defaults to MORSEL_ROWS.
             auto_index: True/False overrides the engine's index mode for the whole
                 iterator (False scans brute-force, building no index); None (default)
-                inherits the frame's configured mode. An explicit override is held
-                across lazy morsel consumption.
+                inherits the frame's configured mode.
 
         Returns:
             An iterator of DataFrames, one per probe morsel.
@@ -422,16 +409,12 @@ class SpatialLazyFrame:
     def collect_all(frames: list[SpatialLazyFrame]) -> list[pl.DataFrame]:
         """Collect multiple SpatialLazyFrames, caching any shared plan prefix.
 
-        When frames were branched from the same base SpatialLazyFrame they share
-        plan nodes as identical Python objects (SpatialLazyFrame builds plans via
-        [*self._plan, new_node], which reuses references rather than copying). This
-        method detects that shared prefix, emits it once as a cached Polars
-        LazyFrame, builds each branch's suffix from the cache, then collects all
-        branches in a single pl.collect_all() call.
-
-        Falls back to independent collect() calls when no common prefix is found.
-
-        All frames must belong to the same SpatialFrame.
+        Frames branched from the same base share plan nodes as identical Python
+        objects (plans are built via [*self._plan, new_node], reusing references).
+        This emits the shared prefix once as a cached Polars LazyFrame, builds each
+        branch's suffix from it, and collects all branches in one pl.collect_all()
+        call. Falls back to independent collect() calls when no common prefix is
+        found. All frames must belong to the same SpatialFrame.
 
         Args:
             frames: SpatialLazyFrames to collect. Must share a SpatialFrame.

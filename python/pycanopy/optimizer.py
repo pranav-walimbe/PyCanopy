@@ -298,13 +298,10 @@ class SpatialOptimizer:
     def _detect_fanout(self, plans: list[Plan]) -> int:
         """Return the length of the longest plan prefix shared by all plans.
 
-        Uses Python object identity (is) to detect shared nodes. This works because
-        SpatialLazyFrame builds plans via [*self._plan, new_node], which reuses
-        existing node references rather than copying them.
-
-        A node at position i is shared across all plans if every plan's node at that
-        position is the same Python object. The first position where any plan diverges
-        marks the end of the shared prefix.
+        A node at position i is shared if it is the same Python object across every
+        plan; the first diverging position ends the prefix. Identity works because
+        SpatialLazyFrame builds plans via [*self._plan, new_node], reusing node
+        references rather than copying them.
 
         Args:
             plans: Two or more plans to compare.
