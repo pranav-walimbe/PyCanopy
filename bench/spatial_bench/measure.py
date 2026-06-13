@@ -36,7 +36,7 @@ def _data_paths(data_dir: str) -> dict[str, str]:
     return {t: table_path(data_dir, t) for t in tables}
 
 
-def measure_query(query, data_dir: str, run_reference: bool, auto_index: bool = True) -> dict:
+def measure_query(query, data_dir: str, run_reference: bool, index_mode: str = "eager") -> dict:
     """Measure one query: PyCanopy cold/warm timings plus optional oracle check.
 
     Args:
@@ -44,15 +44,15 @@ def measure_query(query, data_dir: str, run_reference: bool, auto_index: bool = 
             and validate(pc_df, ref_df).
         data_dir: Local directory or s3:// URI of the parquet tables.
         run_reference: When True, run the GeoPandas reference and checksum outputs.
-        auto_index: When False, every SpatialFrame the query builds runs index-free,
-            so the timings reflect brute-force scans (the --no-index comparison).
+        index_mode: Index build policy ("eager" / "none" / "auto") for the frames the
+            query builds. "none" gives brute-force timings (the --no-index comparison).
 
     Returns:
         Result dict for this query (timings, status, row_count, validation).
     """
     out: dict = {"title": query.title}
     # Fresh table handles per query so the cold run pays the real load + index cost.
-    tables = SpatialBenchTables(data_dir=data_dir, scale_factor=0, auto_index=auto_index)
+    tables = SpatialBenchTables(data_dir=data_dir, scale_factor=0, index_mode=index_mode)
 
     try:
         cold_s, pc_df = _time_s(lambda: query.pycanopy(tables))
@@ -105,29 +105,46 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Skip the GeoPandas reference run and correctness check.",
     )
-    parser.add_argument(
-        "--no-index",
-        action="store_true",
-        help="Run every query index-free (brute-force scan) to compare against the "
-        "indexed timings. Results are identical; only the cost differs.",
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--index-eager",
+        action="store_const",
+        const="eager",
+        dest="index_mode",
+        help="Build an index whenever a kind is selected (default).",
     )
+    mode_group.add_argument(
+        "--index-auto",
+        action="store_const",
+        const="auto",
+        dest="index_mode",
+        help="Build an index only when the cost model beats a brute-force scan.",
+    )
+    mode_group.add_argument(
+        "--index-none",
+        action="store_const",
+        const="none",
+        dest="index_mode",
+        help="Never index; every query scans brute-force.",
+    )
+    parser.set_defaults(index_mode="eager")
     args = parser.parse_args(argv)
 
-    auto_index = not args.no_index
+    index_mode = args.index_mode
     selected = query_registry.select(args.queries)
     results: dict = {
         "scale_factor": args.scale_factor,
         "data_dir": args.data_dir,
-        "auto_index": auto_index,
+        "index_mode": index_mode,
         "reference_meta": REFERENCE_META,
         "queries": {},
     }
 
     for query in selected:
-        mode = "" if auto_index else " [no-index]"
-        print(f"running {query.id}: {query.title}{mode} ...", flush=True)
+        tag = "" if index_mode == "eager" else f" [{index_mode}]"
+        print(f"running {query.id}: {query.title}{tag} ...", flush=True)
         res = measure_query(
-            query, args.data_dir, run_reference=not args.no_reference, auto_index=auto_index
+            query, args.data_dir, run_reference=not args.no_reference, index_mode=index_mode
         )
         results["queries"][query.id] = res
         status = res.get("status")

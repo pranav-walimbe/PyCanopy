@@ -351,22 +351,18 @@ class SpatialLazyFrame:
             path = None
         return _fmt_plan(plan, path, engine.n, optimized=optimized)
 
-    def collect(
-        self, batch_size: int | None = None, auto_index: bool | None = None
-    ) -> pl.DataFrame:
+    def collect(self, batch_size: int | None = None) -> pl.DataFrame:
         """Optimise (SpatialOptimizer) and execute (SpatialExecutor) the plan.
 
         If the plan ends in a spatial join whose probe exceeds the morsel size, the
         probe is streamed in morsels and the results concatenated, keeping the join
         intermediate bounded; the result is identical to the unstreamed one. Use
-        collect_batched to reduce per morsel instead of concatenating.
+        collect_batched to reduce per morsel instead of concatenating. Indexing is
+        governed by the frame's index mode, fixed at construction.
 
         Args:
             batch_size: Probe rows per morsel for streamed joins. Defaults to
                 MORSEL_ROWS. Ignored for plans without a join.
-            auto_index: True/False overrides the engine's index mode for this call
-                (False scans brute-force, building no index); None (default) inherits
-                the frame's configured mode. Results are identical either way.
 
         Returns:
             The executed result as a Polars DataFrame.
@@ -375,11 +371,9 @@ class SpatialLazyFrame:
         executor = SpatialExecutor()
         optimized = optimizer.optimize(self._plan, self._sf.engine)
         plugin_path = optimizer._select_plugin_path(optimized, self._sf.engine)
-        return executor.execute(optimized, self._sf, plugin_path, batch_size, auto_index)
+        return executor.execute(optimized, self._sf, plugin_path, batch_size)
 
-    def collect_batched(
-        self, batch_size: int | None = None, auto_index: bool | None = None
-    ) -> Iterator[pl.DataFrame]:
+    def collect_batched(self, batch_size: int | None = None) -> Iterator[pl.DataFrame]:
         """Execute the plan and yield the result one morsel-frame at a time.
 
         For a plan ending in a spatial join the probe is sliced into morsels of
@@ -393,9 +387,6 @@ class SpatialLazyFrame:
 
         Args:
             batch_size: Probe rows per morsel. Defaults to MORSEL_ROWS.
-            auto_index: True/False overrides the engine's index mode for the whole
-                iterator (False scans brute-force, building no index); None (default)
-                inherits the frame's configured mode.
 
         Returns:
             An iterator of DataFrames, one per probe morsel.
@@ -403,7 +394,7 @@ class SpatialLazyFrame:
         optimizer = SpatialOptimizer()
         executor = SpatialExecutor()
         optimized = optimizer.optimize(self._plan, self._sf.engine)
-        return executor.stream(optimized, self._sf, batch_size, auto_index)
+        return executor.stream(optimized, self._sf, batch_size)
 
     @staticmethod
     def collect_all(frames: list[SpatialLazyFrame]) -> list[pl.DataFrame]:

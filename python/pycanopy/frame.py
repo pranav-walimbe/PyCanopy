@@ -20,9 +20,12 @@ class SpatialFrame:
         df: Materialized Polars DataFrame.
         x_col: Name of the column holding x (longitude/easting) coordinates.
         y_col: Name of the column holding y (latitude/northing) coordinates.
+        index_mode: Index build policy fixed for this frame's engine. "eager"
+            (default) builds an index whenever a kind is selected, "none" always
+            scans brute-force, "auto" builds only when the cost model beats a scan.
     """
 
-    def __init__(self, df: pl.DataFrame, x_col: str, y_col: str) -> None:
+    def __init__(self, df: pl.DataFrame, x_col: str, y_col: str, index_mode: str = "eager") -> None:
         if x_col not in df.columns:
             raise ValueError(f"x_col {x_col!r} not found in DataFrame")
         if y_col not in df.columns:
@@ -34,6 +37,7 @@ class SpatialFrame:
             df[x_col].to_numpy(),
             df[y_col].to_numpy(),
         )
+        self._engine.set_index_mode(index_mode)
 
     @classmethod
     def from_wkb_points(
@@ -42,6 +46,7 @@ class SpatialFrame:
         wkb_col: str,
         x_col: str = "_x",
         y_col: str = "_y",
+        index_mode: str = "eager",
     ) -> SpatialFrame:
         """Construct a point SpatialFrame from a WKB point column of ``df``.
 
@@ -54,6 +59,7 @@ class SpatialFrame:
             wkb_col: Name of the Binary column holding WKB point geometries.
             x_col: Internal column name for the extracted x coordinates.
             y_col: Internal column name for the extracted y coordinates.
+            index_mode: Index build policy ("eager" / "none" / "auto").
 
         Returns:
             SpatialFrame backed by a point index.
@@ -62,7 +68,7 @@ class SpatialFrame:
             raise ValueError(f"wkb_col {wkb_col!r} not found in DataFrame")
         xs, ys = wkb_points_to_xy(df[wkb_col])
         enriched = df.with_columns(pl.Series(x_col, xs), pl.Series(y_col, ys))
-        return cls(enriched, x_col=x_col, y_col=y_col)
+        return cls(enriched, x_col=x_col, y_col=y_col, index_mode=index_mode)
 
     @classmethod
     def from_polygons(
@@ -71,6 +77,7 @@ class SpatialFrame:
         geometry_col: str,
         x_col: str = "_x",
         y_col: str = "_y",
+        index_mode: str = "eager",
     ) -> SpatialFrame:
         """Construct from a DataFrame containing a shapely/GeoArrow geometry column.
 
@@ -79,6 +86,7 @@ class SpatialFrame:
             geometry_col: Name of the column holding shapely Polygon geometries.
             x_col: Internal column name for extracted x coordinates.
             y_col: Internal column name for extracted y coordinates.
+            index_mode: Index build policy ("eager" / "none" / "auto").
 
         Returns:
             SpatialFrame backed by a polygon index.
@@ -87,6 +95,7 @@ class SpatialFrame:
             raise ValueError(f"geometry_col {geometry_col!r} not found in DataFrame")
         geometries = df[geometry_col].to_list()
         engine = Engine.from_polygons(geometries)
+        engine.set_index_mode(index_mode)
         sf = object.__new__(cls)
         sf._df = df
         sf._x_col = x_col

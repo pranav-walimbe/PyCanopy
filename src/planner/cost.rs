@@ -1,3 +1,4 @@
+use crate::planner::calibration::CostFactors;
 use crate::query::types::Query;
 use crate::stats::types::DatasetStats;
 
@@ -8,6 +9,64 @@ pub enum IndexKind {
     RTree,
     KdTree,
     Grid,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// How aggressively the planner builds spatial indexes
+pub enum IndexMode {
+    None,
+    Eager,
+    Auto,
+}
+
+/// Estimated nanoseconds to build `kind` over `n` items.
+/// Trees are O(n log2 n), the grid is O(n), brute force builds nothing.
+fn build_cost(kind: IndexKind, n: usize, factors: &CostFactors) -> f64 {
+    let n = n as f64;
+    match kind {
+        IndexKind::BruteForce => 0.0,
+        IndexKind::Grid => n * factors.build_ns_per_item,
+        IndexKind::KdTree | IndexKind::RTree => n * n.log2().max(1.0) * factors.build_ns_per_item,
+    }
+}
+
+/// Estimated nanoseconds to run `q_count` probes against `kind`.
+/// Brute force scans all n per probe; an index descends log2(n) and reports the
+/// expected results per probe at the kind's per-result factor.
+fn probe_cost(
+    kind: IndexKind,
+    stats: &DatasetStats,
+    query: &Query,
+    q_count: usize,
+    factors: &CostFactors,
+) -> f64 {
+    let n = stats.n as f64;
+    let q = q_count as f64;
+    match kind {
+        IndexKind::BruteForce => q * n * factors.scan_ns_per_item,
+        _ => {
+            let results = (selectivity(stats, query) * n).max(1.0);
+            let per = match kind {
+                IndexKind::RTree => factors.rtree_ns_per_result,
+                IndexKind::KdTree => factors.kdtree_ns_per_result,
+                IndexKind::Grid => factors.grid_ns_per_result,
+                IndexKind::BruteForce => unreachable!(),
+            };
+            q * (n.log2().max(1.0) + results) * per
+        }
+    }
+}
+
+/// Total estimated cost of `q_count` probes via `kind`, with the one-time build
+/// amortised across them. Lower wins when the planner compares candidates.
+pub fn total_cost(
+    kind: IndexKind,
+    stats: &DatasetStats,
+    query: &Query,
+    q_count: usize,
+    factors: &CostFactors,
+) -> f64 {
+    build_cost(kind, stats.n, factors) + probe_cost(kind, stats, query, q_count, factors)
 }
 
 /// Fraction of the dataset expected to match the query (0..=1)

@@ -1,4 +1,5 @@
-use crate::planner::cost::{selectivity, IndexKind};
+use crate::planner::calibration::CostFactors;
+use crate::planner::cost::{selectivity, total_cost, IndexKind, IndexMode};
 use crate::query::types::Query;
 use crate::stats::types::{DatasetStats, Distribution, GeometryKind};
 
@@ -42,6 +43,47 @@ pub fn select_index(stats: &DatasetStats, query: &Query) -> IndexKind {
             _ => IndexKind::RTree,
         },
     }
+}
+
+/// Apply the index mode to a candidate kind, returning the kind to actually use.
+/// None always scans. Eager keeps the candidate. Auto keeps it only when its
+/// estimated cost beats brute force over `q_count` probes. Kernels that require a
+/// specific index (e.g. an R-tree) pass that as the candidate; the standard path
+/// gets the candidate from `select_index` via `plan_access`.
+pub fn plan_access_with_kind(
+    stats: &DatasetStats,
+    query: &Query,
+    q_count: usize,
+    mode: IndexMode,
+    factors: &CostFactors,
+    candidate: IndexKind,
+) -> IndexKind {
+    if mode == IndexMode::None || candidate == IndexKind::BruteForce {
+        return IndexKind::BruteForce;
+    }
+    if mode == IndexMode::Eager {
+        return candidate;
+    }
+    let indexed = total_cost(candidate, stats, query, q_count, factors);
+    let brute = total_cost(IndexKind::BruteForce, stats, query, q_count, factors);
+    if indexed < brute {
+        candidate
+    } else {
+        IndexKind::BruteForce
+    }
+}
+
+/// Plan the index kind for `query`, honouring the index mode. The candidate kind
+/// comes from `select_index`.
+pub fn plan_access(
+    stats: &DatasetStats,
+    query: &Query,
+    q_count: usize,
+    mode: IndexMode,
+    factors: &CostFactors,
+) -> IndexKind {
+    let candidate = select_index(stats, query);
+    plan_access_with_kind(stats, query, q_count, mode, factors, candidate)
 }
 
 #[cfg(test)]
@@ -133,5 +175,56 @@ mod tests {
             approximate: false,
         };
         assert_eq!(select_index(&s, &q), IndexKind::BruteForce);
+    }
+
+    fn big_knn() -> Query {
+        Query::Knn {
+            point: Point::new(0.0, 0.0),
+            k: 5,
+            approximate: false,
+        }
+    }
+
+    #[test]
+    fn mode_none_always_brute_force() {
+        let s = stats(1_000_000, GeometryKind::Point, Distribution::Clustered);
+        let f = CostFactors::default();
+        assert_eq!(
+            plan_access(&s, &big_knn(), 1_000_000, IndexMode::None, &f),
+            IndexKind::BruteForce
+        );
+    }
+
+    #[test]
+    fn mode_eager_matches_selector() {
+        let s = stats(1_000_000, GeometryKind::Point, Distribution::Clustered);
+        let f = CostFactors::default();
+        // Eager ignores q_count and returns the selector's kind.
+        assert_eq!(
+            plan_access(&s, &big_knn(), 1, IndexMode::Eager, &f),
+            select_index(&s, &big_knn())
+        );
+    }
+
+    #[test]
+    fn auto_skips_index_for_single_probe() {
+        // One probe against a large dataset: build cost is not amortised.
+        let s = stats(1_000_000, GeometryKind::Point, Distribution::Clustered);
+        let f = CostFactors::default();
+        assert_eq!(
+            plan_access(&s, &big_knn(), 1, IndexMode::Auto, &f),
+            IndexKind::BruteForce
+        );
+    }
+
+    #[test]
+    fn auto_builds_index_for_many_probes() {
+        // Many probes amortise the build, so the index wins.
+        let s = stats(1_000_000, GeometryKind::Point, Distribution::Clustered);
+        let f = CostFactors::default();
+        assert_eq!(
+            plan_access(&s, &big_knn(), 1_000_000, IndexMode::Auto, &f),
+            IndexKind::KdTree
+        );
     }
 }

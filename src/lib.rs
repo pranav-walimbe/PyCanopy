@@ -15,7 +15,11 @@ pub mod stats;
 use index::{
     brute::BruteForce, grid::UniformGrid, kdtree::PackedKdTree, rtree::PackedRTree, SpatialIndex,
 };
-use planner::{cost::IndexKind, selector::select_index};
+use planner::{
+    calibration::CostFactors,
+    cost::{IndexKind, IndexMode},
+    selector::{plan_access, plan_access_with_kind, select_index},
+};
 use query::{
     batch::{
         par_bbox_filter, par_contains, par_knn, par_knn_to_polygons, par_knn_with_delta,
@@ -55,10 +59,9 @@ struct Engine {
     /// Accumulated brute-force scan cost across all queries that touched the delta.
     /// Each query increments this by delta_xs.len(). Reset to 0 on flush.
     delta_query_cost: u64,
-    /// When false, every query is answered by a full brute-force scan: no index is
-    /// auto-selected, built, or consulted. Defaults to true. Toggled per query by the
-    /// executor to benchmark the index's contribution (auto_index= on collect).
-    auto_index: bool,
+    /// Index build policy: Eager (default) / None / Auto.
+    index_mode: IndexMode,
+    cost_factors: CostFactors,
 }
 
 const DELTA_FLUSH_FRACTION: f64 = 0.1;
@@ -177,26 +180,27 @@ impl Engine {
         result
     }
 
-    /// Index kind to use for `query`, honouring the auto_index flag.
-    /// With auto_index disabled this is always BruteForce, so the query scans the
-    /// dataset with no index built or consulted.
-    fn plan_index(&self, query: &Query) -> IndexKind {
-        if self.auto_index {
-            select_index(&self.stats, query)
-        } else {
-            IndexKind::BruteForce
-        }
+    /// Plan the index kind for `query` over `q_count` probes, via the mode + cost gate.
+    fn plan_index(&self, query: &Query, q_count: usize) -> IndexKind {
+        plan_access(
+            &self.stats,
+            query,
+            q_count,
+            self.index_mode,
+            &self.cost_factors,
+        )
     }
 
-    /// Index kind for the polygon batch kernels, honouring the auto_index flag.
-    /// These kernels structurally need an R-tree when indexing; with auto_index
-    /// disabled they fall back to the generic brute-force scan (same kernel code).
-    fn poly_index_kind(&self) -> IndexKind {
-        if self.auto_index {
-            IndexKind::RTree
-        } else {
-            IndexKind::BruteForce
-        }
+    /// Same gate, but for kernels that require a specific `candidate` index kind.
+    fn plan_index_kind(&self, query: &Query, q_count: usize, candidate: IndexKind) -> IndexKind {
+        plan_access_with_kind(
+            &self.stats,
+            query,
+            q_count,
+            self.index_mode,
+            &self.cost_factors,
+            candidate,
+        )
     }
 
     fn build_index_if_needed(&mut self, kind: IndexKind) {
@@ -266,7 +270,8 @@ impl Engine {
             delta_xs: Vec::new(),
             delta_ys: Vec::new(),
             delta_query_cost: 0,
-            auto_index: true,
+            index_mode: IndexMode::Eager,
+            cost_factors: CostFactors::default(),
         })
     }
 
@@ -343,7 +348,8 @@ impl Engine {
             delta_xs: Vec::new(),
             delta_ys: Vec::new(),
             delta_query_cost: 0,
-            auto_index: true,
+            index_mode: IndexMode::Eager,
+            cost_factors: CostFactors::default(),
         })
     }
 
@@ -362,24 +368,38 @@ impl Engine {
         Ok(())
     }
 
-    /// Enable or disable automatic index selection, returning the previous setting.
-    ///
-    /// When disabled, every subsequent query is answered by a full brute-force scan
-    /// with no index built or consulted. The previous value is returned so callers
-    /// can restore it after a scoped override. Already-built indexes are retained.
-    fn set_auto_index(&mut self, enabled: bool) -> bool {
-        let prev = self.auto_index;
-        self.auto_index = enabled;
-        prev
+    /// Set the index build policy ("auto" / "eager" / "none"), returning the previous
+    /// mode as a string so callers can restore it after a scoped override.
+    fn set_index_mode(&mut self, mode: &str) -> PyResult<String> {
+        let new = match mode {
+            "auto" => IndexMode::Auto,
+            "eager" => IndexMode::Eager,
+            "none" => IndexMode::None,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "index mode must be 'auto', 'eager', or 'none', got '{other}'"
+                )))
+            }
+        };
+        let prev = match self.index_mode {
+            IndexMode::Auto => "auto",
+            IndexMode::Eager => "eager",
+            IndexMode::None => "none",
+        };
+        self.index_mode = new;
+        Ok(prev.to_string())
     }
 
     /// k-nearest-neighbour query
     fn knn(&mut self, x: f64, y: f64, k: usize, approximate: bool) -> PyResult<Vec<usize>> {
-        let kind = self.plan_index(&Query::Knn {
-            point: Point::new(x, y),
-            k,
-            approximate,
-        });
+        let kind = self.plan_index(
+            &Query::Knn {
+                point: Point::new(x, y),
+                k,
+                approximate,
+            },
+            1,
+        );
         self.build_index_if_needed(kind);
         let mut result = match kind {
             IndexKind::BruteForce => {
@@ -414,7 +434,7 @@ impl Engine {
                 }
             }
         }
-        let kind = self.plan_index(&Query::Range { bbox });
+        let kind = self.plan_index(&Query::Range { bbox }, 1);
         self.build_index_if_needed(kind);
 
         let mut result = match (kind, self.ring_offsets.as_deref()) {
@@ -559,7 +579,7 @@ impl Engine {
                 }
             }
         }
-        let kind = self.plan_index(&Query::Contains { point });
+        let kind = self.plan_index(&Query::Contains { point }, 1);
         self.build_index_if_needed(kind);
 
         let mut result = match (kind, self.ring_offsets.as_deref()) {
@@ -708,11 +728,14 @@ impl Engine {
             ));
         }
 
-        let kind = self.plan_index(&Query::Knn {
-            point: Point::new(0.0, 0.0),
-            k,
-            approximate,
-        });
+        let kind = self.plan_index(
+            &Query::Knn {
+                point: Point::new(0.0, 0.0),
+                k,
+                approximate,
+            },
+            qxs.len(),
+        );
         self.build_index_if_needed(kind);
 
         let results = if self.delta_xs.is_empty() {
@@ -807,7 +830,7 @@ impl Engine {
             let pairs = par_within_distance_flipped(qxs, qys, &self.xs, &self.ys, distance);
             return Ok(PyArray1::from_vec(py, pairs));
         }
-        let kind = if !self.auto_index || self.stats.n < 500 {
+        let candidate = if self.stats.n < 500 {
             IndexKind::BruteForce
         } else {
             match self.stats.distribution {
@@ -815,6 +838,11 @@ impl Engine {
                 _ => IndexKind::KdTree,
             }
         };
+        let bbox = Rect::new(
+            coord! { x: 0.0, y: 0.0 },
+            coord! { x: 2.0 * distance, y: 2.0 * distance },
+        );
+        let kind = self.plan_index_kind(&Query::Range { bbox }, qxs.len(), candidate);
         self.build_index_if_needed(kind);
         let pairs = match kind {
             IndexKind::BruteForce => par_within_distance(
@@ -913,7 +941,13 @@ impl Engine {
                 "batch_contains requires a polygon dataset",
             ));
         }
-        let kind = self.poly_index_kind();
+        let kind = self.plan_index_kind(
+            &Query::Contains {
+                point: Point::new(0.0, 0.0),
+            },
+            qxs.len(),
+            IndexKind::RTree,
+        );
         self.build_index_if_needed(kind);
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
@@ -967,7 +1001,11 @@ impl Engine {
                 "batch_within_distance_to_polygons requires a polygon dataset",
             ));
         }
-        let kind = self.poly_index_kind();
+        let bbox = Rect::new(
+            coord! { x: 0.0, y: 0.0 },
+            coord! { x: 2.0 * distance, y: 2.0 * distance },
+        );
+        let kind = self.plan_index_kind(&Query::Range { bbox }, qxs.len(), IndexKind::RTree);
         self.build_index_if_needed(kind);
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
@@ -1025,7 +1063,15 @@ impl Engine {
                 "batch_knn_to_polygons requires a polygon dataset",
             ));
         }
-        let kind = self.poly_index_kind();
+        let kind = self.plan_index_kind(
+            &Query::Knn {
+                point: Point::new(0.0, 0.0),
+                k,
+                approximate: false,
+            },
+            qxs.len(),
+            IndexKind::RTree,
+        );
         self.build_index_if_needed(kind);
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
@@ -1070,7 +1116,13 @@ impl Engine {
                 "polygon_intersects_self_join requires a polygon dataset",
             ));
         }
-        let kind = self.poly_index_kind();
+        let kind = self.plan_index_kind(
+            &Query::Contains {
+                point: Point::new(0.0, 0.0),
+            },
+            self.stats.n,
+            IndexKind::RTree,
+        );
         self.build_index_if_needed(kind);
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
@@ -1180,11 +1232,16 @@ impl Engine {
         }
         // The query polygon is a single polygon spanning all its rings.
         let single_poly_offsets: Vec<i64> = vec![0, (pring.len() - 1) as i64];
-        let kind = if !self.auto_index || self.stats.n < 500 {
+        let candidate = if self.stats.n < 500 {
             IndexKind::BruteForce
         } else {
             IndexKind::RTree
         };
+        let bbox = Rect::new(
+            coord! { x: 0.0, y: 0.0 },
+            coord! { x: 2.0 * distance, y: 2.0 * distance },
+        );
+        let kind = self.plan_index_kind(&Query::Range { bbox }, 1, candidate);
         self.build_index_if_needed(kind);
         let pts = match kind {
             IndexKind::BruteForce => par_points_within_distance_of_polygon(

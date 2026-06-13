@@ -130,13 +130,13 @@ class SpatialBenchTables:
     Args:
         data_dir: Local directory or ``s3://`` URI of the parquet tables.
         scale_factor: SpatialBench scale factor (used only for reporting metadata).
-        auto_index: When False, every SpatialFrame built here runs index-free (queries
-            scan brute-force), for the --no-index benchmark mode. Defaults to True.
+        index_mode: Index build policy ("eager" / "none" / "auto") for every
+            SpatialFrame built here. "none" is the --no-index benchmark mode.
     """
 
     data_dir: str
     scale_factor: float
-    auto_index: bool = True
+    index_mode: str = "eager"
     _cache: dict[str, pl.DataFrame] | None = None
 
     def table(self, name: str, columns: list[str] | None = None) -> pl.DataFrame:
@@ -154,9 +154,7 @@ class SpatialBenchTables:
         Adds internal ``_x`` / ``_y`` columns and indexes on them. The returned
         frame's DataFrame retains all original columns plus ``_x`` / ``_y``.
         """
-        frame = SpatialFrame.from_wkb_points(df, wkb_col)
-        frame.engine.set_auto_index(self.auto_index)
-        return frame
+        return SpatialFrame.from_wkb_points(df, wkb_col, index_mode=self.index_mode)
 
     def polygon_frame(self, df: pl.DataFrame, wkb_col: str) -> SpatialFrame:
         """Build a polygon SpatialFrame from a WKB polygon column of ``df``.
@@ -168,6 +166,6 @@ class SpatialBenchTables:
         """
         polys = wkb_to_polygons(df[wkb_col])
         enriched = df.drop(wkb_col).with_columns(pl.Series("_geom", polys, dtype=pl.Object))
-        frame = SpatialFrame.from_polygons(enriched, geometry_col="_geom")
-        frame.engine.set_auto_index(self.auto_index)
-        return frame
+        return SpatialFrame.from_polygons(
+            enriched, geometry_col="_geom", index_mode=self.index_mode
+        )

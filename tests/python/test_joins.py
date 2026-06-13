@@ -6,6 +6,8 @@ A single engine and SpatialFrame are shared across the module.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import numpy as np
 import polars as pl
 import pytest
@@ -210,8 +212,18 @@ def test_streamed_within_join_polygons_matches_single_shot(sf_polygons):
     assert streamed.select(cols).sort(cols).equals(single.select(cols).sort(cols))
 
 
-# auto_index=False forces brute force; results must match the indexed path. The
-# fixtures have n >= 500 so the default path builds a real index.
+# index_mode "none" forces brute force; results must match the indexed ("eager")
+# path. The fixtures have n >= 500 so the default path builds a real index. They are
+# module-scoped, so each test restores the mode it changed via _index_mode.
+
+
+@contextmanager
+def _index_mode(sf, mode: str):
+    prev = sf.engine.set_index_mode(mode)
+    try:
+        yield
+    finally:
+        sf.engine.set_index_mode(prev)
 
 
 def _offset_query(n: int) -> pl.DataFrame:
@@ -225,49 +237,60 @@ def _offset_query(n: int) -> pl.DataFrame:
     )
 
 
-def test_auto_index_false_matches_indexed_knn_join(sf):
+def test_index_none_matches_indexed_knn_join(sf):
     query_df = _offset_query(200)
     indexed = sf.lazy().knn_join(query_df, "qx", "qy", k=3).collect()
-    brute = sf.lazy().knn_join(query_df, "qx", "qy", k=3).collect(auto_index=False)
+    with _index_mode(sf, "none"):
+        brute = sf.lazy().knn_join(query_df, "qx", "qy", k=3).collect()
     assert brute.sort(brute.columns).equals(indexed.sort(indexed.columns))
 
 
-def test_auto_index_false_matches_indexed_within_distance_join(sf):
+def test_index_none_matches_indexed_within_distance_join(sf):
     query_df = _grid_query(200)
     indexed = sf.lazy().within_distance_join(query_df, "qx", "qy", distance=1.1).collect()
-    brute = (
-        sf.lazy().within_distance_join(query_df, "qx", "qy", distance=1.1).collect(auto_index=False)
-    )
+    with _index_mode(sf, "none"):
+        brute = sf.lazy().within_distance_join(query_df, "qx", "qy", distance=1.1).collect()
     assert brute.sort(brute.columns).equals(indexed.sort(indexed.columns))
 
 
-def test_auto_index_false_matches_indexed_within_join_polygons(sf_polygons):
+def test_index_none_matches_indexed_within_join_polygons(sf_polygons):
     query_df = pl.DataFrame({"qx": [float(i) + 0.5 for i in range(200)], "qy": [0.5] * 200})
     indexed = sf_polygons.lazy().within_join(query_df, "qx", "qy").collect()
-    brute = sf_polygons.lazy().within_join(query_df, "qx", "qy").collect(auto_index=False)
+    with _index_mode(sf_polygons, "none"):
+        brute = sf_polygons.lazy().within_join(query_df, "qx", "qy").collect()
     cols = ["qx", "poly_id"]
     assert brute.select(cols).sort(cols).equals(indexed.select(cols).sort(cols))
 
 
-def test_auto_index_false_matches_indexed_range_query(sf):
+def test_index_none_matches_indexed_range_query(sf):
     indexed = sf.lazy().range_query(2.0, 2.0, 6.0, 60.0).collect()
-    brute = sf.lazy().range_query(2.0, 2.0, 6.0, 60.0).collect(auto_index=False)
+    with _index_mode(sf, "none"):
+        brute = sf.lazy().range_query(2.0, 2.0, 6.0, 60.0).collect()
     assert brute.sort(brute.columns).equals(indexed.sort(indexed.columns))
 
 
-def test_auto_index_false_via_collect_batched_matches(sf):
+def test_index_none_via_collect_batched_matches(sf):
     query_df = _offset_query(250)
     indexed = sf.lazy().knn_join(query_df, "qx", "qy", k=2).collect()
-    batches = list(
-        sf.lazy()
-        .knn_join(query_df, "qx", "qy", k=2)
-        .collect_batched(batch_size=100, auto_index=False)
-    )
+    with _index_mode(sf, "none"):
+        batches = list(
+            sf.lazy().knn_join(query_df, "qx", "qy", k=2).collect_batched(batch_size=100)
+        )
     brute = pl.concat(batches)
     assert brute.sort(brute.columns).equals(indexed.sort(indexed.columns))
 
 
-def test_auto_index_override_is_restored_after_collect(sf):
-    query_df = _grid_query(50)
-    sf.lazy().knn_join(query_df, "qx", "qy", k=2).collect(auto_index=False)
-    assert sf.engine.set_auto_index(True) is True
+def test_set_index_mode_returns_previous(sf):
+    prev = sf.engine.set_index_mode("none")
+    try:
+        assert sf.engine.set_index_mode("auto") == "none"
+    finally:
+        sf.engine.set_index_mode(prev)
+
+
+def test_index_auto_matches_indexed_knn_join(sf):
+    query_df = _offset_query(300)
+    indexed = sf.lazy().knn_join(query_df, "qx", "qy", k=3).collect()
+    with _index_mode(sf, "auto"):
+        auto = sf.lazy().knn_join(query_df, "qx", "qy", k=3).collect()
+    assert auto.sort(auto.columns).equals(indexed.sort(indexed.columns))

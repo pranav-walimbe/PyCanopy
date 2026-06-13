@@ -46,9 +46,12 @@ def load_config() -> dict:
     return cfg
 
 
-def _user_data(cfg: dict, run_id: str, no_index: bool) -> str:
+def _user_data(cfg: dict, run_id: str, index_mode: str) -> str:
     """Fill the @@NAME@@ placeholders in bootstrap.sh for this run."""
     script = (_DIR / "bootstrap.sh").read_text()
+    # Non-eager modes pass a measure flag and a filename suffix so the result does
+    # not overwrite the eager sf{N}.json.
+    suffix = "" if index_mode == "eager" else f"-{index_mode}"
     repl = {
         "RUN_ID": run_id,
         "REGION": cfg["region"],
@@ -59,17 +62,15 @@ def _user_data(cfg: dict, run_id: str, no_index: bool) -> str:
         "DATA_TEMPLATE": cfg["data_template"],
         "SCALE_FACTORS": " ".join(str(s) for s in cfg["scale_factors"]),
         "MAX_RUNTIME_MIN": str(cfg["max_runtime_min"]),
-        # Extra measure args + an output suffix so a no-index run does not
-        # overwrite the indexed sf{N}.json from a normal run.
-        "MEASURE_ARGS": "--no-index" if no_index else "",
-        "OUT_SUFFIX": "-noindex" if no_index else "",
+        "MEASURE_ARGS": "" if index_mode == "eager" else f"--index-{index_mode}",
+        "OUT_SUFFIX": suffix,
     }
     for key, value in repl.items():
         script = script.replace(f"@@{key}@@", value)
     return script
 
 
-def launch(ec2, ssm, cfg: dict, run_id: str, no_index: bool) -> str:
+def launch(ec2, ssm, cfg: dict, run_id: str, index_mode: str) -> str:
     """Launch the benchmark instance and return its id."""
     ami = ssm.get_parameter(Name=_SSM_AL2023)["Parameter"]["Value"]
     resp = ec2.run_instances(
@@ -77,7 +78,7 @@ def launch(ec2, ssm, cfg: dict, run_id: str, no_index: bool) -> str:
         InstanceType=cfg["instance_type"],
         MinCount=1,
         MaxCount=1,
-        UserData=_user_data(cfg, run_id, no_index),
+        UserData=_user_data(cfg, run_id, index_mode),
         InstanceInitiatedShutdownBehavior="terminate",
         IamInstanceProfile={"Name": cfg["instance_profile"]},
         BlockDeviceMappings=[
@@ -185,12 +186,29 @@ def download(s3, cfg: dict, run_id: str, dest: Path) -> list[Path]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run SpatialBench on an ephemeral EC2 box.")
-    parser.add_argument(
-        "--no-index",
-        action="store_true",
-        help="Run every query index-free (brute-force scan) on the box, writing "
-        "sf{N}-noindex.json instead of sf{N}.json.",
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--index-eager",
+        action="store_const",
+        const="eager",
+        dest="index_mode",
+        help="Build an index whenever a kind is selected (default).",
     )
+    group.add_argument(
+        "--index-auto",
+        action="store_const",
+        const="auto",
+        dest="index_mode",
+        help="Cost-based: build an index only when it beats a scan. Writes sf{N}-auto.json.",
+    )
+    group.add_argument(
+        "--index-none",
+        action="store_const",
+        const="none",
+        dest="index_mode",
+        help="Brute-force every query. Writes sf{N}-none.json.",
+    )
+    parser.set_defaults(index_mode="eager")
     args = parser.parse_args(argv)
 
     cfg = load_config()
@@ -200,9 +218,9 @@ def main(argv: list[str] | None = None) -> int:
     ssm = boto3.client("ssm", region_name=region)
 
     run_id = uuid.uuid4().hex[:12]
-    mode = " [no-index]" if args.no_index else ""
-    log(f"run {run_id}{mode}: {cfg['instance_type']} in {region}, scale {cfg['scale_factors']}")
-    instance_id = launch(ec2, ssm, cfg, run_id, args.no_index)
+    tag = "" if args.index_mode == "eager" else f" [{args.index_mode}]"
+    log(f"run {run_id}{tag}: {cfg['instance_type']} in {region}, scale {cfg['scale_factors']}")
+    instance_id = launch(ec2, ssm, cfg, run_id, args.index_mode)
     try:
         ok = wait_for_success(s3, ec2, cfg, run_id, instance_id)
         jsons = download(s3, cfg, run_id, _DIR / "results")
