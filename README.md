@@ -40,8 +40,8 @@ result = sf.lazy().filter(pl.col("population") > 100_000).range_query(-10.0, 35.
 
 Polars has no native spatial support. The standard alternatives each require a tradeoff:
 
-- **GeoPandas** applies linear scans by default; STRtree requires explicit `.sindex` opt-in and is the only index type available
-- **DuckDB spatial** has a mature R-tree and good performance, but requires leaving Polars for SQL and explicit index creation
+- **GeoPandas** applies linear scans by default. Its STRtree needs an explicit `.sindex` opt-in and is the only index available.
+- **DuckDB spatial** has a mature R-tree and good performance, but requires leaving Polars for SQL and creating the index by hand.
 
 PyCanopy stays native to Polars and adds a query optimizer on top. The optimizer decides execution order, decides whether an index is worth building (and which kind) from a cost model, and fuses consecutive spatial predicates where possible.
 
@@ -79,8 +79,8 @@ Spatial operations chain off `sf.lazy()` and mix freely with Polars' own `.filte
 | Point in polygon              | `.contains(x, y)`                                            | Polygons that contain the point                         |
 | MBR range                     | `.range_query(min_x, min_y, max_x, max_y)`                  | Polygons whose bounding box meets the query box         |
 | Within join                   | `.within_join(df, x_col, y_col)`                            | Polygons that contain each query point                  |
-| Point→polygon distance join   | `.polygon_within_distance_join(df, x_col, y_col, distance)` | Polygons within `distance` of each query point          |
-| Point→polygon kNN join        | `.polygon_knn_join(df, x_col, y_col, k)`                    | The `k` nearest polygons for each query point           |
+| Point-to-polygon distance join   | `.polygon_within_distance_join(df, x_col, y_col, distance)` | Polygons within `distance` of each query point          |
+| Point-to-polygon kNN join        | `.polygon_knn_join(df, x_col, y_col, k)`                    | The `k` nearest polygons for each query point           |
 | Intersects self-join          | `.intersects_pairs()`                                       | Intersecting polygon pairs with overlap area and IoU    |
 | Area                          | `.polygon_areas()`                                          | Area of each polygon                                    |
 | Points near a polygon         | `.points_within_distance_of_polygon(polygon, distance)`     | Points within `distance` of a single polygon            |
@@ -117,7 +117,7 @@ nearest = sf.lazy().knn(x=2.35, y=48.85, k=5).collect()
 ### Inspecting the plan
 
 ```python
-# Declare ops in any order — explain() shows what the optimizer will actually run.
+# Declare ops in any order. explain() shows what the optimizer will actually run.
 lf = (
     sf.lazy()
     .range_query(min_x=-10.0, min_y=35.0, max_x=40.0, max_y=70.0)
@@ -139,10 +139,10 @@ print(lf.explain(optimized=False))
 #     DF [N=100,000]
 ```
 
-The optimizer flipped the declaration order: the scalar filter runs first on all rows, then the spatial query runs on the smaller survivor set. `explain(optimized=False)` shows declaration order for comparison. Follows Polars' FROM-chain convention — bottom runs first, top is the outermost result.
+The optimizer flipped the declaration order. The scalar filter runs first on all rows, then the spatial query runs on the smaller survivor set. Pass `optimized=False` to see declaration order instead. Plans follow Polars' FROM-chain convention, so the bottom runs first and the top is the final result.
 
 <details>
-<summary>More examples — KNN join, polygon contains, within-distance join, branching, delta buffer</summary>
+<summary>More examples: point and polygon joins, aggregations, branching, delta buffer, index modes</summary>
 
 ### Chaining multiple spatial predicates
 
@@ -221,7 +221,7 @@ result = sf.lazy().within_distance_join(query_df, x_col="qx", y_col="qy", distan
 
 ```python
 # (polygon SpatialFrame) For each query point, the polygons within a distance
-# of it — measured to the polygon boundary, zero when the point is inside.
+# of it. Distance is to the polygon boundary, and zero when the point is inside.
 query_df = pl.DataFrame({"qx": [5.5, 12.3], "qy": [0.5, 0.5]})
 near = sf.lazy().polygon_within_distance_join(query_df, x_col="qx", y_col="qy", distance=2.0).collect()
 
@@ -241,6 +241,23 @@ overlaps = sf.intersects_pairs()
 # (point SpatialFrame) rows whose point lies within a distance of one polygon.
 from shapely.geometry import box
 pts = point_sf.points_within_distance_of_polygon(box(0.0, 0.0, 1.0, 1.0), distance=0.5)
+```
+
+### Convex-hull area
+
+```python
+import numpy as np
+
+# Area of the convex hull of a standalone point set (no frame needed).
+area = SpatialFrame.convex_hull_area(np.array([0.0, 1.0, 0.5]), np.array([0.0, 0.0, 1.0]))
+```
+
+### Index mode
+
+```python
+# Fixed per frame. "auto" lets the cost model choose index vs scan per query;
+# "none" always scans; "eager" (default) always builds the selected index.
+sf = SpatialFrame(df, x_col="lon", y_col="lat", index_mode="auto")
 ```
 
 ### Branching from a shared base
@@ -293,7 +310,7 @@ Apple M-series used for benchmarking. **Warm** = cached index, second call. **In
 | Polygon contains       | 100,000 |      6.2 ms |    5 µs |  7.0 ms | **1,521x** | 3.7 MB  |
 | Polygon range          | 100,000 |      5.6 ms |    8 µs |  3.3 ms |   **391x** | 3.7 MB  |
 | kNN join k=5           |  10,000 |      7.3 ms |  2.1 ms |   5.4 s | **2,601x** | 180 KB  |
-| Within-distance join   |  10,000 |      0.5 ms | 12.6 ms |   1.3 s |   **102x** | —       |
+| Within-distance join   |  10,000 |      0.5 ms | 12.6 ms |   1.3 s |   **102x** | n/a     |
 | Within join (polygons) |  10,000 |      1.6 ms | 0.52 ms |   4.4 s | **8,522x** | 354 KB  |
 
 ---
@@ -309,14 +326,14 @@ PyCanopy plans a query in two layers, then hands the result to Polars to run.
                             |
             +---------------+----------------+
             |   Logical plan (whole chain)   |
-            |   order ops . fuse predicates  |
-            |   . pick join side . EXPR/IO   |
+            |   order ops, fuse predicates,  |
+            |   pick join side, EXPR vs IO   |
             +---------------+----------------+
                             |
             +---------------+----------------+
             |   Access path (per operation)  |
-            |   index or scan, and which —   |
-            |   a cost model decides         |
+            |   index or scan, and which     |
+            |   kind: a cost model decides   |
             +---------------+----------------+
                             |
             +---------------+----------------+
@@ -328,35 +345,33 @@ PyCanopy plans a query in two layers, then hands the result to Polars to run.
 
 ### Logical planning
 
-Decisions about the shape of the query, made over the whole chain before any data is touched:
+Decisions about the whole chain, made before any data is touched:
 
-- **Predicate pushdown** — scalar filters are placed before spatial ones and sorted cheapest-first (each filter's cost is estimated by walking its Polars expression tree). They cost little and shrink the row count before any index is touched.
-- **Fusion** — consecutive spatial predicates on large datasets are merged into a single index build and one pass over the data.
-- **Join side** — for symmetric joins (`within_join`, `within_distance_join`) the planner indexes the smaller side when it is under half the size of the other. `knn_join` is asymmetric and always indexes the engine side.
-- **Execution path** — a very selective filter slices the prebuilt index directly (IO path); otherwise the work is emitted as Polars expressions that filter first and build a small index on the survivors (EXPR path).
+- **Predicate pushdown:** scalar filters run before spatial ops, cheapest first (cost estimated from the Polars expression tree). They shrink the row count for little cost.
+- **Fusion:** consecutive spatial predicates merge into one index build and one pass.
+- **Join side:** symmetric joins (`within_join`, `within_distance_join`) index the smaller side. `knn_join` always indexes the engine side.
+- **Execution path:** very selective filters slice the prebuilt index directly (IO path). Otherwise filters run first and a small index is built on the survivors (EXPR path).
 
-### Cost model — index or scan?
+### Cost model: index or scan?
 
-For each spatial operation the planner decides whether to use an index at all. Building one isn't free — a tree costs about `N log N` up front — so it only pays off if the index is queried enough times. The planner compares two estimates, where `N` is the dataset size and `Q` is the number of query points:
+Building an index costs about `N log N`, so it only pays off if queried enough times. For each operation the planner compares two estimates (`N` is the dataset size, `Q` the number of query points):
 
 ```
-  scan    =  Q × N                              every row, for every query point
-  index   =  N log N  (build, once)  +  Q × log N  (probe each query point)
+  scan   =  Q * N                          every row, for every query point
+  index  =  N log N  (build once)  +  Q * log N   (probe per query point)
 ```
 
-Building wins once `Q` climbs past roughly `log N`: a one-off lookup (`Q = 1`) just scans, while a join with thousands of probes builds the index and reuses it across all of them. **Selectivity** — the fraction of rows a predicate keeps, estimated from the data extent and a 32×32 histogram — sharpens the call: a predicate that keeps most rows skips the index outright, since a tree that prunes nothing is slower than a plain scan.
+Building wins once `Q` passes roughly `log N`. A one-off lookup scans; a join with many probes builds the index and reuses it. Selectivity refines this: if a predicate keeps most rows, the planner skips the index, since a tree that prunes nothing loses to a plain scan.
 
-`index_mode` (set per frame) chooses how that estimate is applied:
+`index_mode`, set per frame, picks how the estimate is used:
 
-- **`eager`** (default) — always build the selected index.
-- **`auto`** — build only when the estimate beats a scan for this query's `Q`.
-- **`none`** — always scan, never build.
+- **`eager`** (default): always build the selected index.
+- **`auto`**: build only when the estimate beats a scan for this `Q`.
+- **`none`**: always scan.
 
 ### Index management
 
-Indexes are built lazily — nothing at load time. The dataset stats (extent, point distribution, a 32×32 histogram) are computed once up front, drive the choice at the first query, and the chosen index is cached for every query after. The build policy is the per-frame `index_mode` described above (`SpatialFrame(..., index_mode=...)`, default `eager`).
-
-When a non-brute index is built, its kind comes from:
+Indexes build lazily, never at load time. Dataset stats (extent, distribution, a 32x32 histogram) are computed once up front and drive the first query's choice, after which the index is cached for all later queries. When a non-brute index is built, its kind comes from:
 
 | Condition                                     | Index        |
 |:----------------------------------------------|:-------------|
@@ -366,7 +381,7 @@ When a non-brute index is built, its kind comes from:
 | Point KNN or contains                         | KD-tree      |
 | Polygons, any query                           | R-tree       |
 
-All index types share the same underlying coordinate arrays with no duplication.
+All index types share the same coordinate arrays with no duplication.
 
 ### Why Rust
 
