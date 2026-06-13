@@ -7,6 +7,10 @@
 
 set -uo pipefail
 
+# Cloud-init runs this with no HOME set; under `set -u` any $HOME use aborts the
+# run (e.g. sourcing the rust env below). Pin it before anything reads it.
+export HOME=/root
+
 RUN_ID="@@RUN_ID@@"
 REGION="@@REGION@@"
 RESULT_BUCKET="@@RESULT_BUCKET@@"
@@ -31,7 +35,7 @@ trap cleanup EXIT
 
 set -e
 log "installing packages"
-dnf install -y gcc git python3 python3-pip python3-devel >/dev/null
+dnf install -y gcc git python3.11 python3.11-pip python3.11-devel >/dev/null
 
 log "installing rust"
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
@@ -42,7 +46,7 @@ git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" /opt/pycanopy
 cd /opt/pycanopy
 
 log "building PyCanopy (release)"
-python3 -m venv /opt/venv
+python3.11 -m venv /opt/venv
 source /opt/venv/bin/activate
 pip install -q --upgrade pip maturin
 maturin develop --release

@@ -177,6 +177,7 @@ class SpatialExecutor:
         sf,
         plugin_path: PluginPath = PluginPath.EXPR,
         batch_size: int | None = None,
+        auto_index: bool | None = None,
     ) -> pl.DataFrame:
         """Execute the optimised plan against sf.
 
@@ -187,10 +188,29 @@ class SpatialExecutor:
             batch_size: Probe rows per morsel for streamed joins. Defaults to
                 MORSEL_ROWS. A join whose probe side exceeds this is streamed in
                 morsels and concatenated, bounding the join intermediate.
+            auto_index: True/False overrides the engine's index mode for this call
+                (False scans brute-force, building no index); None inherits whatever
+                the engine is already configured for. The prior mode is restored after.
 
         Returns:
             Filtered or joined Polars DataFrame.
         """
+        if auto_index is None:
+            return self._execute(plan, sf, plugin_path, batch_size)
+        prev_auto_index = sf.engine.set_auto_index(auto_index)
+        try:
+            return self._execute(plan, sf, plugin_path, batch_size)
+        finally:
+            sf.engine.set_auto_index(prev_auto_index)
+
+    def _execute(
+        self,
+        plan: Plan,
+        sf,
+        plugin_path: PluginPath,
+        batch_size: int | None,
+    ) -> pl.DataFrame:
+        """Run the plan with the engine's auto_index flag already set by execute."""
         # EXPR path requires x_col/y_col as real DataFrame columns (point datasets).
         # Polygon SpatialFrames use synthetic coordinate column names that don't
         # exist in df; degrade gracefully to the IO path in that case.
@@ -230,7 +250,13 @@ class SpatialExecutor:
             df = df.drop(_ROW_IDX)
         return df
 
-    def stream(self, plan: Plan, sf, batch_size: int | None = None) -> Iterator[pl.DataFrame]:
+    def stream(
+        self,
+        plan: Plan,
+        sf,
+        batch_size: int | None = None,
+        auto_index: bool | None = None,
+    ) -> Iterator[pl.DataFrame]:
         """Yield the plan's result one morsel-frame at a time.
 
         For a plan containing a spatial join the probe side is sliced into morsels
@@ -245,15 +271,26 @@ class SpatialExecutor:
             plan: Execution-ordered plan from SpatialOptimizer.
             sf: SpatialFrame owning the Engine and DataFrame.
             batch_size: Probe rows per morsel. Defaults to MORSEL_ROWS.
+            auto_index: True/False overrides the engine's index mode for the whole
+                stream (False scans brute-force); None inherits the engine's setting.
 
         Yields:
             One DataFrame per morsel (one total for non-join plans).
         """
         if not any(isinstance(n, _JOIN_TYPES) for n in plan):
-            yield self.execute(plan, sf)
+            yield self.execute(plan, sf, auto_index=auto_index)
             return
         morsel = batch_size if batch_size is not None else MORSEL_ROWS
-        yield from self._stream_join_frames(plan, sf, morsel)
+        if auto_index is None:
+            yield from self._stream_join_frames(plan, sf, morsel)
+            return
+        # The morsels are consumed lazily by the caller, so an explicit override must
+        # persist across the whole iterator, not just the call that builds it.
+        prev_auto_index = sf.engine.set_auto_index(auto_index)
+        try:
+            yield from self._stream_join_frames(plan, sf, morsel)
+        finally:
+            sf.engine.set_auto_index(prev_auto_index)
 
     def _stream_join_frames(self, plan: Plan, sf, morsel_rows: int) -> Iterator[pl.DataFrame]:
         """Slice the join's probe into morsels, emit each joined frame in turn.

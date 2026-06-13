@@ -36,7 +36,7 @@ def _data_paths(data_dir: str) -> dict[str, str]:
     return {t: table_path(data_dir, t) for t in tables}
 
 
-def measure_query(query, data_dir: str, run_reference: bool) -> dict:
+def measure_query(query, data_dir: str, run_reference: bool, auto_index: bool = True) -> dict:
     """Measure one query: PyCanopy cold/warm timings plus optional oracle check.
 
     Args:
@@ -44,13 +44,15 @@ def measure_query(query, data_dir: str, run_reference: bool) -> dict:
             and validate(pc_df, ref_df).
         data_dir: Local directory or s3:// URI of the parquet tables.
         run_reference: When True, run the GeoPandas reference and checksum outputs.
+        auto_index: When False, every SpatialFrame the query builds runs index-free,
+            so the timings reflect brute-force scans (the --no-index comparison).
 
     Returns:
         Result dict for this query (timings, status, row_count, validation).
     """
     out: dict = {"title": query.title}
     # Fresh table handles per query so the cold run pays the real load + index cost.
-    tables = SpatialBenchTables(data_dir=data_dir, scale_factor=0)
+    tables = SpatialBenchTables(data_dir=data_dir, scale_factor=0, auto_index=auto_index)
 
     try:
         cold_s, pc_df = _time_s(lambda: query.pycanopy(tables))
@@ -103,19 +105,30 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Skip the GeoPandas reference run and correctness check.",
     )
+    parser.add_argument(
+        "--no-index",
+        action="store_true",
+        help="Run every query index-free (brute-force scan) to compare against the "
+        "indexed timings. Results are identical; only the cost differs.",
+    )
     args = parser.parse_args(argv)
 
+    auto_index = not args.no_index
     selected = query_registry.select(args.queries)
     results: dict = {
         "scale_factor": args.scale_factor,
         "data_dir": args.data_dir,
+        "auto_index": auto_index,
         "reference_meta": REFERENCE_META,
         "queries": {},
     }
 
     for query in selected:
-        print(f"running {query.id}: {query.title} ...", flush=True)
-        res = measure_query(query, args.data_dir, run_reference=not args.no_reference)
+        mode = "" if auto_index else " [no-index]"
+        print(f"running {query.id}: {query.title}{mode} ...", flush=True)
+        res = measure_query(
+            query, args.data_dir, run_reference=not args.no_reference, auto_index=auto_index
+        )
         results["queries"][query.id] = res
         status = res.get("status")
         val = res.get("validation", "")

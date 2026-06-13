@@ -334,6 +334,21 @@ class Engine:
         """
         self._core.build_index()
 
+    def set_auto_index(self, enabled: bool) -> bool:
+        """Enable or disable automatic index selection, returning the previous value.
+
+        When disabled, every spatial query is answered by a full brute-force scan
+        with no index built or consulted. The previous setting is returned so a caller
+        can restore it after a scoped override. Already-built indexes are retained.
+
+        Args:
+            enabled: True to auto-select and build indexes, False to scan brute-force.
+
+        Returns:
+            The auto_index setting in effect before this call.
+        """
+        return self._core.set_auto_index(enabled)
+
     def knn(self, x: float, y: float, k: int, approximate: bool = False) -> list[int]:
         """Return indices of the k nearest points to (x, y).
 

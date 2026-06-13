@@ -351,7 +351,9 @@ class SpatialLazyFrame:
             path = None
         return _fmt_plan(plan, path, engine.n, optimized=optimized)
 
-    def collect(self, batch_size: int | None = None) -> pl.DataFrame:
+    def collect(
+        self, batch_size: int | None = None, auto_index: bool | None = None
+    ) -> pl.DataFrame:
         """Optimise and execute the plan. Returns a Polars DataFrame.
 
         Triggers:
@@ -368,6 +370,11 @@ class SpatialLazyFrame:
         Args:
             batch_size: Probe rows per morsel for streamed joins. Defaults to
                 MORSEL_ROWS. Ignored for plans without a join.
+            auto_index: True/False overrides the engine's index mode for this call
+                (False answers the query by brute-force scan, building no index);
+                None (default) inherits the frame's configured mode (indexing on
+                unless disabled via engine.set_auto_index). Results are identical
+                either way; only the cost differs.
 
         Returns:
             The executed result as a Polars DataFrame.
@@ -376,9 +383,11 @@ class SpatialLazyFrame:
         executor = SpatialExecutor()
         optimized = optimizer.optimize(self._plan, self._sf.engine)
         plugin_path = optimizer._select_plugin_path(optimized, self._sf.engine)
-        return executor.execute(optimized, self._sf, plugin_path, batch_size)
+        return executor.execute(optimized, self._sf, plugin_path, batch_size, auto_index)
 
-    def collect_batched(self, batch_size: int | None = None) -> Iterator[pl.DataFrame]:
+    def collect_batched(
+        self, batch_size: int | None = None, auto_index: bool | None = None
+    ) -> Iterator[pl.DataFrame]:
         """Execute the plan and yield the result one morsel-frame at a time.
 
         For a plan ending in a spatial join the probe side is sliced into morsels of
@@ -396,6 +405,10 @@ class SpatialLazyFrame:
 
         Args:
             batch_size: Probe rows per morsel. Defaults to MORSEL_ROWS.
+            auto_index: True/False overrides the engine's index mode for the whole
+                iterator (False scans brute-force, building no index); None (default)
+                inherits the frame's configured mode. An explicit override is held
+                across lazy morsel consumption.
 
         Returns:
             An iterator of DataFrames, one per probe morsel.
@@ -403,7 +416,7 @@ class SpatialLazyFrame:
         optimizer = SpatialOptimizer()
         executor = SpatialExecutor()
         optimized = optimizer.optimize(self._plan, self._sf.engine)
-        return executor.stream(optimized, self._sf, batch_size)
+        return executor.stream(optimized, self._sf, batch_size, auto_index)
 
     @staticmethod
     def collect_all(frames: list[SpatialLazyFrame]) -> list[pl.DataFrame]:

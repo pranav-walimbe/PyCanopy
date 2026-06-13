@@ -55,6 +55,10 @@ struct Engine {
     /// Accumulated brute-force scan cost across all queries that touched the delta.
     /// Each query increments this by delta_xs.len(). Reset to 0 on flush.
     delta_query_cost: u64,
+    /// When false, every query is answered by a full brute-force scan: no index is
+    /// auto-selected, built, or consulted. Defaults to true. Toggled per query by the
+    /// executor to benchmark the index's contribution (auto_index= on collect).
+    auto_index: bool,
 }
 
 const DELTA_FLUSH_FRACTION: f64 = 0.1;
@@ -173,6 +177,28 @@ impl Engine {
         result
     }
 
+    /// Index kind to use for `query`, honouring the auto_index flag.
+    /// With auto_index disabled this is always BruteForce, so the query scans the
+    /// dataset with no index built or consulted.
+    fn plan_index(&self, query: &Query) -> IndexKind {
+        if self.auto_index {
+            select_index(&self.stats, query)
+        } else {
+            IndexKind::BruteForce
+        }
+    }
+
+    /// Index kind for the polygon batch kernels, honouring the auto_index flag.
+    /// These kernels structurally need an R-tree when indexing; with auto_index
+    /// disabled they fall back to the generic brute-force scan (same kernel code).
+    fn poly_index_kind(&self) -> IndexKind {
+        if self.auto_index {
+            IndexKind::RTree
+        } else {
+            IndexKind::BruteForce
+        }
+    }
+
     fn build_index_if_needed(&mut self, kind: IndexKind) {
         match kind {
             IndexKind::BruteForce if self.brute.is_none() => {
@@ -240,6 +266,7 @@ impl Engine {
             delta_xs: Vec::new(),
             delta_ys: Vec::new(),
             delta_query_cost: 0,
+            auto_index: true,
         })
     }
 
@@ -316,6 +343,7 @@ impl Engine {
             delta_xs: Vec::new(),
             delta_ys: Vec::new(),
             delta_query_cost: 0,
+            auto_index: true,
         })
     }
 
@@ -334,16 +362,24 @@ impl Engine {
         Ok(())
     }
 
+    /// Enable or disable automatic index selection, returning the previous setting.
+    ///
+    /// When disabled, every subsequent query is answered by a full brute-force scan
+    /// with no index built or consulted. The previous value is returned so callers
+    /// can restore it after a scoped override. Already-built indexes are retained.
+    fn set_auto_index(&mut self, enabled: bool) -> bool {
+        let prev = self.auto_index;
+        self.auto_index = enabled;
+        prev
+    }
+
     /// k-nearest-neighbour query
     fn knn(&mut self, x: f64, y: f64, k: usize, approximate: bool) -> PyResult<Vec<usize>> {
-        let kind = select_index(
-            &self.stats,
-            &Query::Knn {
-                point: Point::new(x, y),
-                k,
-                approximate,
-            },
-        );
+        let kind = self.plan_index(&Query::Knn {
+            point: Point::new(x, y),
+            k,
+            approximate,
+        });
         self.build_index_if_needed(kind);
         let mut result = match kind {
             IndexKind::BruteForce => {
@@ -378,7 +414,7 @@ impl Engine {
                 }
             }
         }
-        let kind = select_index(&self.stats, &Query::Range { bbox });
+        let kind = self.plan_index(&Query::Range { bbox });
         self.build_index_if_needed(kind);
 
         let mut result = match (kind, self.ring_offsets.as_deref()) {
@@ -523,7 +559,7 @@ impl Engine {
                 }
             }
         }
-        let kind = select_index(&self.stats, &Query::Contains { point });
+        let kind = self.plan_index(&Query::Contains { point });
         self.build_index_if_needed(kind);
 
         let mut result = match (kind, self.ring_offsets.as_deref()) {
@@ -672,14 +708,11 @@ impl Engine {
             ));
         }
 
-        let kind = select_index(
-            &self.stats,
-            &Query::Knn {
-                point: Point::new(0.0, 0.0),
-                k,
-                approximate,
-            },
-        );
+        let kind = self.plan_index(&Query::Knn {
+            point: Point::new(0.0, 0.0),
+            k,
+            approximate,
+        });
         self.build_index_if_needed(kind);
 
         let results = if self.delta_xs.is_empty() {
@@ -774,7 +807,7 @@ impl Engine {
             let pairs = par_within_distance_flipped(qxs, qys, &self.xs, &self.ys, distance);
             return Ok(PyArray1::from_vec(py, pairs));
         }
-        let kind = if self.stats.n < 500 {
+        let kind = if !self.auto_index || self.stats.n < 500 {
             IndexKind::BruteForce
         } else {
             match self.stats.distribution {
@@ -880,18 +913,30 @@ impl Engine {
                 "batch_contains requires a polygon dataset",
             ));
         }
-        self.build_index_if_needed(IndexKind::RTree);
+        let kind = self.poly_index_kind();
+        self.build_index_if_needed(kind);
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
-        let flat = par_contains(
-            self.rtree.as_ref().unwrap(),
-            qxs,
-            qys,
-            &self.xs,
-            &self.ys,
-            ring_off,
-            poly_off,
-        );
+        let flat = match kind {
+            IndexKind::BruteForce => par_contains(
+                self.brute.as_ref().unwrap(),
+                qxs,
+                qys,
+                &self.xs,
+                &self.ys,
+                ring_off,
+                poly_off,
+            ),
+            _ => par_contains(
+                self.rtree.as_ref().unwrap(),
+                qxs,
+                qys,
+                &self.xs,
+                &self.ys,
+                ring_off,
+                poly_off,
+            ),
+        };
         Ok(PyArray1::from_vec(py, flat))
     }
 
@@ -922,19 +967,32 @@ impl Engine {
                 "batch_within_distance_to_polygons requires a polygon dataset",
             ));
         }
-        self.build_index_if_needed(IndexKind::RTree);
+        let kind = self.poly_index_kind();
+        self.build_index_if_needed(kind);
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
-        let flat = par_within_distance_to_polygons(
-            self.rtree.as_ref().unwrap(),
-            qxs,
-            qys,
-            &self.xs,
-            &self.ys,
-            ring_off,
-            poly_off,
-            distance,
-        );
+        let flat = match kind {
+            IndexKind::BruteForce => par_within_distance_to_polygons(
+                self.brute.as_ref().unwrap(),
+                qxs,
+                qys,
+                &self.xs,
+                &self.ys,
+                ring_off,
+                poly_off,
+                distance,
+            ),
+            _ => par_within_distance_to_polygons(
+                self.rtree.as_ref().unwrap(),
+                qxs,
+                qys,
+                &self.xs,
+                &self.ys,
+                ring_off,
+                poly_off,
+                distance,
+            ),
+        };
         Ok(PyArray1::from_vec(py, flat))
     }
 
@@ -967,21 +1025,35 @@ impl Engine {
                 "batch_knn_to_polygons requires a polygon dataset",
             ));
         }
-        self.build_index_if_needed(IndexKind::RTree);
+        let kind = self.poly_index_kind();
+        self.build_index_if_needed(kind);
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
         let n_polys = poly_off.len().saturating_sub(1);
-        let (idx, dist) = par_knn_to_polygons(
-            self.rtree.as_ref().unwrap(),
-            qxs,
-            qys,
-            &self.xs,
-            &self.ys,
-            ring_off,
-            poly_off,
-            k,
-            n_polys,
-        );
+        let (idx, dist) = match kind {
+            IndexKind::BruteForce => par_knn_to_polygons(
+                self.brute.as_ref().unwrap(),
+                qxs,
+                qys,
+                &self.xs,
+                &self.ys,
+                ring_off,
+                poly_off,
+                k,
+                n_polys,
+            ),
+            _ => par_knn_to_polygons(
+                self.rtree.as_ref().unwrap(),
+                qxs,
+                qys,
+                &self.xs,
+                &self.ys,
+                ring_off,
+                poly_off,
+                k,
+                n_polys,
+            ),
+        };
         Ok((PyArray1::from_vec(py, idx), PyArray1::from_vec(py, dist)))
     }
 
@@ -998,16 +1070,26 @@ impl Engine {
                 "polygon_intersects_self_join requires a polygon dataset",
             ));
         }
-        self.build_index_if_needed(IndexKind::RTree);
+        let kind = self.poly_index_kind();
+        self.build_index_if_needed(kind);
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
-        let flat = par_polygon_intersects_join(
-            self.rtree.as_ref().unwrap(),
-            &self.xs,
-            &self.ys,
-            ring_off,
-            poly_off,
-        );
+        let flat = match kind {
+            IndexKind::BruteForce => par_polygon_intersects_join(
+                self.brute.as_ref().unwrap(),
+                &self.xs,
+                &self.ys,
+                ring_off,
+                poly_off,
+            ),
+            _ => par_polygon_intersects_join(
+                self.rtree.as_ref().unwrap(),
+                &self.xs,
+                &self.ys,
+                ring_off,
+                poly_off,
+            ),
+        };
         Ok(PyArray1::from_vec(py, flat))
     }
 
@@ -1059,12 +1141,7 @@ impl Engine {
             .zip(js.par_iter())
             .map(|(&i, &j)| {
                 polygon_intersection_area(
-                    &self.xs,
-                    &self.ys,
-                    ring_off,
-                    poly_off,
-                    i as usize,
-                    j as usize,
+                    &self.xs, &self.ys, ring_off, poly_off, i as usize, j as usize,
                 )
             })
             .collect();
@@ -1103,7 +1180,7 @@ impl Engine {
         }
         // The query polygon is a single polygon spanning all its rings.
         let single_poly_offsets: Vec<i64> = vec![0, (pring.len() - 1) as i64];
-        let kind = if self.stats.n < 500 {
+        let kind = if !self.auto_index || self.stats.n < 500 {
             IndexKind::BruteForce
         } else {
             IndexKind::RTree

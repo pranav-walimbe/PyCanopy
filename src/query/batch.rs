@@ -214,7 +214,9 @@ pub fn par_knn_to_polygons<I: SpatialIndex + Sync>(
                     (ei as u64, d)
                 })
                 .collect();
-            cands.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            cands.sort_unstable_by(|a, b| {
+                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+            });
             cands.truncate(k);
             cands.resize(k, (u64::MAX, f64::INFINITY));
             cands.into_iter()

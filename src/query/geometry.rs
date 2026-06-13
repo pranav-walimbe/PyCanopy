@@ -27,14 +27,7 @@ pub fn polygon_from_flat(
     let ring = |r: usize| -> LineString<f64> {
         let start = ring_offsets[r] as usize;
         let end = ring_offsets[r + 1] as usize;
-        LineString::new(
-            (start..end)
-                .map(|k| Coord {
-                    x: xs[k],
-                    y: ys[k],
-                })
-                .collect(),
-        )
+        LineString::new((start..end).map(|k| Coord { x: xs[k], y: ys[k] }).collect())
     };
 
     let exterior = ring(r_start);
@@ -196,7 +189,14 @@ mod tests {
         ];
         let ring_offsets = vec![0, 5, 10];
         let poly_offsets = vec![0, 1, 2];
-        assert!(polygons_intersect(&xs, &ys, &ring_offsets, &poly_offsets, 0, 1));
+        assert!(polygons_intersect(
+            &xs,
+            &ys,
+            &ring_offsets,
+            &poly_offsets,
+            0,
+            1
+        ));
         let ia = polygon_intersection_area(&xs, &ys, &ring_offsets, &poly_offsets, 0, 1);
         assert!((ia - 1.0).abs() < 1e-9);
     }

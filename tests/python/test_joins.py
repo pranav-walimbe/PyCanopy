@@ -208,3 +208,66 @@ def test_streamed_within_join_polygons_matches_single_shot(sf_polygons):
     # geom is a shapely object column (unsortable); compare the (qx, poly_id) pairing.
     cols = ["qx", "poly_id"]
     assert streamed.select(cols).sort(cols).equals(single.select(cols).sort(cols))
+
+
+# auto_index=False forces brute force; results must match the indexed path. The
+# fixtures have n >= 500 so the default path builds a real index.
+
+
+def _offset_query(n: int) -> pl.DataFrame:
+    # Off-lattice query points so the k nearest are unambiguous (no equidistant ties
+    # that brute force and the KD-tree could break differently).
+    return pl.DataFrame(
+        {
+            "qx": [float(i % 10) + 0.1 for i in range(n)],
+            "qy": [float(i // 10) + 0.2 for i in range(n)],
+        }
+    )
+
+
+def test_auto_index_false_matches_indexed_knn_join(sf):
+    query_df = _offset_query(200)
+    indexed = sf.lazy().knn_join(query_df, "qx", "qy", k=3).collect()
+    brute = sf.lazy().knn_join(query_df, "qx", "qy", k=3).collect(auto_index=False)
+    assert brute.sort(brute.columns).equals(indexed.sort(indexed.columns))
+
+
+def test_auto_index_false_matches_indexed_within_distance_join(sf):
+    query_df = _grid_query(200)
+    indexed = sf.lazy().within_distance_join(query_df, "qx", "qy", distance=1.1).collect()
+    brute = (
+        sf.lazy().within_distance_join(query_df, "qx", "qy", distance=1.1).collect(auto_index=False)
+    )
+    assert brute.sort(brute.columns).equals(indexed.sort(indexed.columns))
+
+
+def test_auto_index_false_matches_indexed_within_join_polygons(sf_polygons):
+    query_df = pl.DataFrame({"qx": [float(i) + 0.5 for i in range(200)], "qy": [0.5] * 200})
+    indexed = sf_polygons.lazy().within_join(query_df, "qx", "qy").collect()
+    brute = sf_polygons.lazy().within_join(query_df, "qx", "qy").collect(auto_index=False)
+    cols = ["qx", "poly_id"]
+    assert brute.select(cols).sort(cols).equals(indexed.select(cols).sort(cols))
+
+
+def test_auto_index_false_matches_indexed_range_query(sf):
+    indexed = sf.lazy().range_query(2.0, 2.0, 6.0, 60.0).collect()
+    brute = sf.lazy().range_query(2.0, 2.0, 6.0, 60.0).collect(auto_index=False)
+    assert brute.sort(brute.columns).equals(indexed.sort(indexed.columns))
+
+
+def test_auto_index_false_via_collect_batched_matches(sf):
+    query_df = _offset_query(250)
+    indexed = sf.lazy().knn_join(query_df, "qx", "qy", k=2).collect()
+    batches = list(
+        sf.lazy()
+        .knn_join(query_df, "qx", "qy", k=2)
+        .collect_batched(batch_size=100, auto_index=False)
+    )
+    brute = pl.concat(batches)
+    assert brute.sort(brute.columns).equals(indexed.sort(indexed.columns))
+
+
+def test_auto_index_override_is_restored_after_collect(sf):
+    query_df = _grid_query(50)
+    sf.lazy().knn_join(query_df, "qx", "qy", k=2).collect(auto_index=False)
+    assert sf.engine.set_auto_index(True) is True
