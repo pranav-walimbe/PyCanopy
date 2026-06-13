@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import polars as pl
 
 from pycanopy.executor import _ROW_IDX, SpatialExecutor
@@ -349,19 +351,59 @@ class SpatialLazyFrame:
             path = None
         return _fmt_plan(plan, path, engine.n, optimized=optimized)
 
-    def collect(self) -> pl.DataFrame:
+    def collect(self, batch_size: int | None = None) -> pl.DataFrame:
         """Optimise and execute the plan. Returns a Polars DataFrame.
 
         Triggers:
           1. SpatialOptimizer: selectivity estimation, cost-based sort, fusion pass.
           2. SpatialOptimizer: plugin path selection (EXPR vs IO).
           3. SpatialExecutor: emits the optimised plan via the chosen plugin path.
+
+        When the plan ends in a spatial join whose probe side exceeds the morsel
+        size, the probe is streamed in morsels and the results concatenated, so the
+        join intermediate stays bounded. The returned DataFrame is identical to the
+        unstreamed result. Use collect_batched to reduce per morsel instead of
+        concatenating, which keeps the full join result from materialising at all.
+
+        Args:
+            batch_size: Probe rows per morsel for streamed joins. Defaults to
+                MORSEL_ROWS. Ignored for plans without a join.
+
+        Returns:
+            The executed result as a Polars DataFrame.
         """
         optimizer = SpatialOptimizer()
         executor = SpatialExecutor()
         optimized = optimizer.optimize(self._plan, self._sf.engine)
         plugin_path = optimizer._select_plugin_path(optimized, self._sf.engine)
-        return executor.execute(optimized, self._sf, plugin_path)
+        return executor.execute(optimized, self._sf, plugin_path, batch_size)
+
+    def collect_batched(self, batch_size: int | None = None) -> Iterator[pl.DataFrame]:
+        """Execute the plan and yield the result one morsel-frame at a time.
+
+        For a plan ending in a spatial join the probe side is sliced into morsels of
+        batch_size rows (default MORSEL_ROWS); each morsel is joined and yielded as
+        its own DataFrame. A caller reduces each morsel (group_by, count, ...) before
+        requesting the next, so the full join result never materialises at once --
+        the intended path for large joins whose final output is itself too big to
+        hold (it is reduced downstream). Partial reductions of count and sum combine
+        additively across morsels.
+
+        Plans without a join yield a single frame, so the iterator form is always
+        usable. Two joins streamed from the same source table (equal height, equal
+        batch_size) yield morsel-aligned batches, so a per-trip merge of their
+        i-th batches is local and exact.
+
+        Args:
+            batch_size: Probe rows per morsel. Defaults to MORSEL_ROWS.
+
+        Returns:
+            An iterator of DataFrames, one per probe morsel.
+        """
+        optimizer = SpatialOptimizer()
+        executor = SpatialExecutor()
+        optimized = optimizer.optimize(self._plan, self._sf.engine)
+        return executor.stream(optimized, self._sf, batch_size)
 
     @staticmethod
     def collect_all(frames: list[SpatialLazyFrame]) -> list[pl.DataFrame]:

@@ -134,3 +134,77 @@ def test_optimizer_sets_flip_when_query_larger_than_half_engine(sf):
     optimized = SpatialOptimizer().optimize(plan, sf.engine)
     node = next(n for n in optimized if isinstance(n, WithinDistanceJoinNode))
     assert node.flip is True
+
+
+# streamed joins (morsel batching)
+#
+# batch_size is forced below the probe size so streaming engages on small fixtures.
+
+
+def _grid_query(n: int) -> pl.DataFrame:
+    # n query points sweeping the 10x100 grid, each landing on a real sf point.
+    return pl.DataFrame(
+        {"qx": [float(i % 10) for i in range(n)], "qy": [float(i // 10) for i in range(n)]}
+    )
+
+
+def test_streamed_collect_matches_single_shot_within_distance(sf):
+    query_df = _grid_query(300)
+    single = sf.lazy().within_distance_join(query_df, "qx", "qy", distance=1.1).collect()
+    streamed = (
+        sf.lazy().within_distance_join(query_df, "qx", "qy", distance=1.1).collect(batch_size=64)
+    )
+    # Same rows regardless of morsel size (order may differ across morsels).
+    assert streamed.sort(streamed.columns).equals(single.sort(single.columns))
+
+
+def test_streamed_collect_matches_single_shot_knn_join(sf):
+    query_df = _grid_query(250)
+    single = sf.lazy().knn_join(query_df, "qx", "qy", k=3).collect()
+    streamed = sf.lazy().knn_join(query_df, "qx", "qy", k=3).collect(batch_size=50)
+    assert len(streamed) == len(single) == 250 * 3
+    assert streamed.sort(streamed.columns).equals(single.sort(single.columns))
+
+
+def test_collect_batched_yields_multiple_morsels_and_concats_to_full(sf):
+    query_df = _grid_query(250)
+    batches = list(sf.lazy().knn_join(query_df, "qx", "qy", k=2).collect_batched(batch_size=100))
+    assert len(batches) == 3  # ceil(250 / 100)
+    full = pl.concat(batches)
+    single = sf.lazy().knn_join(query_df, "qx", "qy", k=2).collect()
+    assert full.sort(full.columns).equals(single.sort(single.columns))
+
+
+def test_collect_batched_partial_reduction_combines_additively(sf):
+    # Per-morsel count reduced then summed must equal the single-shot row count.
+    query_df = _grid_query(300)
+    per_morsel = [
+        b.height
+        for b in sf.lazy()
+        .within_distance_join(query_df, "qx", "qy", distance=1.1)
+        .collect_batched(batch_size=64)
+    ]
+    single = sf.lazy().within_distance_join(query_df, "qx", "qy", distance=1.1).collect()
+    assert sum(per_morsel) == single.height
+
+
+def test_small_probe_yields_single_batch(sf):
+    query_df = _grid_query(5)
+    batches = list(sf.lazy().knn_join(query_df, "qx", "qy", k=2).collect_batched())
+    assert len(batches) == 1
+
+
+def test_collect_batched_without_join_yields_single_frame(sf):
+    batches = list(sf.lazy().range_query(0.0, 0.0, 4.0, 4.0).collect_batched())
+    assert len(batches) == 1
+    expected = sf.lazy().range_query(0.0, 0.0, 4.0, 4.0).collect()
+    assert batches[0].sort(batches[0].columns).equals(expected.sort(expected.columns))
+
+
+def test_streamed_within_join_polygons_matches_single_shot(sf_polygons):
+    query_df = pl.DataFrame({"qx": [float(i) + 0.5 for i in range(200)], "qy": [0.5] * 200})
+    single = sf_polygons.lazy().within_join(query_df, "qx", "qy").collect()
+    streamed = sf_polygons.lazy().within_join(query_df, "qx", "qy").collect(batch_size=32)
+    # geom is a shapely object column (unsortable); compare the (qx, poly_id) pairing.
+    cols = ["qx", "poly_id"]
+    assert streamed.select(cols).sort(cols).equals(single.select(cols).sort(cols))

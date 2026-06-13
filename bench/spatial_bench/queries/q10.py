@@ -4,10 +4,11 @@ PyCanopy: within-join trip pickups against zones and aggregate, then left-join t
 aggregates back onto all zones so empty zones survive with num_trips = 0. The
 reference uses a right sjoin and fills zeros.
 
-The trip points are streamed through the zone index in batches and reduced to
-per-zone partial aggregates each batch, so the join intermediate is bounded by the
-batch size rather than trips times zone-overlap. Counts and sums are additive, so
-combining the per-batch partials yields the exact single-pass result.
+The library streams the trip points through the zone index in morsels via
+collect_batched; each morsel is reduced to per-zone partial aggregates here, so the
+join intermediate is bounded by the morsel size rather than trips times zone-overlap.
+Counts and sums are additive, so combining the per-morsel partials yields the exact
+single-pass result.
 """
 
 from __future__ import annotations
@@ -23,8 +24,6 @@ id = "q10"
 title = "Per-zone trip stats (zones with zero trips retained)"
 
 _TRIP_COLS = ["t_tripkey", "t_pickuploc", "t_pickuptime", "t_dropofftime", "t_distance"]
-# Trip points streamed through the spatial join this many at a time.
-_BATCH = 1_000_000
 
 
 def pycanopy(tables) -> pl.DataFrame:
@@ -39,17 +38,15 @@ def pycanopy(tables) -> pl.DataFrame:
         duration_seconds=(pl.col("t_dropofftime") - pl.col("t_pickuptime")).dt.total_seconds(),
     ).select(["qx", "qy", "t_distance", "duration_seconds"])
 
-    # Each batch reduces to per-zone partial sums and counts, which combine additively.
-    partials = []
-    for chunk in qdf.iter_slices(_BATCH):
-        joined = sf.lazy().within_join(chunk, "qx", "qy").collect()
-        partials.append(
-            joined.group_by(["z_zonekey", "z_name"]).agg(
-                sum_duration=pl.col("duration_seconds").sum(),
-                sum_distance=pl.col("t_distance").sum(),
-                num_trips=pl.len(),
-            )
+    # Each morsel reduces to per-zone partial sums and counts, which combine additively.
+    partials = [
+        joined.group_by(["z_zonekey", "z_name"]).agg(
+            sum_duration=pl.col("duration_seconds").sum(),
+            sum_distance=pl.col("t_distance").sum(),
+            num_trips=pl.len(),
         )
+        for joined in sf.lazy().within_join(qdf, "qx", "qy").collect_batched()
+    ]
 
     agg = (
         pl.concat(partials)

@@ -7,6 +7,8 @@ is shared across the module; flush tests are ordered last.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -70,8 +72,6 @@ def test_size_cap_flushes_delta(engine):
 
 
 def test_cost_flush_fires():
-    import math
-
     # Fresh uniform grid so select_index reliably picks Grid (cost threshold = N).
     # The shared module engine has accumulated flushed points from prior tests,
     # shifting its distribution to Clustered (KD-tree, cost = N*log2 N), which

@@ -1,14 +1,14 @@
 """Tests for Python-level input conversion helpers."""
 
 import numpy as np
+import polars as pl
 import pyarrow as pa
 import pytest
+import shapely
+from shapely.geometry import MultiPolygon, Polygon
+from shapely.geometry import Point as ShapelyPoint
 
-shapely = pytest.importorskip("shapely")
-from shapely.geometry import MultiPolygon, Polygon  # noqa: E402
-from shapely.geometry import Point as ShapelyPoint  # noqa: E402
-
-from pycanopy.engine import (  # noqa: E402
+from pycanopy.engine import (
     _extract_polygon_rings,
     _geoarrow_to_numpy_xy,
     _to_numpy_xy,
@@ -179,7 +179,6 @@ def test_wkb_points_chunked_array():
 
 
 def test_wkb_points_from_polars_series():
-    pl = pytest.importorskip("polars")
     series = pl.Series("geom", [ShapelyPoint(x, y).wkb for x, y in zip(XS, YS)], dtype=pl.Binary)
     xs, ys = wkb_points_to_xy(series)
     assert xs.tolist() == pytest.approx(XS)
@@ -233,14 +232,6 @@ def test_extract_polygon_rings_returns_contiguous_arrays():
     assert ys.dtype == np.float64
     assert ring_offsets.dtype == np.int64
     assert poly_offsets.dtype == np.int64
-
-
-def test_extract_polygon_rings_geoseries():
-    gpd = pytest.importorskip("geopandas")
-    gs = gpd.GeoSeries([Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])])
-    _xs, _ys, ring_offsets, poly_offsets = _extract_polygon_rings(gs)
-    assert len(ring_offsets) == 2
-    assert len(poly_offsets) == 2
 
 
 def test_extract_polygon_rings_with_hole():

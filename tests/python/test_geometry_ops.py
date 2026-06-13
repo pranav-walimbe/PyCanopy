@@ -8,12 +8,11 @@ axis-aligned squares so expected areas and distances are exact.
 from __future__ import annotations
 
 import numpy as np
+import polars as pl
 import pytest
+from shapely.geometry import box as shapely_box
 
-from pycanopy import Engine
-
-shapely = pytest.importorskip("shapely")
-from shapely.geometry import box as shapely_box  # noqa: E402
+from pycanopy import Engine, SpatialFrame
 
 
 def _poly_engine(boxes) -> Engine:
@@ -110,19 +109,13 @@ def test_convex_hull_area_degenerate():
 def test_within_distance_to_polygons_rejects_point_engine():
     eng = Engine.from_coords(np.array([0.0]), np.array([0.0]))
     with pytest.raises(Exception):
-        eng.batch_within_distance_to_polygons(
-            np.array([0.0]), np.array([0.0]), 1.0
-        )
+        eng.batch_within_distance_to_polygons(np.array([0.0]), np.array([0.0]), 1.0)
 
 
 # Declarative Python API (SpatialFrame / SpatialLazyFrame)
 
 
 def _poly_frame(boxes):
-    import polars as pl
-
-    from pycanopy import SpatialFrame
-
     polys = [shapely_box(*b) for b in boxes]
     df = pl.DataFrame({"pid": list(range(len(polys)))}).with_columns(
         pl.Series("_geom", polys, dtype=pl.Object)
@@ -131,8 +124,6 @@ def _poly_frame(boxes):
 
 
 def test_lazy_polygon_within_distance_join():
-    import polars as pl
-
     sf = _poly_frame([(0, 0, 1, 1), (10, 0, 11, 1)])
     query = pl.DataFrame({"qx": [2.0], "qy": [0.5], "qid": [99]})
     out = sf.lazy().polygon_within_distance_join(query, "qx", "qy", distance=1.5).collect()
@@ -142,8 +133,6 @@ def test_lazy_polygon_within_distance_join():
 
 
 def test_lazy_polygon_knn_join():
-    import polars as pl
-
     sf = _poly_frame([(0, 0, 1, 1), (10, 0, 11, 1), (20, 0, 21, 1)])
     query = pl.DataFrame({"qx": [10.5], "qy": [0.5]})
     out = sf.lazy().polygon_knn_join(query, "qx", "qy", k=2).collect()
@@ -173,10 +162,6 @@ def test_frame_polygon_areas_column():
 
 
 def test_frame_points_within_distance_of_polygon():
-    import polars as pl
-
-    from pycanopy import SpatialFrame
-
     df = pl.DataFrame({"x": [0.5, 2.0, 5.0], "y": [0.5, 0.5, 5.0], "label": ["a", "b", "c"]})
     sf = SpatialFrame(df, "x", "y")
     hit = sf.points_within_distance_of_polygon(shapely_box(0, 0, 1, 1), 1.5)

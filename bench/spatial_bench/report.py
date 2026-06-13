@@ -15,11 +15,17 @@ import argparse
 import json
 from pathlib import Path
 
+import matplotlib
+import matplotlib.pyplot as plt
+
 from bench.spatial_bench.references import (
     REFERENCE_ENGINES,
     REFERENCE_META,
     reference_row,
 )
+
+# Render to file without a display so charts build in headless CI / AWS runs.
+matplotlib.use("Agg")
 
 _RESULTS_DIR = Path(__file__).parent / "results"
 _ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
@@ -79,24 +85,15 @@ def build_markdown_table(results: dict) -> str:
 def build_charts(results: dict, out_dir: Path | None = None) -> list[Path]:
     """Render a grouped bar chart per query (PyCanopy vs published engines).
 
-    Skips silently if matplotlib is not installed. Numeric reference values only
-    (ERROR/TIMEOUT entries are omitted from the bars).
+    Numeric reference values only (ERROR/TIMEOUT entries are omitted from the bars).
 
     Args:
         results: Parsed results JSON.
         out_dir: Directory for PNGs. Defaults to the repo ``assets/`` directory.
 
     Returns:
-        List of written chart paths (empty if matplotlib is unavailable).
+        List of written chart paths.
     """
-    try:
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-    except ImportError:
-        return []
-
     out_dir = out_dir or _ASSETS_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     sf = int(results["scale_factor"])

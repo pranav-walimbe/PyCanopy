@@ -18,6 +18,7 @@ caveat; it affects a small fraction of administrative zones.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 import polars as pl
@@ -50,8 +51,6 @@ def _parquet_glob(data_dir: str, table: str) -> str:
     base = data_dir.rstrip("/")
     # Prefer an explicit single file when it is a local path that exists.
     if not base.startswith("s3://"):
-        import os
-
         single = f"{base}/{table}.parquet"
         if os.path.exists(single):
             return single

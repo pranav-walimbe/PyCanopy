@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import polars as pl
 import pytest
+import shapely
 
 from pycanopy import SpatialFrame
 from pycanopy.nodes import PluginPath
@@ -199,8 +200,10 @@ def test_knn_join_multiple_queries(sf):
 
 
 def _wkb_point_frame():
-    shapely = pytest.importorskip("shapely")
-    pts = [shapely.Point(x, y).wkb for x, y in zip([0.0, 1.0, 2.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0, 1.0])]
+    pts = [
+        shapely.Point(x, y).wkb
+        for x, y in zip([0.0, 1.0, 2.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0, 1.0])
+    ]
     return pl.DataFrame({"v": [10, 20, 30, 40, 50], "geom": pts})
 
 
