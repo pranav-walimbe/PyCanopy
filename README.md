@@ -130,16 +130,9 @@ print(lf.explain())
 #   FILTER [(col("population")) > (dyn int: 100000)]
 #   FROM
 #     DF [N=100,000; path: EXPR]
-
-print(lf.explain(optimized=False))
-# FILTER [(col("population")) > (dyn int: 100000)]
-# FROM
-#   RANGE_QUERY [(-10, 35) → (40, 70)]
-#   FROM
-#     DF [N=100,000]
 ```
 
-The optimizer flipped the declaration order. The scalar filter runs first on all rows, then the spatial query runs on the smaller survivor set. Pass `optimized=False` to see declaration order instead. Plans follow Polars' FROM-chain convention, so the bottom runs first and the top is the final result.
+The optimizer flipped the declaration order. The scalar filter runs first on all rows, then the spatial query runs on the smaller survivor set. Plans follow Polars' FROM-chain convention, so the bottom runs first and the top is the final result.
 
 <details>
 <summary>More examples: point and polygon joins, aggregations, branching, delta buffer, index modes</summary>

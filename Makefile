@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := check
 
-sources = python/ tests/python/ benchmarks/
+sources = python/ tests/python/ bench/
 
 # Preserve colour in cargo output when running from a tty.
 export CARGO_TERM_COLOR=$(shell (test -t 0 && echo "always") || echo "auto")

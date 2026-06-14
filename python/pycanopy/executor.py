@@ -11,10 +11,12 @@ import polars as pl
 from pycanopy.nodes import (
     ContainsNode,
     FusedSpatialNode,
+    IntersectsSelfJoinNode,
     KnnJoinNode,
     KnnNode,
     Plan,
     PluginPath,
+    PointsWithinDistanceOfPolygonNode,
     PolygonKnnJoinNode,
     PolygonWithinDistanceJoinNode,
     RangeNode,
@@ -218,6 +220,11 @@ class SpatialExecutor:
                 lf = lf.filter(node.expr)
             return lf.collect()
 
+        # Intersects self-join is terminal and produces a pair frame, not a row
+        # subset, so it is handled directly rather than through the filter chain.
+        if any(isinstance(n, IntersectsSelfJoinNode) for n in plan):
+            return self._execute_intersects(plan, sf)
+
         has_joins = any(isinstance(n, _JOIN_TYPES) for n in plan)
 
         # Large-probe joins stream the probe in morsels and concatenate, so the join
@@ -319,6 +326,10 @@ class SpatialExecutor:
                 hits = sf.engine.range_query(node.min_x, node.min_y, node.max_x, node.max_y)
             elif isinstance(node, ContainsNode):
                 hits = sf.engine.contains(node.qx, node.qy)
+            elif isinstance(node, PointsWithinDistanceOfPolygonNode):
+                hits = sf.engine.points_within_distance_of_polygon(
+                    node.polygon, node.distance
+                ).tolist()
             elif isinstance(node, FusedSpatialNode):
                 for pred in node.predicates:
                     if isinstance(pred, RangeNode):
@@ -358,6 +369,19 @@ class SpatialExecutor:
 
         return lf.collect()
 
+    def _execute_intersects(self, plan: Plan, sf) -> pl.DataFrame:
+        """Build the polygon intersects pair frame, then apply any trailing filters.
+
+        The self-join spans the whole dataset (it takes no probe side), so nodes
+        before it do not constrain it; scalar nodes after it filter the pair frame.
+        """
+        pos = next(i for i, n in enumerate(plan) if isinstance(n, IntersectsSelfJoinNode))
+        lf = sf.intersects_pairs().lazy()
+        for node in plan[pos + 1 :]:
+            if isinstance(node, ScalarNode):
+                lf = lf.filter(node.expr)
+        return lf.collect()
+
     def _emit_chain(
         self, plan: Plan, sf, lf: pl.LazyFrame, plugin_path: PluginPath
     ) -> pl.LazyFrame:
@@ -392,6 +416,8 @@ class SpatialExecutor:
             return self._emit_polygon_within_distance_join(node, sf, lf)
         if isinstance(node, PolygonKnnJoinNode):
             return self._emit_polygon_knn_join(node, sf, lf)
+        if isinstance(node, PointsWithinDistanceOfPolygonNode):
+            return self._emit_points_within_distance_of_polygon(node, sf, lf)
         raise TypeError(f"Unknown plan node type: {type(node)}")
 
     # filter nodes
@@ -432,6 +458,18 @@ class SpatialExecutor:
         for pred in node.predicates:
             lf = self._emit_node(pred, sf, lf, plugin_path)
         return lf
+
+    def _emit_points_within_distance_of_polygon(
+        self, node: PointsWithinDistanceOfPolygonNode, sf, lf: pl.LazyFrame
+    ) -> pl.LazyFrame:
+        """Keep points within node.distance of the query polygon.
+
+        The engine queries the polygon against all points (independent of any
+        upstream survivors), so the matching indices are resolved once and the
+        current lf is filtered to them by original row position.
+        """
+        indices = sf.engine.points_within_distance_of_polygon(node.polygon, node.distance).tolist()
+        return self._filter_by_indices(lf, indices)
 
     def _filter_by_indices(self, lf: pl.LazyFrame, indices: list[int]) -> pl.LazyFrame:
         if not indices:

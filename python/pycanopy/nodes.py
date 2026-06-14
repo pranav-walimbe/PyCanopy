@@ -132,6 +132,28 @@ class PolygonWithinDistanceJoinNode:
 
 
 @dataclass
+class PointsWithinDistanceOfPolygonNode:
+    """Spatial filter: keep points within `distance` of a single query polygon.
+
+    Point datasets only. Distance is to the polygon boundary (zero inside). Returns
+    a subset of the frame's rows, so it behaves like range / contains.
+    """
+
+    polygon: object  # shapely Polygon (interior holes supported)
+    distance: float
+    selectivity: float = 1.0
+
+
+@dataclass
+class IntersectsSelfJoinNode:
+    """Spatial self-join: all intersecting polygon pairs with overlap area and IoU.
+
+    Polygon datasets only. Acts as a terminal barrier — it produces a pair frame
+    (left, right, area_left, area_right, overlap_area, iou), not a row subset.
+    """
+
+
+@dataclass
 class PolygonKnnJoinNode:
     """Spatial join: for each point in query_df find its k nearest Engine polygons.
 
@@ -159,4 +181,6 @@ Plan = list[
     | WithinDistanceJoinNode
     | PolygonWithinDistanceJoinNode
     | PolygonKnnJoinNode
+    | PointsWithinDistanceOfPolygonNode
+    | IntersectsSelfJoinNode
 ]

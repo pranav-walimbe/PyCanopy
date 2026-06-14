@@ -18,7 +18,9 @@ use index::{
 use planner::{
     calibration::CostFactors,
     cost::{IndexKind, IndexMode},
-    selector::{plan_access, plan_access_with_kind, select_index},
+    selector::{
+        plan_access, plan_access_with_kind, point_distance_candidate, rtree_candidate, select_index,
+    },
 };
 use query::{
     batch::{
@@ -830,14 +832,7 @@ impl Engine {
             let pairs = par_within_distance_flipped(qxs, qys, &self.xs, &self.ys, distance);
             return Ok(PyArray1::from_vec(py, pairs));
         }
-        let candidate = if self.stats.n < 500 {
-            IndexKind::BruteForce
-        } else {
-            match self.stats.distribution {
-                stats::types::Distribution::Uniform => IndexKind::Grid,
-                _ => IndexKind::KdTree,
-            }
-        };
+        let candidate = point_distance_candidate(&self.stats);
         let bbox = Rect::new(
             coord! { x: 0.0, y: 0.0 },
             coord! { x: 2.0 * distance, y: 2.0 * distance },
@@ -1232,11 +1227,7 @@ impl Engine {
         }
         // The query polygon is a single polygon spanning all its rings.
         let single_poly_offsets: Vec<i64> = vec![0, (pring.len() - 1) as i64];
-        let candidate = if self.stats.n < 500 {
-            IndexKind::BruteForce
-        } else {
-            IndexKind::RTree
-        };
+        let candidate = rtree_candidate(&self.stats);
         let bbox = Rect::new(
             coord! { x: 0.0, y: 0.0 },
             coord! { x: 2.0 * distance, y: 2.0 * distance },

@@ -17,6 +17,7 @@ import json
 from pycanopy.nodes import (
     ContainsNode,
     FusedSpatialNode,
+    IntersectsSelfJoinNode,
     KnnJoinNode,
     KnnNode,
     Plan,
@@ -207,6 +208,7 @@ class SpatialOptimizer:
             WithinDistanceJoinNode,
             PolygonWithinDistanceJoinNode,
             PolygonKnnJoinNode,
+            IntersectsSelfJoinNode,
         )
         for node in plan:
             if isinstance(node, _barrier_types):

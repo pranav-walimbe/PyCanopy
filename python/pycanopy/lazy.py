@@ -10,10 +10,12 @@ from pycanopy.executor import _ROW_IDX, SpatialExecutor
 from pycanopy.nodes import (
     ContainsNode,
     FusedSpatialNode,
+    IntersectsSelfJoinNode,
     KnnJoinNode,
     KnnNode,
     Plan,
     PluginPath,
+    PointsWithinDistanceOfPolygonNode,
     PolygonKnnJoinNode,
     PolygonWithinDistanceJoinNode,
     RangeNode,
@@ -71,10 +73,14 @@ def _fmt_node(node) -> str:
         )
     if isinstance(node, PolygonKnnJoinNode):
         return f"POLY_KNN_JOIN [k={node.k}, query_rows={len(node.query_df):,}, barrier]"
+    if isinstance(node, PointsWithinDistanceOfPolygonNode):
+        return f"POINTS_WITHIN_DIST_OF_POLY [dist={node.distance:.4g}]"
+    if isinstance(node, IntersectsSelfJoinNode):
+        return "INTERSECTS_SELF_JOIN [pairs, barrier]"
     return f"UNKNOWN [{type(node).__name__}]"
 
 
-def _fmt_plan(plan: Plan, path: PluginPath | None, n: int, *, optimized: bool) -> str:
+def _fmt_plan(plan: Plan, path: PluginPath | None, n: int) -> str:
     path_suffix = ""
     if path is not None:
         path_label = "EXPR" if path == PluginPath.EXPR else "IO"
@@ -326,30 +332,50 @@ class SpatialLazyFrame:
             [*self._plan, PolygonKnnJoinNode(query_df, x_col, y_col, k)],
         )
 
-    def explain(self, optimized: bool = True) -> str:
-        """Return a human-readable description of the query plan.
+    def points_within_distance_of_polygon(self, polygon, distance: float) -> SpatialLazyFrame:
+        """Keep points within `distance` of a single query polygon (point dataset).
 
-        Mirrors the interface of Polars' LazyFrame.explain(). By default shows
-        the plan after the optimizer has run: reordered operations, any fused
-        spatial predicates, and the chosen execution path (EXPR or IO). Pass
-        optimized=False to see the plan in declaration order instead.
+        Distance is measured to the polygon boundary (zero when the point is inside).
+        Behaves like a spatial filter: the result is a subset of this frame's rows.
 
         Args:
-            optimized: If True, show the optimizer's execution order with path
-                selection. If False, show operations in declaration order.
+            polygon: A single shapely Polygon (interior holes supported).
+            distance: Maximum point-to-polygon distance for a row to be kept.
+
+        Returns:
+            New SpatialLazyFrame with the points-within-distance node appended.
+        """
+        return SpatialLazyFrame(
+            self._sf,
+            [*self._plan, PointsWithinDistanceOfPolygonNode(polygon, distance)],
+        )
+
+    def intersects_pairs(self) -> SpatialLazyFrame:
+        """Find all intersecting polygon pairs with overlap area and IoU (polygon dataset).
+
+        Terminal self-join: the result is a pair frame (left, right, area_left,
+        area_right, overlap_area, iou), one row per unordered intersecting pair.
+
+        Returns:
+            New SpatialLazyFrame with the intersects self-join node appended.
+        """
+        return SpatialLazyFrame(self._sf, [*self._plan, IntersectsSelfJoinNode()])
+
+    def explain(self) -> str:
+        """Return a human-readable description of the computed query plan.
+
+        Shows the plan after the optimizer has run: reordered operations, any fused
+        spatial predicates, and the chosen execution path (EXPR or IO) — i.e. what
+        collect() will actually execute, not the declaration order.
 
         Returns:
             Multi-line string describing the plan. Print it for readable output.
         """
         engine = self._sf.engine
-        if optimized:
-            opt = SpatialOptimizer()
-            plan = opt.optimize(self._plan, engine)
-            path = opt._select_plugin_path(plan, engine)
-        else:
-            plan = self._plan
-            path = None
-        return _fmt_plan(plan, path, engine.n, optimized=optimized)
+        opt = SpatialOptimizer()
+        plan = opt.optimize(self._plan, engine)
+        path = opt._select_plugin_path(plan, engine)
+        return _fmt_plan(plan, path, engine.n)
 
     def collect(self, batch_size: int | None = None) -> pl.DataFrame:
         """Optimise (SpatialOptimizer) and execute (SpatialExecutor) the plan.

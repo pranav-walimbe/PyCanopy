@@ -73,6 +73,26 @@ pub fn plan_access_with_kind(
     }
 }
 
+/// Candidate index for a point distance probe (brute force / grid / KD-tree).
+pub fn point_distance_candidate(stats: &DatasetStats) -> IndexKind {
+    if stats.n < BRUTE_FORCE_N {
+        IndexKind::BruteForce
+    } else if stats.distribution == Distribution::Uniform {
+        IndexKind::Grid
+    } else {
+        IndexKind::KdTree
+    }
+}
+
+/// Candidate for an R-tree kernel: brute force below the small-dataset threshold.
+pub fn rtree_candidate(stats: &DatasetStats) -> IndexKind {
+    if stats.n < BRUTE_FORCE_N {
+        IndexKind::BruteForce
+    } else {
+        IndexKind::RTree
+    }
+}
+
 /// Plan the index kind for `query`, honouring the index mode. The candidate kind
 /// comes from `select_index`.
 pub fn plan_access(
