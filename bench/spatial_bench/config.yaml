@@ -10,7 +10,7 @@ instance_profile: pycanopy-spatialbench
 # run
 region: us-west-2
 instance_type: m7i.2xlarge
-scale_factors: [1]
+scale_factor: 1  # 1 or 10
 volume_gb: 60
 max_runtime_min: 30  # watchdog hard-terminates the box after this many minutes
 

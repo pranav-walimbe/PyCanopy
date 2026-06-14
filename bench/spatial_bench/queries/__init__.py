@@ -1,11 +1,12 @@
 """Registry of SpatialBench query modules.
 
 Each query module exposes:
-  id: str                      query identifier, e.g. "q1"
-  title: str                   short description
-  pycanopy(tables) -> pl.DataFrame      the PyCanopy + Polars implementation
-  reference(paths) -> pd.DataFrame      the ported GeoPandas oracle / baseline
-  validate(pc_df, ref_df) -> (bool, str)   correctness check vs the oracle
+  id: str                          query identifier, e.g. "q1"
+  title: str                       short description
+  pycanopy(tables) -> pl.DataFrame the PyCanopy + Polars implementation
+  compare: dict                    keys/values to check against SedonaDB (see check.verify)
+
+The SedonaDB oracle (oracle.py) runs the same query for verification and timing.
 """
 
 from __future__ import annotations

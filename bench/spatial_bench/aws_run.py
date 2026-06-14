@@ -1,21 +1,22 @@
-"""Provision an ephemeral EC2 box, run SpatialBench on it, render the report.
+"""Provision an ephemeral EC2 box, run SpatialBench on it, fetch the chart.
 
 The whole flow is one command:
 
     python -m bench.spatial_bench.aws_run
 
 It reads ``config.yaml``, launches an instance whose user-data (``bootstrap.sh``)
-does everything (build, fetch data, measure, upload results, self-terminate),
-polls S3 for the ``_SUCCESS`` marker, downloads the result JSON, and renders the
-comparison report. The box is SSH-free and always terminates: on shutdown, on a
-watchdog timeout, and via the ``finally`` here. AWS credentials come from the
-standard boto3 chain (AWS_PROFILE / ~/.aws / SSO).
+does everything (build, fetch data, measure PyCanopy vs SedonaDB, render the
+comparison chart, upload it, self-terminate), polls S3 for the ``_SUCCESS`` marker,
+and downloads the chart PNG into ``assets/``. The box is SSH-free and always
+terminates: on shutdown, on a watchdog timeout, and via the ``finally`` here. AWS
+credentials come from the standard boto3 chain (AWS_PROFILE / ~/.aws / SSO).
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -23,18 +24,12 @@ from pathlib import Path
 import boto3
 import yaml
 
-from bench.spatial_bench import report
-
 _DIR = Path(__file__).parent
+_ASSETS_DIR = _DIR.parent.parent / "assets"
 _SSM_AL2023 = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 _PROJECT_TAG = "pycanopy-spatialbench"
 _RESULT_PREFIX = "spatialbench-runs"
 _POLL_SECONDS = 30
-
-
-def log(msg: str) -> None:
-    """Print one driver line with a consistent, greppable prefix."""
-    print(f"[aws_run] {msg}", flush=True)
 
 
 def load_config() -> dict:
@@ -49,9 +44,9 @@ def load_config() -> dict:
 def _user_data(cfg: dict, run_id: str, index_mode: str) -> str:
     """Fill the @@NAME@@ placeholders in bootstrap.sh for this run."""
     script = (_DIR / "bootstrap.sh").read_text()
-    # Non-eager modes pass a measure flag and a filename suffix so the result does
-    # not overwrite the eager sf{N}.json.
-    suffix = "" if index_mode == "eager" else f"-{index_mode}"
+    # Non-eager modes pass a measure flag and a filename suffix so the chart does
+    # not overwrite the eager sf{N}.png.
+    suffix = "" if index_mode == "eager" else f"_{index_mode}"
     repl = {
         "RUN_ID": run_id,
         "REGION": cfg["region"],
@@ -60,7 +55,7 @@ def _user_data(cfg: dict, run_id: str, index_mode: str) -> str:
         "REPO_URL": cfg["repo_url"],
         "REPO_BRANCH": cfg["repo_branch"],
         "DATA_TEMPLATE": cfg["data_template"],
-        "SCALE_FACTORS": " ".join(str(s) for s in cfg["scale_factors"]),
+        "SCALE_FACTOR": str(cfg["scale_factor"]),
         "MAX_RUNTIME_MIN": str(cfg["max_runtime_min"]),
         "MEASURE_ARGS": "" if index_mode == "eager" else f"--index-{index_mode}",
         "OUT_SUFFIX": suffix,
@@ -102,7 +97,9 @@ def launch(ec2, ssm, cfg: dict, run_id: str, index_mode: str) -> str:
         ],
     )
     instance_id = resp["Instances"][0]["InstanceId"]
-    log(f"launched {instance_id} ({cfg['instance_type']}, AMI {ami})")
+    print(
+        f"launched {instance_id} ({cfg['instance_type']}, {index_mode}, run {run_id})", flush=True
+    )
     return instance_id
 
 
@@ -114,33 +111,25 @@ def _alive(ec2, instance_id: str) -> bool:
 
 
 def _emit_progress(s3, cfg: dict, run_id: str, seen: int) -> int:
-    """Print step-progress lines the box has published since the last poll.
+    """Print the box's per-testcase update lines published since the last poll.
 
-    The box uploads its bootstrap log to progress.log every few seconds. We keep
-    only the meaningful lines (bootstrap steps and per-query measure output),
-    dropping the s3-sync byte-counter spam, and print the ones not shown yet.
-
-    Args:
-        s3: boto3 S3 client.
-        cfg: Loaded config (for the result bucket).
-        run_id: This run's id (S3 key prefix).
-        seen: Count of progress lines already printed.
-
-    Returns:
-        Updated count of progress lines printed so far.
+    The box streams its log to progress.log every few seconds. We surface only the
+    measure updates (running / completed / failed / mismatch / wrote chart), dropping
+    build, data-copy, and byte-counter noise, and print the ones not shown yet.
     """
     key = f"{_RESULT_PREFIX}/{run_id}/progress.log"
     try:
         text = s3.get_object(Bucket=cfg["result_bucket"], Key=key)["Body"].read()
     except s3.exceptions.ClientError:
         return seen
+    updates = ("running ", "completed ", "failed ", "wrote ")
     lines = [
         line.rstrip()
         for line in text.decode("utf-8", "replace").splitlines()
-        if "[bootstrap]" in line or "running q" in line or "status=" in line
+        if line.startswith(updates) or "output mismatch" in line
     ]
     for line in lines[seen:]:
-        log(f"box: {line}")
+        print(line, flush=True)
     return len(lines)
 
 
@@ -150,7 +139,6 @@ def wait_for_success(s3, ec2, cfg: dict, run_id: str, instance_id: str) -> bool:
     deadline = time.monotonic() + (cfg["max_runtime_min"] + 15) * 60
     seen = 0
     while time.monotonic() < deadline:
-        prev = seen
         seen = _emit_progress(s3, cfg, run_id, seen)
         try:
             s3.head_object(Bucket=cfg["result_bucket"], Key=key)
@@ -160,28 +148,28 @@ def wait_for_success(s3, ec2, cfg: dict, run_id: str, instance_id: str) -> bool:
             pass
         if not _alive(ec2, instance_id):
             return False  # terminated without success: a failed run
-        if seen == prev:
-            log("waiting for results ...")
         time.sleep(_POLL_SECONDS)
     return False
 
 
-def download(s3, cfg: dict, run_id: str, dest: Path) -> list[Path]:
-    """Download the result JSON(s) and bootstrap log this run produced."""
-    dest.mkdir(parents=True, exist_ok=True)
+def download(s3, cfg: dict, run_id: str) -> list[Path]:
+    """Download this run's artifacts: the chart PNG into assets/, the log to tmp.
+
+    Returns the downloaded local paths.
+    """
     prefix = f"{_RESULT_PREFIX}/{run_id}/"
     objs = s3.list_objects_v2(Bucket=cfg["result_bucket"], Prefix=prefix).get("Contents", [])
-    jsons: list[Path] = []
+    paths: list[Path] = []
     for obj in objs:
         name = obj["Key"].rsplit("/", 1)[-1]
-        if name == "_SUCCESS":
+        if name in ("_SUCCESS", "progress.log"):
             continue
+        dest = _ASSETS_DIR if name.endswith(".png") else Path(tempfile.gettempdir())
+        dest.mkdir(parents=True, exist_ok=True)
         local = dest / name
         s3.download_file(cfg["result_bucket"], obj["Key"], str(local))
-        log(f"downloaded {name}")
-        if name.endswith(".json"):
-            jsons.append(local)
-    return jsons
+        paths.append(local)
+    return paths
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -199,14 +187,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_const",
         const="auto",
         dest="index_mode",
-        help="Cost-based: build an index only when it beats a scan. Writes sf{N}-auto.json.",
+        help="Cost-based: build an index only when it beats a scan. Writes sf{N}_auto.png.",
     )
     group.add_argument(
         "--index-none",
         action="store_const",
         const="none",
         dest="index_mode",
-        help="Brute-force every query. Writes sf{N}-none.json.",
+        help="Brute-force every query. Writes sf{N}_none.png.",
     )
     parser.set_defaults(index_mode="eager")
     args = parser.parse_args(argv)
@@ -218,24 +206,18 @@ def main(argv: list[str] | None = None) -> int:
     ssm = boto3.client("ssm", region_name=region)
 
     run_id = uuid.uuid4().hex[:12]
-    tag = "" if args.index_mode == "eager" else f" [{args.index_mode}]"
-    log(f"run {run_id}{tag}: {cfg['instance_type']} in {region}, scale {cfg['scale_factors']}")
     instance_id = launch(ec2, ssm, cfg, run_id, args.index_mode)
     try:
         ok = wait_for_success(s3, ec2, cfg, run_id, instance_id)
-        jsons = download(s3, cfg, run_id, _DIR / "results")
+        paths = download(s3, cfg, run_id)
     finally:
         ec2.terminate_instances(InstanceIds=[instance_id])
-        log(f"terminated {instance_id}")
+        print(f"terminated {instance_id}", flush=True)
 
-    if not ok or not jsons:
-        log("run failed; inspect the downloaded bootstrap.log")
+    if not ok or not any(p.suffix == ".png" for p in paths):
+        logs = [p for p in paths if p.suffix == ".log"]
+        print(f"run failed; inspect {logs[0]}" if logs else "run failed", flush=True)
         return 1
-    for path in sorted(jsons):
-        results = report.load_results(path)
-        print(report.build_markdown_table(results))
-        for chart in report.build_charts(results):
-            log(f"wrote chart: {chart}")
     return 0
 
 

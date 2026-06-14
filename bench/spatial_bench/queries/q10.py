@@ -1,8 +1,7 @@
 """Q10: Per-zone trip statistics, retaining zones with no trips.
 
 PyCanopy: within-join trip pickups against zones and aggregate, then left-join the
-aggregates back onto all zones so empty zones survive with num_trips = 0. The
-reference uses a right sjoin and fills zeros.
+aggregates back onto all zones so empty zones survive with num_trips = 0.
 
 The library streams the trip points through the zone index in morsels via
 collect_batched; each morsel is reduced to per-zone partial aggregates here, so the
@@ -13,17 +12,18 @@ single-pass result.
 
 from __future__ import annotations
 
-import geopandas as gpd
-import pandas as pd
 import polars as pl
 
-from bench.spatial_bench import check
 from pycanopy import wkb_points_to_xy
 
 id = "q10"
 title = "Per-zone trip stats (zones with zero trips retained)"
 
 _TRIP_COLS = ["t_tripkey", "t_pickuploc", "t_pickuptime", "t_dropofftime", "t_distance"]
+
+# avg_duration is an interval in SedonaDB (Timedelta) vs float seconds here, so it is
+# left out of the value check; num_trips and avg_distance are compared.
+compare = {"keys": ["z_zonekey"], "values": ["num_trips", "avg_distance"]}
 
 
 def pycanopy(tables) -> pl.DataFrame:
@@ -70,37 +70,3 @@ def pycanopy(tables) -> pl.DataFrame:
         .rename({"z_name": "pickup_zone"})
     )
     return result.sort(["avg_duration", "z_zonekey"], descending=[True, False], nulls_last=True)
-
-
-def reference(paths) -> pd.DataFrame:
-    trip_df = pd.read_parquet(paths["trip"], columns=_TRIP_COLS)
-    trip_df["pickup_geom"] = gpd.GeoSeries.from_wkb(trip_df["t_pickuploc"], crs="EPSG:4326")
-    pickups = gpd.GeoDataFrame(trip_df, geometry="pickup_geom", crs="EPSG:4326")
-
-    zone_df = pd.read_parquet(paths["zone"], columns=["z_zonekey", "z_name", "z_boundary"])
-    zone_df["zone_geom"] = gpd.GeoSeries.from_wkb(zone_df["z_boundary"], crs="EPSG:4326")
-    zones = gpd.GeoDataFrame(zone_df, geometry="zone_geom", crs="EPSG:4326")
-
-    result = (
-        gpd.sjoin(pickups, zones, how="right", predicate="within")
-        .assign(
-            duration_seconds=lambda d: (d["t_dropofftime"] - d["t_pickuptime"]).dt.total_seconds()
-        )
-        .groupby(["z_zonekey", "z_name"], dropna=False)
-        .agg(
-            avg_duration=("duration_seconds", "mean"),
-            avg_distance=("t_distance", "mean"),
-            num_trips=("t_tripkey", "count"),
-        )
-        .reset_index()
-        .assign(num_trips=lambda d: d["num_trips"].fillna(0).astype(int))
-        .sort_values(by=["avg_duration", "z_zonekey"], ascending=[False, True], na_position="last")
-        .reset_index(drop=True)
-    )
-    return result
-
-
-def validate(pc_df, ref_df) -> tuple[bool, str]:
-    pc_map = {r["z_zonekey"]: r["num_trips"] for r in pc_df.iter_rows(named=True)}
-    ref_map = dict(zip(ref_df["z_zonekey"], ref_df["num_trips"], strict=False))
-    return check.grouped(pc_map, ref_map)

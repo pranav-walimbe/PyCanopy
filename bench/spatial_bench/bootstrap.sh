@@ -18,7 +18,7 @@ RESULT_PREFIX="@@RESULT_PREFIX@@"
 REPO_URL="@@REPO_URL@@"
 REPO_BRANCH="@@REPO_BRANCH@@"
 DATA_TEMPLATE="@@DATA_TEMPLATE@@"
-SCALE_FACTORS="@@SCALE_FACTORS@@"
+SCALE_FACTOR="@@SCALE_FACTOR@@"
 MAX_RUNTIME_MIN="@@MAX_RUNTIME_MIN@@"
 MEASURE_ARGS="@@MEASURE_ARGS@@"
 OUT_SUFFIX="@@OUT_SUFFIX@@"
@@ -60,17 +60,15 @@ pip install -q --upgrade pip maturin
 maturin develop --release
 pip install -q --group bench  # benchmark deps, single list in pyproject.toml
 
-mkdir -p /data /opt/pycanopy/bench/spatial_bench/results
-for SF in $SCALE_FACTORS; do
-  SRC="${DATA_TEMPLATE//\{sf\}/$SF}"
-  log "copying data ${SRC} -> /data/sf${SF}"
-  aws s3 sync "$SRC" "/data/sf${SF}" --region "$REGION" \
-    || aws s3 sync --no-sign-request "$SRC" "/data/sf${SF}" --region "$REGION"
-  OUT="/opt/pycanopy/bench/spatial_bench/results/sf${SF}${OUT_SUFFIX}.json"
-  log "measuring sf${SF}${OUT_SUFFIX}"
-  python -m bench.spatial_bench.measure --data-dir "/data/sf${SF}" --scale-factor "$SF" --output "$OUT" $MEASURE_ARGS
-  aws s3 cp "$OUT" "${S3_BASE}/sf${SF}.json" --region "$REGION"
-done
+mkdir -p /data /opt/pycanopy/assets
+SRC="${DATA_TEMPLATE//\{sf\}/$SCALE_FACTOR}"
+log "copying data ${SRC} -> /data/sf${SCALE_FACTOR}"
+aws s3 sync "$SRC" "/data/sf${SCALE_FACTOR}" --region "$REGION" \
+  || aws s3 sync --no-sign-request "$SRC" "/data/sf${SCALE_FACTOR}" --region "$REGION"
+OUT="/opt/pycanopy/assets/spatialbench_sf${SCALE_FACTOR}${OUT_SUFFIX}.png"
+log "measuring sf${SCALE_FACTOR}${OUT_SUFFIX}"
+python -m bench.spatial_bench.utils --data-dir "/data/sf${SCALE_FACTOR}" --scale-factor "$SCALE_FACTOR" --output "$OUT" $MEASURE_ARGS
+aws s3 cp "$OUT" "${S3_BASE}/$(basename "$OUT")" --region "$REGION"
 
 log "done"
 echo ok | aws s3 cp - "${S3_BASE}/_SUCCESS" --region "$REGION"
