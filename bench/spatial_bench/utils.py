@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,7 +22,6 @@ import polars as pl
 import shapely
 
 from bench.spatial_bench.sedona_sql import SEDONA_SQL
-from bench.utils.core import time_one
 from pycanopy import SpatialFrame
 
 _ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
@@ -214,27 +214,29 @@ def measure_query(query, data_dir: str, index_mode: str = "eager", verify: bool 
     """
     tables = SpatialBenchTables(data_dir=data_dir, index_mode=index_mode)
     try:
-        print(f"running {query.id} using pycanopy", flush=True)
-        pc_ms, pc_df = time_one(lambda: query.pycanopy(tables))
-        print(f"completed {query.id} using pycanopy in {pc_ms / 1000:.2f}s", flush=True)
-        print(f"running {query.id} using sedonadb", flush=True)
-        sed_ms, sed_df = time_one(lambda: run_oracle(query.id, data_dir))
-        print(f"completed {query.id} using sedonadb in {sed_ms / 1000:.2f}s", flush=True)
+        t0 = time.perf_counter()
+        pc_df = query.pycanopy(tables)
+        pc_s = time.perf_counter() - t0
+        print(f"[testcase] completed {query.id} using pycanopy in {pc_s:.2f}s", flush=True)
+        t0 = time.perf_counter()
+        sed_df = run_oracle(query.id, data_dir)
+        sed_s = time.perf_counter() - t0
+        print(f"[testcase] completed {query.id} using sedonadb in {sed_s:.2f}s", flush=True)
     except Exception as exc:
-        print(f"failed {query.id}: {type(exc).__name__}: {exc}", flush=True)
+        print(f"[testcase] failed {query.id}: {type(exc).__name__}: {exc}", flush=True)
         return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
 
     out = {
         "status": "ok",
-        "pycanopy_seconds": round(pc_ms / 1000, 4),
-        "sedonadb_seconds": round(sed_ms / 1000, 4),
+        "pycanopy_seconds": round(pc_s, 4),
+        "sedonadb_seconds": round(sed_s, 4),
     }
     if verify:
         ok, detail = verify_outputs(pc_df, sed_df, **query.compare)
         out["match"] = "match" if ok else "MISMATCH"
         out["match_detail"] = detail
         if not ok:
-            print(f"{query.id} output mismatch: {detail}", flush=True)
+            print(f"[verification] mismatch on testcase {query.id}: {detail}", flush=True)
     return out
 
 
@@ -329,7 +331,6 @@ def main(argv: list[str] | None = None) -> None:
         Path(args.output) if args.output else _ASSETS_DIR / f"spatialbench_sf{sf}{suffix}.png"
     )
     write_chart(results, out_path)
-    print(f"\nwrote {out_path}")
 
 
 if __name__ == "__main__":

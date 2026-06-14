@@ -98,7 +98,8 @@ def launch(ec2, ssm, cfg: dict, run_id: str, index_mode: str) -> str:
     )
     instance_id = resp["Instances"][0]["InstanceId"]
     print(
-        f"launched {instance_id} ({cfg['instance_type']}, {index_mode}, run {run_id})", flush=True
+        f"[ec2] launched {instance_id} ({cfg['instance_type']}, {index_mode}, run {run_id})",
+        flush=True,
     )
     return instance_id
 
@@ -111,22 +112,21 @@ def _alive(ec2, instance_id: str) -> bool:
 
 
 def _emit_progress(s3, cfg: dict, run_id: str, seen: int) -> int:
-    """Print the box's per-testcase update lines published since the last poll.
+    """Print the box's [testcase] / [verification] lines published since the last poll.
 
     The box streams its log to progress.log every few seconds. We surface only the
-    measure updates (running / completed / failed / mismatch / wrote chart), dropping
-    build, data-copy, and byte-counter noise, and print the ones not shown yet.
+    measure lines, dropping build, data-copy, and byte-counter noise, and print the
+    ones not shown yet.
     """
     key = f"{_RESULT_PREFIX}/{run_id}/progress.log"
     try:
         text = s3.get_object(Bucket=cfg["result_bucket"], Key=key)["Body"].read()
     except s3.exceptions.ClientError:
         return seen
-    updates = ("running ", "completed ", "failed ", "wrote ")
     lines = [
         line.rstrip()
         for line in text.decode("utf-8", "replace").splitlines()
-        if line.startswith(updates) or "output mismatch" in line
+        if line.startswith(("[testcase]", "[verification]"))
     ]
     for line in lines[seen:]:
         print(line, flush=True)
@@ -212,11 +212,11 @@ def main(argv: list[str] | None = None) -> int:
         paths = download(s3, cfg, run_id)
     finally:
         ec2.terminate_instances(InstanceIds=[instance_id])
-        print(f"terminated {instance_id}", flush=True)
+        print(f"[ec2] terminated {instance_id}", flush=True)
 
     if not ok or not any(p.suffix == ".png" for p in paths):
         logs = [p for p in paths if p.suffix == ".log"]
-        print(f"run failed; inspect {logs[0]}" if logs else "run failed", flush=True)
+        print(f"[ec2] run failed; inspect {logs[0]}" if logs else "[ec2] run failed", flush=True)
         return 1
     return 0
 

@@ -1,48 +1,49 @@
-"""Operation benchmark: every spatial primitive for one dataset size + distribution.
+"""Operation benchmark: every spatial primitive at a size tuned to its cost.
 
 Runs each operation on a fresh engine (cold, index build included) and again warm
-(index cached), against naive baselines, and prints one table. DuckDB / Polars
-competitors are included where they have a fair path and skipped if not installed.
+(index cached) against a naive GeoPandas baseline (no spatial index). Single-query
+ops run large; the joins run smaller because the naive competitor loops over every
+query point. Prints one line per op and writes the summary table to a file in assets/.
 
 Usage:
-    python -m bench.ops.run --size 100000
-    python -m bench.ops.run --size 100000 --distribution clustered
+    python -m bench.ops.run
+    python -m bench.ops.run --distribution clustered
 """
 
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
 import polars as pl
-import pyarrow as pa
 import shapely
 
-from bench.utils.core import (
+from bench.ops.utils import (
     BenchmarkReport,
+    MockDataset,
     geopandas_batch_contains_naive,
     geopandas_contains_naive,
     geopandas_intersects_naive,
+    geopandas_intersects_self_join_naive,
     geopandas_knn_join_naive,
     geopandas_knn_naive,
     geopandas_range_naive,
+    geopandas_within_distance_naive,
     make_knn_queries,
     make_range_queries,
     measure,
     measure_sf,
-    polars_range_naive,
-    polars_within_distance_batch_naive,
 )
-from bench.utils.generators import MockDataset
 
-try:
-    import duckdb
+_ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
 
-    _DUCKDB = True
-except ImportError:
-    duckdb = None
-    _DUCKDB = False
+# Per-tier dataset sizes, set by what the naive GeoPandas competitor costs: a single
+# query scans N once (cheap), but a join loops over all N query points (O(N^2)).
+N_SINGLE = 100_000  # single-query ops: range, kNN, contains, range (polygons)
+N_JOIN = 10_000  # point joins: knn_join, within_distance_join
+N_POLY = 5_000  # polygon joins + self-join (point-to-polygon distance is heavier)
 
 K = 10
 K_JOIN = 5
@@ -51,80 +52,40 @@ DISTANCE = 0.05
 POLYGON_SIZE = 0.005
 
 
-# DuckDB single-operation helpers (RTREE-backed where fair)
+def _query_points(n: int) -> pl.DataFrame:
+    """Return n random query points as a (qx, qy) DataFrame."""
+    pts = np.random.default_rng(7).uniform(0.0, 1.0, (n, 2))
+    return pl.DataFrame({"qx": pts[:, 0], "qy": pts[:, 1]})
 
 
-def _duckdb_points(xs: np.ndarray, ys: np.ndarray):
-    """Return a DuckDB connection with a pts table (x, y, geom) and RTREE index."""
-    con = duckdb.connect()
-    con.execute("INSTALL spatial; LOAD spatial;")
-    con.register("_pts", pa.table({"x": xs, "y": ys}))
-    con.execute("CREATE TABLE pts AS SELECT x, y, ST_Point(x, y) AS geom FROM _pts")
-    con.execute("CREATE INDEX pts_idx ON pts USING RTREE (geom)")
-    return con
-
-
-def _duckdb_range_fn(con, q):
-    bx0, by0, bx1, by1 = q
-
-    def fn():
-        return con.execute(
-            f"SELECT x, y FROM pts WHERE ST_Within(geom, ST_MakeEnvelope({bx0},{by0},{bx1},{by1}))"
-        ).fetchall()
-
-    fn()  # warm
-    return fn
-
-
-def _duckdb_knn_fn(con, k: int, q):
-    """O(N) distance-sort. DuckDB has no index-backed KNN."""
-    qx, qy = q
-
-    def fn():
-        return con.execute(
-            f"SELECT x, y FROM pts ORDER BY ST_Distance(geom, ST_Point({qx},{qy})) LIMIT {k}"
-        ).fetchall()
-
-    fn()  # warm
-    return fn
-
-
-# operation groups
-
-
-def _point_ops(report: BenchmarkReport, ds: MockDataset, size: int) -> None:
+def _point_query_ops(report: BenchmarkReport, distribution: str) -> None:
+    ds = MockDataset("points", n=N_SINGLE, distribution=distribution, seed=42)
     coords = ds.as_coords()
-    xs, ys = coords[:, 0], coords[:, 1]
-    gs = gpd.GeoSeries(shapely.points(xs, ys))
-    df = pl.DataFrame({"x": xs, "y": ys})
-
+    gs = gpd.GeoSeries(shapely.points(coords[:, 0], coords[:, 1]))
     range_q = make_range_queries(coords, SELECTIVITY, n=1, seed=1)[0]
     knn_q = make_knn_queries(n=1, seed=1)[0]
 
-    polars_range_fn = polars_range_naive(df)
-    c_range = [
-        ("GeoPandas", lambda: geopandas_range_naive(gs)(range_q)),
-        ("Polars naive", lambda: polars_range_fn(range_q)),
-    ]
-    if _DUCKDB:
-        c_range.append(("DuckDB", _duckdb_range_fn(_duckdb_points(xs, ys), range_q)))
-    else:
-        c_range.append(("DuckDB", None))
     report.add(
-        measure("range query", ds, lambda eng: eng.range_query(*range_q), competitors=c_range)
+        measure(
+            "range query",
+            ds,
+            lambda eng: eng.range_query(*range_q),
+            competitors=[("GeoPandas", lambda: geopandas_range_naive(gs)(range_q))],
+        )
+    )
+    report.add(
+        measure(
+            f"kNN k={K}",
+            ds,
+            lambda eng: eng.knn(*knn_q, K),
+            competitors=[("GeoPandas", lambda: geopandas_knn_naive(gs, K)(knn_q))],
+        )
     )
 
-    c_knn = [("GeoPandas", lambda: geopandas_knn_naive(gs, K)(knn_q))]
-    if _DUCKDB:
-        c_knn.append(("DuckDB O(N)", _duckdb_knn_fn(_duckdb_points(xs, ys), K, knn_q)))
-    else:
-        c_knn.append(("DuckDB O(N)", None))
-    report.add(measure(f"kNN k={K}", ds, lambda eng: eng.knn(*knn_q, K), competitors=c_knn))
 
-
-def _polygon_ops(report: BenchmarkReport, size: int, distribution: str) -> None:
+def _polygon_query_ops(report: BenchmarkReport, distribution: str) -> None:
     ds = MockDataset(
-        "polygons", n=size, distribution=distribution, seed=42, polygon_size=POLYGON_SIZE
+        "polygons", n=N_SINGLE, distribution=distribution, seed=42, polygon_size=POLYGON_SIZE
     )
     gs = gpd.GeoSeries(ds.as_shapely_list())
     first_centroid = gs.iloc[0].centroid
@@ -149,51 +110,77 @@ def _polygon_ops(report: BenchmarkReport, size: int, distribution: str) -> None:
     )
 
 
-def _join_ops(report: BenchmarkReport, size: int, distribution: str) -> None:
-    ds_points = MockDataset("points", n=size, distribution=distribution, seed=42)
-    ds_polys = MockDataset(
-        "polygons", n=size, distribution=distribution, seed=42, polygon_size=POLYGON_SIZE
-    )
-
-    rng = np.random.default_rng(7)
-    pts = rng.uniform(0.0, 1.0, (size, 2))
-    query_df = pl.DataFrame({"qx": pts[:, 0], "qy": pts[:, 1]})
-
-    pts_coords = ds_points.as_coords()
-    gs_points = gpd.GeoSeries(shapely.points(pts_coords[:, 0], pts_coords[:, 1]))
-    gs_polys = gpd.GeoSeries(ds_polys.as_shapely_list())
-    df_points = ds_points.as_polars_df()
+def _point_join_ops(report: BenchmarkReport, distribution: str) -> None:
+    ds = MockDataset("points", n=N_JOIN, distribution=distribution, seed=42)
+    query_df = _query_points(N_JOIN)
+    coords = ds.as_coords()
+    gs = gpd.GeoSeries(shapely.points(coords[:, 0], coords[:, 1]))
 
     report.add(
         measure_sf(
             f"knn_join k={K_JOIN}",
-            ds_points,
+            ds,
             lambda sf: sf.lazy().knn_join(query_df, "qx", "qy", k=K_JOIN).collect(),
-            competitors=[
-                ("GeoPandas loop", lambda: geopandas_knn_join_naive(gs_points, K_JOIN)(query_df))
-            ],
+            competitors=[("GeoPandas", lambda: geopandas_knn_join_naive(gs, K_JOIN)(query_df))],
         )
     )
     report.add(
         measure_sf(
             "within_distance_join",
-            ds_points,
+            ds,
             lambda sf: (
                 sf.lazy().within_distance_join(query_df, "qx", "qy", distance=DISTANCE).collect()
             ),
             competitors=[
-                ("Polars loop", polars_within_distance_batch_naive(df_points, query_df, DISTANCE))
+                ("GeoPandas", lambda: geopandas_within_distance_naive(gs, DISTANCE)(query_df))
+            ],
+        )
+    )
+
+
+def _polygon_join_ops(report: BenchmarkReport, distribution: str) -> None:
+    ds = MockDataset(
+        "polygons", n=N_POLY, distribution=distribution, seed=42, polygon_size=POLYGON_SIZE
+    )
+    query_df = _query_points(N_POLY)
+    gs = gpd.GeoSeries(ds.as_shapely_list())
+
+    report.add(
+        measure_sf(
+            "within_join",
+            ds,
+            lambda sf: sf.lazy().within_join(query_df, "qx", "qy").collect(),
+            competitors=[("GeoPandas", lambda: geopandas_batch_contains_naive(gs)(query_df))],
+        )
+    )
+    report.add(
+        measure_sf(
+            f"polygon_knn_join k={K_JOIN}",
+            ds,
+            lambda sf: sf.lazy().polygon_knn_join(query_df, "qx", "qy", k=K_JOIN).collect(),
+            competitors=[("GeoPandas", lambda: geopandas_knn_join_naive(gs, K_JOIN)(query_df))],
+        )
+    )
+    report.add(
+        measure_sf(
+            "polygon_within_distance_join",
+            ds,
+            lambda sf: (
+                sf.lazy()
+                .polygon_within_distance_join(query_df, "qx", "qy", distance=DISTANCE)
+                .collect()
+            ),
+            competitors=[
+                ("GeoPandas", lambda: geopandas_within_distance_naive(gs, DISTANCE)(query_df))
             ],
         )
     )
     report.add(
         measure_sf(
-            "within_join",
-            ds_polys,
-            lambda sf: sf.lazy().within_join(query_df, "qx", "qy").collect(),
-            competitors=[
-                ("GeoPandas loop", lambda: geopandas_batch_contains_naive(gs_polys)(query_df))
-            ],
+            "intersects self-join",
+            ds,
+            lambda sf: sf.intersects_pairs(),
+            competitors=[("GeoPandas", geopandas_intersects_self_join_naive(gs))],
         )
     )
 
@@ -216,24 +203,21 @@ def _warm_polars_jit() -> None:
     )
 
 
-def run(size: int, distribution: str = "uniform") -> BenchmarkReport:
-    """Run every operation for one size + distribution and return the report."""
-    ds_points = MockDataset("points", n=size, distribution=distribution, seed=42)
-    report = BenchmarkReport(
-        label=f"{size:,} {distribution} | operations (cold/warm/naive)", n=size
-    )
-    _point_ops(report, ds_points, size)
-    _polygon_ops(report, size, distribution)
-    _join_ops(report, size, distribution)
-    report.display()
+def run(distribution: str = "uniform") -> BenchmarkReport:
+    """Run every operation and write the CSV summary to assets/."""
+    report = BenchmarkReport()
+    _point_query_ops(report, distribution)
+    _polygon_query_ops(report, distribution)
+    _point_join_ops(report, distribution)
+    _polygon_join_ops(report, distribution)
+    out = _ASSETS_DIR / f"ops_{distribution}.txt"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    report.write_table(out)
     return report
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run PyCanopy operation benchmarks.")
-    parser.add_argument(
-        "--size", type=int, required=True, help="Dataset size (number of geometries)."
-    )
     parser.add_argument(
         "--distribution",
         choices=["uniform", "clustered"],
@@ -243,7 +227,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     _warm_polars_jit()
-    run(args.size, args.distribution)
+    run(args.distribution)
 
 
 if __name__ == "__main__":

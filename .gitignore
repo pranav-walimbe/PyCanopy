@@ -40,3 +40,7 @@ env/
 # Internal development files
 CLAUDE.md
 pycanopy_logo_files/
+
+# Generated benchmark outputs in assets (keep only the logo)
+/assets/*
+!/assets/pycanopy_logo3.png
