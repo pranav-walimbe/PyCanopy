@@ -30,6 +30,7 @@ use query::{
     },
     geometry::{convex_hull_area, polygon_area, polygon_intersection_area},
     nearest::query_nearest,
+    prepared::PreparedPolygons,
     range::{query_contains_polygons, query_range_points, query_range_polygons},
     types::Query,
 };
@@ -64,6 +65,9 @@ struct Engine {
     /// Index build policy: Eager (default) / None / Auto.
     index_mode: IndexMode,
     cost_factors: CostFactors,
+    /// Per-polygon edge index for sub-linear point-in-polygon (polygon datasets).
+    /// Built lazily on the first containment join, then reused across all probes.
+    prepared_polys: Option<PreparedPolygons>,
 }
 
 const DELTA_FLUSH_FRACTION: f64 = 0.1;
@@ -239,6 +243,19 @@ impl Engine {
             _ => {}
         }
     }
+
+    /// Build the prepared point-in-polygon index unless disabled or already built.
+    /// Skipped in None mode so that mode stays a true brute-force baseline.
+    fn build_prepared_if_needed(&mut self) {
+        if self.index_mode == IndexMode::None || self.prepared_polys.is_some() {
+            return;
+        }
+        if let (Some(ring), Some(poly)) =
+            (self.ring_offsets.as_deref(), self.poly_offsets.as_deref())
+        {
+            self.prepared_polys = Some(PreparedPolygons::build(&self.xs, &self.ys, ring, poly));
+        }
+    }
 }
 
 #[pymethods]
@@ -274,6 +291,7 @@ impl Engine {
             delta_query_cost: 0,
             index_mode: IndexMode::Eager,
             cost_factors: CostFactors::default(),
+            prepared_polys: None,
         })
     }
 
@@ -352,6 +370,7 @@ impl Engine {
             delta_query_cost: 0,
             index_mode: IndexMode::Eager,
             cost_factors: CostFactors::default(),
+            prepared_polys: None,
         })
     }
 
@@ -944,8 +963,10 @@ impl Engine {
             IndexKind::RTree,
         );
         self.build_index_if_needed(kind);
+        self.build_prepared_if_needed();
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
+        let prepared = self.prepared_polys.as_ref();
         let flat = match kind {
             IndexKind::BruteForce => par_contains(
                 self.brute.as_ref().unwrap(),
@@ -955,6 +976,7 @@ impl Engine {
                 &self.ys,
                 ring_off,
                 poly_off,
+                prepared,
             ),
             _ => par_contains(
                 self.rtree.as_ref().unwrap(),
@@ -964,6 +986,7 @@ impl Engine {
                 &self.ys,
                 ring_off,
                 poly_off,
+                prepared,
             ),
         };
         Ok(PyArray1::from_vec(py, flat))

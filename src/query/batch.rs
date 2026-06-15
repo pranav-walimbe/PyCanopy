@@ -9,6 +9,7 @@ use rayon::prelude::*;
 use crate::index::kdtree::PackedKdTree;
 use crate::index::SpatialIndex;
 use crate::query::geometry::point_to_polygon_distance;
+use crate::query::prepared::PreparedPolygons;
 use crate::query::range::pip_raw;
 
 /// For each query point, find the k nearest neighbours in the index.
@@ -64,7 +65,9 @@ pub fn par_knn_with_delta<I: SpatialIndex + Sync>(
 /// Engine's dataset that contains the point. Used for within joins on polygon datasets.
 ///
 /// Returns a flat array of interleaved pairs [q0, e0, q1, e1, ...] matching the
-/// layout of par_within_distance and par_within_distance_flipped.
+/// layout of par_within_distance and par_within_distance_flipped. The point-in-polygon
+/// test uses the prepared edge index when supplied, else the linear `pip_raw` scan.
+#[allow(clippy::too_many_arguments)]
 pub fn par_contains<I: SpatialIndex + Sync>(
     index: &I,
     qxs: &[f64],
@@ -73,6 +76,7 @@ pub fn par_contains<I: SpatialIndex + Sync>(
     ys: &[f64],
     ring_offsets: &[i64],
     poly_offsets: &[i64],
+    prepared: Option<&PreparedPolygons>,
 ) -> Vec<u64> {
     qxs.par_iter()
         .zip(qys.par_iter())
@@ -82,7 +86,10 @@ pub fn par_contains<I: SpatialIndex + Sync>(
             index
                 .range(qx, qy, qx, qy)
                 .into_iter()
-                .filter(move |&ei| pip_raw(qx, qy, xs, ys, ring_offsets, poly_offsets, ei))
+                .filter(move |&ei| match prepared {
+                    Some(p) => p.contains(ei, qx, qy),
+                    None => pip_raw(qx, qy, xs, ys, ring_offsets, poly_offsets, ei),
+                })
                 .flat_map(move |ei| [qi as u64, ei as u64])
         })
         .collect()
