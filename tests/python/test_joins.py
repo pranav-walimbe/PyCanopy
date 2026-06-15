@@ -11,7 +11,7 @@ from contextlib import contextmanager
 import numpy as np
 import polars as pl
 import pytest
-from shapely.geometry import box
+from shapely.geometry import Polygon, box
 
 from pycanopy import SpatialFrame
 from pycanopy.nodes import WithinDistanceJoinNode
@@ -260,6 +260,25 @@ def test_index_none_matches_indexed_within_join_polygons(sf_polygons):
         brute = sf_polygons.lazy().within_join(query_df, "qx", "qy").collect()
     cols = ["qx", "poly_id"]
     assert brute.select(cols).sort(cols).equals(indexed.select(cols).sort(cols))
+
+
+def test_prepared_pip_matches_brute_on_multiband_and_holed_polygons():
+    # Separate frames so the none frame never builds prepared, exercising both paths.
+    ang = np.linspace(0.0, 2.0 * np.pi, 64, endpoint=False)
+    circle = Polygon(np.column_stack([5.0 * np.cos(ang), 5.0 * np.sin(ang)]))
+    holed = Polygon([(10, 0), (14, 0), (14, 4), (10, 4)], [[(11, 1), (13, 1), (13, 3), (11, 3)]])
+    df = pl.DataFrame({"poly_id": [0, 1], "geom": [circle, holed]})
+
+    gx, gy = np.meshgrid(np.arange(-6.0, 15.0, 0.5), np.arange(-6.0, 5.0, 0.5))
+    query_df = pl.DataFrame({"qx": gx.ravel(), "qy": gy.ravel()})
+
+    cols = ["qx", "qy", "poly_id"]
+    eager = SpatialFrame.from_polygons(df, geometry_col="geom", index_mode="eager")
+    none = SpatialFrame.from_polygons(df, geometry_col="geom", index_mode="none")
+    prepared = eager.lazy().within_join(query_df, "qx", "qy").collect()
+    brute = none.lazy().within_join(query_df, "qx", "qy").collect()
+    assert not prepared.is_empty()
+    assert prepared.select(cols).sort(cols).equals(brute.select(cols).sort(cols))
 
 
 def test_index_none_matches_indexed_range_query(sf):
