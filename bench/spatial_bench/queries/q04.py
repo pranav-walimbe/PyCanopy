@@ -20,7 +20,9 @@ compare = {"keys": ["z_zonekey"], "values": ["trip_count"]}
 
 def pycanopy(tables) -> pl.DataFrame:
     trip = tables.table("trip", ["t_tripkey", "t_tip", "t_pickuploc"])
-    top = trip.sort(["t_tip", "t_tripkey"], descending=[True, False]).head(TOP_N)
+    # Lazy so the head is pushed into the sort as a bounded top-N, instead of fully
+    # sorting all 6M rows and dragging the wide WKB column through the permutation.
+    top = trip.lazy().sort(["t_tip", "t_tripkey"], descending=[True, False]).head(TOP_N).collect()
     qx, qy = wkb_points_to_xy(top["t_pickuploc"])
     query_df = top.select("t_tripkey").with_columns(pl.Series("qx", qx), pl.Series("qy", qy))
 
