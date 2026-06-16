@@ -19,12 +19,23 @@ compare = {"keys": ["z_zonekey"], "values": ["trip_count"]}
 
 
 def pycanopy(tables) -> pl.DataFrame:
-    trip = tables.table("trip", ["t_tripkey", "t_tip", "t_pickuploc"])
-    # Lazy so the head is pushed into the sort as a bounded top-N, instead of fully
-    # sorting all 6M rows and dragging the wide WKB column through the permutation.
-    top = trip.lazy().sort(["t_tip", "t_tripkey"], descending=[True, False]).head(TOP_N).collect()
-    qx, qy = wkb_points_to_xy(top["t_pickuploc"])
-    query_df = top.select("t_tripkey").with_columns(pl.Series("qx", qx), pl.Series("qy", qy))
+    # Late materialization: pick the top-N on the cheap (key, tip) columns alone, then
+    # read the WKB pickup geometry only for those TOP_N winners. Reading the 6M-row WKB
+    # column up front to sort it down to 1000 rows is the bulk of q4's cost, and the
+    # geometry is never needed for the rows the top-N discards.
+    keys = (
+        tables.scan("trip", ["t_tripkey", "t_tip"])
+        .sort(["t_tip", "t_tripkey"], descending=[True, False])
+        .head(TOP_N)
+        .collect()["t_tripkey"]
+    )
+    winners = (
+        tables.scan("trip", ["t_tripkey", "t_pickuploc"])
+        .filter(pl.col("t_tripkey").is_in(keys.implode()))
+        .collect()
+    )
+    qx, qy = wkb_points_to_xy(winners["t_pickuploc"])
+    query_df = winners.select("t_tripkey").with_columns(pl.Series("qx", qx), pl.Series("qy", qy))
 
     zone = tables.table("zone", ["z_zonekey", "z_name", "z_boundary"])
     sf = tables.polygon_frame(zone, "z_boundary")

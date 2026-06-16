@@ -82,6 +82,20 @@ def read_table(data_dir: str, table: str, columns: list[str] | None = None) -> p
     return pl.read_parquet(f"{path}/**/*.parquet" if is_dir else path, columns=columns)
 
 
+def scan_table(data_dir: str, table: str, columns: list[str] | None = None) -> pl.LazyFrame:
+    """Lazily scan one SpatialBench table as a LazyFrame (geometry stays WKB).
+
+    Lazy sibling of read_table: nothing is read until collected, so Polars can push
+    projection and row limits below the column reads. Use this for late materialization,
+    where a query narrows rows on cheap columns before it needs geometry and so never
+    decodes the wide WKB column for discarded rows. When every row's geometry is needed
+    (the common case) read_table is the right tool.
+    """
+    path, is_dir = _resolve_table(data_dir, table)
+    lf = pl.scan_parquet(f"{path}/**/*.parquet" if is_dir else path)
+    return lf.select(columns) if columns else lf
+
+
 def warm_tables(data_dir: str, tables: tuple[str, ...]) -> None:
     """Read each table's raw parquet bytes into the OS page cache (untimed).
 
@@ -137,6 +151,14 @@ class SpatialBenchTables:
         if key not in self._cache:
             self._cache[key] = read_table(self.data_dir, name, columns)
         return self._cache[key]
+
+    def scan(self, name: str, columns: list[str] | None = None) -> pl.LazyFrame:
+        """Lazily scan table ``name`` (uncached; for late-materialization access).
+
+        Returns a LazyFrame rather than a cached DataFrame because the point of a
+        lazy scan is to defer reads until the collected plan decides what to read.
+        """
+        return scan_table(self.data_dir, name, columns)
 
     def point_frame(self, df: pl.DataFrame, wkb_col: str) -> SpatialFrame:
         """Build a point SpatialFrame from a WKB point column of ``df``."""
