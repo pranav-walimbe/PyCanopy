@@ -13,8 +13,18 @@
 
 ---
 
+## State of the art on Apache SpatialBench
+
+PyCanopy reaches state of the art on [Apache SpatialBench](https://sedona.apache.org/spatialbench/single-node-benchmarks/), the standard single-node spatial-analytics benchmark whose 12 queries span range filters, distance and kNN joins, and point-in-polygon aggregation over millions of trips and zones. On matched hardware it beats the best open-source engines like Apache SedonaDB and DuckDB on most queries, without leaving Polars.
+
+<p align="center">
+  <img src="assets/spatialbench_sf1_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1" width="100%"/>
+</p>
+
+<p align="center"><sub>Apache SpatialBench SF1 · log scale, lower is better · missing bars are TIMEOUT / ERROR</sub></p>
+
 > [!NOTE]
-> Up to **155x** on range queries · up to **1,949x** on kNN · up to **1,521x** on polygon contains · up to **8,522x** on within joins (vs GeoPandas) · [Full benchmarks](#benchmarks)
+> Versus GeoPandas microbenchmarks: up to **199×** on range queries · **1,024×** on kNN · **931×** on polygon contains · **3,307×** on within joins · [Full benchmarks](#benchmarks)
 
 ---
 
@@ -292,19 +302,26 @@ sf.engine.flush()
 
 ## Benchmarks
 
-Apple M-series used for benchmarking. **Warm** = cached index, second call. **Index build** = one-time cost, amortised across queries. Naive baseline is GeoPandas. Datasets are mocked from random uniform distribution.
+### Apache SpatialBench (SF1)
 
-### Single-query operations
+The [chart above](#state-of-the-art-on-apache-spatialbench) runs PyCanopy on [Apache SpatialBench](https://sedona.apache.org/spatialbench/single-node-benchmarks/) at scale factor 1 (~6M trips, 156k zones) on a single `m7i.2xlarge` (8 vCPU, 32 GB) — the same instance the published SedonaDB / DuckDB / GeoPandas numbers use, so it is matched-hardware rather than transcribed. PyCanopy beats SedonaDB on 11 of 12 queries, wins the heavy cross-zone joins (q10/q11/q12) by 2–4×, and completes q11/q12 where DuckDB times out or errors.
 
-| Operation              |       N | Index build |    Warm |   Naive | Speedup    | Idx mem |
-|:-----------------------|--------:|------------:|--------:|--------:|-----------:|--------:|
-| Range query (points)   | 100,000 |      1.3 ms |   29 µs |  4.4 ms |   **155x** | 783 KB  |
-| kNN k=10               | 100,000 |      9.3 ms |    3 µs |  5.4 ms | **1,949x** | 1.9 MB  |
-| Polygon contains       | 100,000 |      6.2 ms |    5 µs |  7.0 ms | **1,521x** | 3.7 MB  |
-| Polygon range          | 100,000 |      5.6 ms |    8 µs |  3.3 ms |   **391x** | 3.7 MB  |
-| kNN join k=5           |  10,000 |      7.3 ms |  2.1 ms |   5.4 s | **2,601x** | 180 KB  |
-| Within-distance join   |  10,000 |      0.5 ms | 12.6 ms |   1.3 s |   **102x** | n/a     |
-| Within join (polygons) |  10,000 |      1.6 ms | 0.52 ms |   4.4 s | **8,522x** | 354 KB  |
+### Per-operation vs GeoPandas
+
+Apple M-series. **Cold** = fresh engine, index build included. **Warm** = cached index, second call. **GeoPandas** is the naive baseline (no spatial index). Uniform random data.
+
+| Operation                          |       N |    Cold |    Warm | GeoPandas |   Speedup |
+|:-----------------------------------|--------:|--------:|--------:|----------:|----------:|
+| Range query (points)               | 100,000 |  2.6 ms |   28 µs |    5.6 ms |   **199×** |
+| kNN k=10                           | 100,000 |  9.9 ms |    7 µs |    7.3 ms | **1,024×** |
+| Contains (polygons)                | 100,000 |  6.1 ms |    6 µs |    5.4 ms |   **931×** |
+| Range (polygons)                   | 100,000 |  6.1 ms |    9 µs |    4.4 ms |   **503×** |
+| kNN join k=5                       |  10,000 | 10.4 ms |  2.2 ms |    5.5 s  | **2,463×** |
+| Within-distance join               |  10,000 | 14.1 ms | 13.6 ms |    3.5 s  |   **260×** |
+| Within join (polygons)             |   5,000 |  2.8 ms | 0.37 ms |    1.2 s  | **3,307×** |
+| Point→polygon kNN join k=5         |   5,000 |  6.7 ms |  5.7 ms |    6.1 s  | **1,076×** |
+| Point→polygon within-distance join |   5,000 |  6.6 ms |  6.4 ms |    5.4 s  |   **845×** |
+| Intersects self-join               |   5,000 |  2.2 ms |  1.1 ms |   0.86 s  |   **796×** |
 
 ---
 
@@ -389,9 +406,11 @@ The hot paths need packed immutable index structures, zero-copy array slices at 
 | numpy `(N, 2)` array               | `np.array([[x, y], ...])`                  |
 | GeoArrow PyArrow array             | `pa.StructArray` or `FixedSizeList<2>`     |
 | geopandas `GeoSeries`              | `gdf.geometry`                             |
-| list of shapely Points or Polygons | `[Point(x, y), ...]`                       |
+| shapely Points / Polygons / MultiPolygons | `[Point(x, y), ...]`                |
 | list of `(x, y)` tuples            | `[(x, y), ...]`                            |
 | Separate coordinate sequences      | `Engine.from_coords(xs, ys)`               |
+| WKB point column (Binary)          | `SpatialFrame.from_wkb_points(df, "geom")` |
+| WKB polygon column (Binary)        | `SpatialFrame.from_wkb_polygons(df, "geom")` |
 
 ---
 
