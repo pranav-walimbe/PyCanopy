@@ -41,12 +41,15 @@ def load_config() -> dict:
     return cfg
 
 
-def _user_data(cfg: dict, run_id: str, index_mode: str) -> str:
+def _user_data(cfg: dict, run_id: str, index_mode: str, no_verify: bool = False) -> str:
     """Fill the @@NAME@@ placeholders in bootstrap.sh for this run."""
     script = (_DIR / "bootstrap.sh").read_text()
     # Non-eager modes pass a measure flag and a filename suffix so the chart does
     # not overwrite the eager sf{N}.png.
     suffix = "" if index_mode == "eager" else f"_{index_mode}"
+    measure_args = [] if index_mode == "eager" else [f"--index-{index_mode}"]
+    if no_verify:
+        measure_args.append("--no-verify")
     repl = {
         "RUN_ID": run_id,
         "REGION": cfg["region"],
@@ -57,7 +60,7 @@ def _user_data(cfg: dict, run_id: str, index_mode: str) -> str:
         "DATA_TEMPLATE": cfg["data_template"],
         "SCALE_FACTOR": str(cfg["scale_factor"]),
         "MAX_RUNTIME_MIN": str(cfg["max_runtime_min"]),
-        "MEASURE_ARGS": "" if index_mode == "eager" else f"--index-{index_mode}",
+        "MEASURE_ARGS": " ".join(measure_args),
         "OUT_SUFFIX": suffix,
     }
     for key, value in repl.items():
@@ -65,7 +68,7 @@ def _user_data(cfg: dict, run_id: str, index_mode: str) -> str:
     return script
 
 
-def launch(ec2, ssm, cfg: dict, run_id: str, index_mode: str) -> str:
+def launch(ec2, ssm, cfg: dict, run_id: str, index_mode: str, no_verify: bool = False) -> str:
     """Launch the benchmark instance and return its id."""
     ami = ssm.get_parameter(Name=_SSM_AL2023)["Parameter"]["Value"]
     resp = ec2.run_instances(
@@ -73,7 +76,7 @@ def launch(ec2, ssm, cfg: dict, run_id: str, index_mode: str) -> str:
         InstanceType=cfg["instance_type"],
         MinCount=1,
         MaxCount=1,
-        UserData=_user_data(cfg, run_id, index_mode),
+        UserData=_user_data(cfg, run_id, index_mode, no_verify),
         InstanceInitiatedShutdownBehavior="terminate",
         IamInstanceProfile={"Name": cfg["instance_profile"]},
         BlockDeviceMappings=[
@@ -197,6 +200,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Brute-force every query. Writes sf{N}_none.png.",
     )
     parser.set_defaults(index_mode="eager")
+    parser.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="Skip the SedonaDB oracle. Avoids the per-query verification memory load.",
+    )
     args = parser.parse_args(argv)
 
     cfg = load_config()
@@ -206,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
     ssm = boto3.client("ssm", region_name=region)
 
     run_id = uuid.uuid4().hex[:12]
-    instance_id = launch(ec2, ssm, cfg, run_id, args.index_mode)
+    instance_id = launch(ec2, ssm, cfg, run_id, args.index_mode, args.no_verify)
     try:
         ok = wait_for_success(s3, ec2, cfg, run_id, instance_id)
         paths = download(s3, cfg, run_id)
