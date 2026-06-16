@@ -70,8 +70,6 @@ PyCanopy stays native to Polars and adds a query optimizer on top. The optimizer
 
 ## Operations
 
-Spatial operations chain off `sf.lazy()` and mix freely with Polars' own `.filter(expr)`. The optimizer orders the whole chain before anything runs.
-
 **Point datasets**
 
 | Operation              | Call                                                  | Returns                                          |
@@ -94,8 +92,6 @@ Spatial operations chain off `sf.lazy()` and mix freely with Polars' own `.filte
 | Intersects self-join          | `.intersects_pairs()`                                       | Intersecting polygon pairs with overlap area and IoU    |
 | Area                          | `.polygon_areas()`                                          | Area of each polygon                                    |
 | Points near a polygon         | `.points_within_distance_of_polygon(polygon, distance)`     | Points within `distance` of a single polygon            |
-
-Joins and aggregations that return tables (`.intersects_pairs`, `.polygon_areas`, `.points_within_distance_of_polygon`) are called directly on the `SpatialFrame`; the filtering operations chain off `.lazy()`.
 
 ---
 
