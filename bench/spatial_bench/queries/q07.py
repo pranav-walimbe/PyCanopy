@@ -4,8 +4,9 @@ This query is not spatial-index bound: the straight-line distance is the Euclide
 distance between pickup and dropoff, computed directly in Polars. Kept for full suite
 coverage and to show where PyCanopy adds no index value.
 
-Note: PyCanopy filters to trips with t_distance > 0; the canonical SedonaDB query
-keeps all trips (using NULLIF on the divide), so the row counts differ by design.
+Every trip is kept, matching the canonical SpatialBench query: detour_ratio is null
+where the straight-line distance is zero (pickup equals dropoff), mirroring its NULLIF
+on the divide.
 """
 
 from __future__ import annotations
@@ -36,7 +37,6 @@ def pycanopy(tables) -> pl.DataFrame:
         pl.Series("line_distance_m", line_m),
         reported_distance_m=pl.col("t_distance").cast(pl.Float64),
     )
-    df = df.filter(pl.col("t_distance") > 0)
     df = df.with_columns(
         detour_ratio=pl.when(pl.col("line_distance_m") != 0.0)
         .then(pl.col("reported_distance_m") / pl.col("line_distance_m"))
