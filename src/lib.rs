@@ -605,6 +605,9 @@ impl Engine {
             self.delta_query_cost += self.delta_xs.len() as u64;
             self.maybe_flush_on_cost(kind);
         }
+        if let Some(pp) = &self.part_poly {
+            result = dedup_indices(result, pp);
+        }
         Ok(result)
     }
 

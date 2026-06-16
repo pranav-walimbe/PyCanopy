@@ -250,6 +250,13 @@ def test_multipolygon_area_sums_parts():
     assert areas[1] == pytest.approx(2.0)
 
 
+def test_multipolygon_range_query_maps_to_logical():
+    mp = MultiPolygon([SQUARES[1], SQUARES[2]])
+    eng = Engine.from_polygons([SQUARES[0], mp])
+    assert eng.range_query(4.0, 0.0, 5.0, 1.0) == [1]
+    assert sorted(eng.range_query(2.0, 0.0, 5.0, 1.0)) == [1]
+
+
 def test_from_polygons_rejects_non_polygon():
     with pytest.raises(TypeError, match="not a Polygon"):
         Engine.from_polygons([ShapelyPoint(0.0, 0.0)])
