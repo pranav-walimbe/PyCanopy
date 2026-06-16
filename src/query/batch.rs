@@ -61,12 +61,14 @@ pub fn par_knn_with_delta<I: SpatialIndex + Sync>(
         .collect()
 }
 
-/// For each query point, return (query_idx, engine_idx) for every polygon in the
+/// For each query point, return (query_idx, polygon_idx) for every polygon in the
 /// Engine's dataset that contains the point. Used for within joins on polygon datasets.
 ///
 /// Returns a flat array of interleaved pairs [q0, e0, q1, e1, ...] matching the
 /// layout of par_within_distance and par_within_distance_flipped. The point-in-polygon
 /// test uses the prepared edge index when supplied, else the linear `pip_raw` scan.
+/// part_poly, when present, maps matched parts to their logical polygon and collapses
+/// the per-query duplicates from a point hitting several parts of one MultiPolygon.
 #[allow(clippy::too_many_arguments)]
 pub fn par_contains<I: SpatialIndex + Sync>(
     index: &I,
@@ -77,20 +79,37 @@ pub fn par_contains<I: SpatialIndex + Sync>(
     ring_offsets: &[i64],
     poly_offsets: &[i64],
     prepared: Option<&PreparedPolygons>,
+    part_poly: Option<&[u32]>,
 ) -> Vec<u64> {
     qxs.par_iter()
         .zip(qys.par_iter())
         .enumerate()
         .flat_map_iter(|(qi, (&qx, &qy))| {
-            // MBR pre-filter via index, then exact PIP
-            index
-                .range(qx, qy, qx, qy)
-                .into_iter()
-                .filter(move |&ei| match prepared {
+            // MBR pre-filter via index, then exact PIP, mapping parts to polygons.
+            let mut out: Vec<u64> = Vec::new();
+            let mut seen: Vec<u32> = Vec::new();
+            for ei in index.range(qx, qy, qx, qy) {
+                let hit = match prepared {
                     Some(p) => p.contains(ei, qx, qy),
                     None => pip_raw(qx, qy, xs, ys, ring_offsets, poly_offsets, ei),
-                })
-                .flat_map(move |ei| [qi as u64, ei as u64])
+                };
+                if !hit {
+                    continue;
+                }
+                match part_poly {
+                    Some(pp) if seen.contains(&pp[ei]) => {}
+                    Some(pp) => {
+                        seen.push(pp[ei]);
+                        out.push(qi as u64);
+                        out.push(pp[ei] as u64);
+                    }
+                    None => {
+                        out.push(qi as u64);
+                        out.push(ei as u64);
+                    }
+                }
+            }
+            out.into_iter()
         })
         .collect()
 }
@@ -170,19 +189,35 @@ pub fn par_within_distance_to_polygons<I: SpatialIndex + Sync>(
     ring_offsets: &[i64],
     poly_offsets: &[i64],
     distance: f64,
+    part_poly: Option<&[u32]>,
 ) -> Vec<u64> {
     qxs.par_iter()
         .zip(qys.par_iter())
         .enumerate()
         .flat_map_iter(|(qi, (&qx, &qy))| {
-            index
-                .range(qx - distance, qy - distance, qx + distance, qy + distance)
-                .into_iter()
-                .filter(move |&ei| {
-                    point_to_polygon_distance(qx, qy, xs, ys, ring_offsets, poly_offsets, ei)
-                        <= distance
-                })
-                .flat_map(move |ei| [qi as u64, ei as u64])
+            // MBR pre-filter, exact distance, then map parts to polygons (dedup per query).
+            let mut out: Vec<u64> = Vec::new();
+            let mut seen: Vec<u32> = Vec::new();
+            for ei in index.range(qx - distance, qy - distance, qx + distance, qy + distance) {
+                if point_to_polygon_distance(qx, qy, xs, ys, ring_offsets, poly_offsets, ei)
+                    > distance
+                {
+                    continue;
+                }
+                match part_poly {
+                    Some(pp) if seen.contains(&pp[ei]) => {}
+                    Some(pp) => {
+                        seen.push(pp[ei]);
+                        out.push(qi as u64);
+                        out.push(pp[ei] as u64);
+                    }
+                    None => {
+                        out.push(qi as u64);
+                        out.push(ei as u64);
+                    }
+                }
+            }
+            out.into_iter()
         })
         .collect()
 }
@@ -204,11 +239,12 @@ pub fn par_knn_to_polygons<I: SpatialIndex + Sync>(
     ring_offsets: &[i64],
     poly_offsets: &[i64],
     k: usize,
-    n_polys: usize,
+    n_parts: usize,
+    part_poly: Option<&[u32]>,
 ) -> (Vec<u64>, Vec<f64>) {
     // Over-sample MBR-nearest candidates: an MBR can be nearer than its polygon, so
-    // fetch a multiple of k (capped at the dataset size) before exact refinement.
-    let fetch = (k.saturating_mul(4)).clamp(k, n_polys.max(k));
+    // fetch a multiple of k (capped at the part count) before exact refinement.
+    let fetch = (k.saturating_mul(4)).clamp(k, n_parts.max(k));
     qxs.par_iter()
         .zip(qys.par_iter())
         .flat_map_iter(|(&qx, &qy)| {
@@ -218,9 +254,18 @@ pub fn par_knn_to_polygons<I: SpatialIndex + Sync>(
                 .map(|ei| {
                     let d =
                         point_to_polygon_distance(qx, qy, xs, ys, ring_offsets, poly_offsets, ei);
-                    (ei as u64, d)
+                    let id = part_poly.map_or(ei as u64, |pp| pp[ei] as u64);
+                    (id, d)
                 })
                 .collect();
+            // Reduce parts of one polygon to its nearest part before ranking by distance.
+            if part_poly.is_some() {
+                cands.sort_unstable_by(|a, b| {
+                    a.0.cmp(&b.0)
+                        .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                });
+                cands.dedup_by_key(|c| c.0);
+            }
             cands.sort_unstable_by(|a, b| {
                 a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
             });
@@ -285,7 +330,8 @@ pub fn par_polygon_intersects_join<I: SpatialIndex + Sync>(
         .collect()
 }
 
-/// Filter Engine points to those within `distance` of a single query polygon.
+/// Filter Engine points to those within `distance` of a single query polygon, which
+/// may be a MultiPolygon (a point qualifies when within `distance` of any of its parts).
 /// The query polygon is given as its own flat ring arrays. The point index is queried
 /// over the polygon MBR dilated by `distance`, then refined with exact distance.
 #[allow(clippy::too_many_arguments)]
@@ -307,6 +353,7 @@ pub fn par_points_within_distance_of_polygon<I: SpatialIndex + Sync>(
         max_x = max_x.max(x);
         max_y = max_y.max(y);
     }
+    let n_parts = poly_offsets.len().saturating_sub(1);
     index
         .range(
             min_x - distance,
@@ -316,15 +363,17 @@ pub fn par_points_within_distance_of_polygon<I: SpatialIndex + Sync>(
         )
         .into_par_iter()
         .filter(|&pi| {
-            point_to_polygon_distance(
-                xs[pi],
-                ys[pi],
-                poly_xs,
-                poly_ys,
-                poly_ring_offsets,
-                poly_offsets,
-                0,
-            ) <= distance
+            (0..n_parts).any(|qp| {
+                point_to_polygon_distance(
+                    xs[pi],
+                    ys[pi],
+                    poly_xs,
+                    poly_ys,
+                    poly_ring_offsets,
+                    poly_offsets,
+                    qp,
+                ) <= distance
+            })
         })
         .map(|pi| pi as u64)
         .collect()

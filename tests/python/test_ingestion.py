@@ -8,6 +8,7 @@ import shapely
 from shapely.geometry import MultiPolygon, Polygon
 from shapely.geometry import Point as ShapelyPoint
 
+from pycanopy import Engine
 from pycanopy.engine import (
     _extract_polygon_rings,
     _geoarrow_to_numpy_xy,
@@ -197,25 +198,27 @@ def test_to_numpy_xy_routes_wkb_binary():
 
 def test_extract_polygon_rings_single_polygon():
     poly = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
-    xs, ys, ring_offsets, poly_offsets = _extract_polygon_rings([poly])
+    xs, ys, ring_offsets, poly_offsets, part_poly = _extract_polygon_rings([poly])
     assert ring_offsets.tolist() == [0, 5]
     assert poly_offsets.tolist() == [0, 1]
     assert len(xs) == 5
     assert len(ys) == 5
+    assert part_poly is None  # single polygons map a part to itself, no part_poly needed
 
 
 def test_extract_polygon_rings_two_polygons_offsets():
     tri = Polygon([(0, 0), (1, 0), (0.5, 1)])
     sq = Polygon([(2, 0), (3, 0), (3, 1), (2, 1)])
-    xs, _ys, ring_offsets, poly_offsets = _extract_polygon_rings([tri, sq])
+    xs, _ys, ring_offsets, poly_offsets, part_poly = _extract_polygon_rings([tri, sq])
     assert ring_offsets.tolist() == [0, 4, 9]
     assert poly_offsets.tolist() == [0, 1, 2]
     assert len(xs) == 9
+    assert part_poly is None
 
 
 def test_extract_polygon_rings_coordinates_correct():
     poly = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
-    xs, ys, _ring_offsets, _poly_offsets = _extract_polygon_rings([poly])
+    xs, ys, _ring_offsets, _poly_offsets, _part_poly = _extract_polygon_rings([poly])
     assert xs[0] == pytest.approx(0.0)
     assert ys[0] == pytest.approx(0.0)
     assert xs[1] == pytest.approx(1.0)
@@ -224,7 +227,7 @@ def test_extract_polygon_rings_coordinates_correct():
 
 def test_extract_polygon_rings_returns_contiguous_arrays():
     poly = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
-    xs, ys, ring_offsets, poly_offsets = _extract_polygon_rings([poly])
+    xs, ys, ring_offsets, poly_offsets, _part_poly = _extract_polygon_rings([poly])
     for arr in (xs, ys, ring_offsets, poly_offsets):
         assert arr.flags["C_CONTIGUOUS"]
         assert arr.dtype == np.float64 or arr.dtype == np.int64
@@ -239,17 +242,21 @@ def test_extract_polygon_rings_with_hole():
     outer = [(0, 0), (4, 0), (4, 4), (0, 4)]
     hole = [(1, 1), (3, 1), (3, 3), (1, 3)]
     poly = Polygon(outer, [hole])
-    xs, _ys, ring_offsets, poly_offsets = _extract_polygon_rings([poly])
+    xs, _ys, ring_offsets, poly_offsets, _part_poly = _extract_polygon_rings([poly])
     assert poly_offsets.tolist() == [0, 2]  # 1 polygon, 2 rings
     assert len(ring_offsets) == 3  # 2 rings + sentinel
     assert ring_offsets[0] == 0
     assert ring_offsets[2] == len(xs)  # all coords accounted for
 
 
-def test_extract_polygon_rings_rejects_multipolygon():
-    mp = MultiPolygon([Polygon([(0, 0), (1, 0), (1, 1)]), Polygon([(2, 0), (3, 0), (3, 1)])])
-    with pytest.raises(TypeError, match="MultiPolygon"):
-        _extract_polygon_rings([mp])
+def test_extract_polygon_rings_accepts_multipolygon():
+    # A plain polygon then a two-part MultiPolygon: 3 parts total, part_poly groups the
+    # last two under logical polygon 1.
+    poly = Polygon([(0, 0), (1, 0), (1, 1)])
+    mp = MultiPolygon([Polygon([(2, 0), (3, 0), (3, 1)]), Polygon([(4, 0), (5, 0), (5, 1)])])
+    _xs, _ys, _ring_offsets, poly_offsets, part_poly = _extract_polygon_rings([poly, mp])
+    assert poly_offsets.tolist() == [0, 1, 2, 3]  # 3 parts, one ring each
+    assert part_poly.tolist() == [0, 1, 1]
 
 
 def test_extract_polygon_rings_rejects_point():
@@ -257,8 +264,24 @@ def test_extract_polygon_rings_rejects_point():
         _extract_polygon_rings([ShapelyPoint(0.0, 0.0)])
 
 
+def test_from_wkb_polygons_matches_shapely_path():
+    # The Rust WKB decoder must agree with the shapely from_polygons path, including the
+    # logical-polygon mapping for a MultiPolygon.
+    poly = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+    mp = MultiPolygon(
+        [Polygon([(2, 0), (3, 0), (3, 1), (2, 1)]), Polygon([(4, 0), (5, 0), (5, 1)])]
+    )
+    geoms = [poly, mp]
+    wkb_col = pl.Series("g", shapely.to_wkb(np.array(geoms)))
+
+    fast = Engine.from_wkb_polygons(wkb_col)
+    ref = Engine.from_polygons(geoms)
+    for x, y in [(0.5, 0.5), (2.5, 0.5), (4.2, 0.2), (1.5, 0.5)]:
+        assert fast.contains(x, y) == ref.contains(x, y)
+    assert np.allclose(fast.polygon_areas(), ref.polygon_areas())
+
+
 def test_extract_polygon_rings_error_reports_index():
     valid = Polygon([(0, 0), (1, 0), (1, 1)])
-    mp = MultiPolygon([Polygon([(2, 0), (3, 0), (3, 1)]), Polygon([(4, 0), (5, 0), (5, 1)])])
     with pytest.raises(TypeError, match="index 1"):
-        _extract_polygon_rings([valid, mp])
+        _extract_polygon_rings([valid, ShapelyPoint(0.0, 0.0)])

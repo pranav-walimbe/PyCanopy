@@ -103,6 +103,41 @@ class SpatialFrame:
         sf._engine = engine
         return sf
 
+    @classmethod
+    def from_wkb_polygons(
+        cls,
+        df: pl.DataFrame,
+        wkb_col: str,
+        x_col: str = "_x",
+        y_col: str = "_y",
+        index_mode: str = "eager",
+    ) -> SpatialFrame:
+        """Construct a polygon SpatialFrame from a WKB polygon column of ``df``.
+
+        The WKB Polygon / MultiPolygon bytes are decoded directly in Rust, and the raw
+        WKB column is dropped from the retained DataFrame once the index is built.
+
+        Args:
+            df: Materialized Polars DataFrame with a WKB polygon column.
+            wkb_col: Name of the Binary column holding WKB polygon geometries.
+            x_col: Internal column name placeholder (unused for polygon frames).
+            y_col: Internal column name placeholder (unused for polygon frames).
+            index_mode: Index build policy ("eager" / "none" / "auto").
+
+        Returns:
+            SpatialFrame backed by a polygon index.
+        """
+        if wkb_col not in df.columns:
+            raise ValueError(f"wkb_col {wkb_col!r} not found in DataFrame")
+        engine = Engine.from_wkb_polygons(df[wkb_col])
+        engine.set_index_mode(index_mode)
+        sf = object.__new__(cls)
+        sf._df = df.drop(wkb_col)
+        sf._x_col = x_col
+        sf._y_col = y_col
+        sf._engine = engine
+        return sf
+
     def lazy(self) -> SpatialLazyFrame:
         """Return a SpatialLazyFrame for declarative plan construction."""
         return SpatialLazyFrame(self, [])

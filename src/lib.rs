@@ -11,6 +11,7 @@ pub mod index;
 pub mod planner;
 pub mod query;
 pub mod stats;
+pub mod wkb;
 
 use index::{
     brute::BruteForce, grid::UniformGrid, kdtree::PackedKdTree, rtree::PackedRTree, SpatialIndex,
@@ -29,6 +30,7 @@ use query::{
         par_within_distance_flipped, par_within_distance_to_polygons,
     },
     geometry::{convex_hull_area, polygon_area, polygon_intersection_area},
+    multipoly::{dedup_indices, dedup_self_pairs, polygon_parts_csr, sum_part_areas},
     nearest::query_nearest,
     prepared::PreparedPolygons,
     range::{query_contains_polygons, query_range_points, query_range_polygons},
@@ -68,11 +70,48 @@ struct Engine {
     /// Per-polygon edge index for sub-linear point-in-polygon (polygon datasets).
     /// Built lazily on the first containment join, then reused across all probes.
     prepared_polys: Option<PreparedPolygons>,
+    /// Maps each index part to its logical polygon, or None when no MultiPolygons exist.
+    /// When None the part index is the polygon index, so the single-polygon path is unchanged.
+    part_poly: Option<Arc<[u32]>>,
+    /// Count of logical polygons, equal to the part count when part_poly is None.
+    n_polygons: usize,
 }
 
 const DELTA_FLUSH_FRACTION: f64 = 0.1;
 
 impl Engine {
+    /// Build a polygon Engine from owned flat ring arrays, shared by the numpy and WKB
+    /// ingestion paths. part_poly is None for one-part-per-polygon datasets.
+    fn new_polygons(
+        xs: Arc<[f64]>,
+        ys: Arc<[f64]>,
+        ring_offsets: Arc<[i64]>,
+        poly_offsets: Arc<[i64]>,
+        part_poly: Option<Arc<[u32]>>,
+        n_polygons: usize,
+    ) -> Engine {
+        let stats = collector::collect_polygons(&xs, &ys, &ring_offsets, &poly_offsets);
+        Engine {
+            xs,
+            ys,
+            ring_offsets: Some(ring_offsets),
+            poly_offsets: Some(poly_offsets),
+            stats,
+            brute: None,
+            rtree: None,
+            kdtree: None,
+            grid: None,
+            delta_xs: Vec::new(),
+            delta_ys: Vec::new(),
+            delta_query_cost: 0,
+            index_mode: IndexMode::Eager,
+            cost_factors: CostFactors::default(),
+            prepared_polys: None,
+            part_poly,
+            n_polygons,
+        }
+    }
+
     /// Merge the delta buffer into the main coordinate arrays and rebuild stats.
     /// Invalidates all indexes so the next query rebuilds against the full dataset.
     fn flush_delta(&mut self) {
@@ -292,6 +331,8 @@ impl Engine {
             index_mode: IndexMode::Eager,
             cost_factors: CostFactors::default(),
             prepared_polys: None,
+            part_poly: None,
+            n_polygons: 0,
         })
     }
 
@@ -299,16 +340,20 @@ impl Engine {
     ///
     /// ring_offsets has total_rings + 1 entries; ring r uses coordinates
     /// xs[ring_offsets[r]..ring_offsets[r+1]].
-    /// poly_offsets has n_polygons + 1 entries; polygon i uses rings
+    /// poly_offsets has n_parts + 1 entries; part i uses rings
     /// poly_offsets[i]..poly_offsets[i+1]. The first ring is the exterior;
-    /// any remaining rings are interior holes. MultiPolygons must be split
-    /// before calling. Copies once from each numpy buffer into Arc<[_]>.
+    /// any remaining rings are interior holes. A part is one single-exterior
+    /// polygon. part_poly, when given, maps each part to its logical polygon so
+    /// MultiPolygons (several parts per polygon) are supported; None means one
+    /// part per polygon. Copies once from each numpy buffer into Arc<[_]>.
     #[staticmethod]
+    #[pyo3(signature = (xs, ys, ring_offsets, poly_offsets, part_poly=None))]
     fn from_polygon_rings(
         xs: PyReadonlyArray1<f64>,
         ys: PyReadonlyArray1<f64>,
         ring_offsets: PyReadonlyArray1<i64>,
         poly_offsets: PyReadonlyArray1<i64>,
+        part_poly: Option<PyReadonlyArray1<i64>>,
     ) -> PyResult<Self> {
         let xs_sl = xs
             .as_slice()
@@ -354,24 +399,63 @@ impl Engine {
                 )));
             }
         }
-        let stats = collector::collect_polygons(xs_sl, ys_sl, ring_sl, poly_sl);
-        Ok(Engine {
-            xs: xs_sl.into(),
-            ys: ys_sl.into(),
-            ring_offsets: Some(ring_sl.into()),
-            poly_offsets: Some(poly_sl.into()),
-            stats,
-            brute: None,
-            rtree: None,
-            kdtree: None,
-            grid: None,
-            delta_xs: Vec::new(),
-            delta_ys: Vec::new(),
-            delta_query_cost: 0,
-            index_mode: IndexMode::Eager,
-            cost_factors: CostFactors::default(),
-            prepared_polys: None,
-        })
+        // part_poly maps parts to logical polygons (MultiPolygon support); None is the
+        // single-part-per-polygon case, where the part index already is the polygon index.
+        let (part_poly_arc, n_polygons): (Option<Arc<[u32]>>, usize) = match part_poly {
+            Some(pp) => {
+                let pp_sl = pp.as_slice().map_err(|_| {
+                    PyValueError::new_err("part_poly must be a contiguous int64 array")
+                })?;
+                if pp_sl.len() != n_polys {
+                    return Err(PyValueError::new_err(
+                        "part_poly must have one entry per part (poly_offsets length minus one)",
+                    ));
+                }
+                let n_logical = pp_sl.iter().copied().max().map_or(0, |m| m as usize + 1);
+                (Some(pp_sl.iter().map(|&v| v as u32).collect()), n_logical)
+            }
+            None => (None, n_polys),
+        };
+        Ok(Engine::new_polygons(
+            xs_sl.into(),
+            ys_sl.into(),
+            ring_sl.into(),
+            poly_sl.into(),
+            part_poly_arc,
+            n_polygons,
+        ))
+    }
+
+    /// Construct a polygon Engine directly from a WKB column, with no shapely roundtrip.
+    ///
+    /// `data` is the concatenated WKB value buffer and `offsets` the n+1 value bounds,
+    /// so geometry i is data[offsets[i]..offsets[i+1]]. Decodes Polygon / MultiPolygon
+    /// in one pass into the flat ring arrays; raises for any other WKB variant so the
+    /// caller can fall back to shapely.
+    #[staticmethod]
+    fn from_wkb_polygons(
+        data: PyReadonlyArray1<u8>,
+        offsets: PyReadonlyArray1<i64>,
+    ) -> PyResult<Self> {
+        let data_sl = data
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("data must be a contiguous uint8 array"))?;
+        let off_sl = offsets
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("offsets must be a contiguous int64 array"))?;
+        let parsed = wkb::parse_polygons(data_sl, off_sl).map_err(PyValueError::new_err)?;
+        let n_polygons = match &parsed.part_poly {
+            Some(pp) => pp.iter().copied().max().map_or(0, |m| m as usize + 1),
+            None => parsed.poly_offsets.len().saturating_sub(1),
+        };
+        Ok(Engine::new_polygons(
+            parsed.xs.into(),
+            parsed.ys.into(),
+            parsed.ring_offsets.into(),
+            parsed.poly_offsets.into(),
+            parsed.part_poly.map(Arc::from),
+            n_polygons,
+        ))
     }
 
     /// Build the optimal index for this dataset without issuing any query.
@@ -677,6 +761,9 @@ impl Engine {
             self.delta_query_cost += self.delta_xs.len() as u64;
             self.maybe_flush_on_cost(kind);
         }
+        if let Some(pp) = &self.part_poly {
+            result = dedup_indices(result, pp);
+        }
         Ok(result)
     }
 
@@ -967,6 +1054,7 @@ impl Engine {
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
         let prepared = self.prepared_polys.as_ref();
+        let part_poly = self.part_poly.as_deref();
         let flat = match kind {
             IndexKind::BruteForce => par_contains(
                 self.brute.as_ref().unwrap(),
@@ -977,6 +1065,7 @@ impl Engine {
                 ring_off,
                 poly_off,
                 prepared,
+                part_poly,
             ),
             _ => par_contains(
                 self.rtree.as_ref().unwrap(),
@@ -987,6 +1076,7 @@ impl Engine {
                 ring_off,
                 poly_off,
                 prepared,
+                part_poly,
             ),
         };
         Ok(PyArray1::from_vec(py, flat))
@@ -1027,6 +1117,7 @@ impl Engine {
         self.build_index_if_needed(kind);
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
+        let part_poly = self.part_poly.as_deref();
         let flat = match kind {
             IndexKind::BruteForce => par_within_distance_to_polygons(
                 self.brute.as_ref().unwrap(),
@@ -1037,6 +1128,7 @@ impl Engine {
                 ring_off,
                 poly_off,
                 distance,
+                part_poly,
             ),
             _ => par_within_distance_to_polygons(
                 self.rtree.as_ref().unwrap(),
@@ -1047,6 +1139,7 @@ impl Engine {
                 ring_off,
                 poly_off,
                 distance,
+                part_poly,
             ),
         };
         Ok(PyArray1::from_vec(py, flat))
@@ -1093,7 +1186,8 @@ impl Engine {
         self.build_index_if_needed(kind);
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
-        let n_polys = poly_off.len().saturating_sub(1);
+        let n_parts = poly_off.len().saturating_sub(1);
+        let part_poly = self.part_poly.as_deref();
         let (idx, dist) = match kind {
             IndexKind::BruteForce => par_knn_to_polygons(
                 self.brute.as_ref().unwrap(),
@@ -1104,7 +1198,8 @@ impl Engine {
                 ring_off,
                 poly_off,
                 k,
-                n_polys,
+                n_parts,
+                part_poly,
             ),
             _ => par_knn_to_polygons(
                 self.rtree.as_ref().unwrap(),
@@ -1115,7 +1210,8 @@ impl Engine {
                 ring_off,
                 poly_off,
                 k,
-                n_polys,
+                n_parts,
+                part_poly,
             ),
         };
         Ok((PyArray1::from_vec(py, idx), PyArray1::from_vec(py, dist)))
@@ -1160,10 +1256,15 @@ impl Engine {
                 poly_off,
             ),
         };
+        let flat = match &self.part_poly {
+            Some(pp) => dedup_self_pairs(flat, pp),
+            None => flat,
+        };
         Ok(PyArray1::from_vec(py, flat))
     }
 
     /// Unsigned area of every Engine polygon, in dataset order. Polygon datasets only.
+    /// A MultiPolygon's area is the sum of its parts.
     fn polygon_areas<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
         if self.ring_offsets.is_none() {
             return Err(PyValueError::new_err(
@@ -1172,11 +1273,15 @@ impl Engine {
         }
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
-        let n_polys = poly_off.len().saturating_sub(1);
-        let areas: Vec<f64> = (0..n_polys)
+        let n_parts = poly_off.len().saturating_sub(1);
+        let part_areas: Vec<f64> = (0..n_parts)
             .into_par_iter()
             .map(|i| polygon_area(&self.xs, &self.ys, ring_off, poly_off, i))
             .collect();
+        let areas = match &self.part_poly {
+            Some(pp) => sum_part_areas(&part_areas, pp, self.n_polygons),
+            None => part_areas,
+        };
         Ok(PyArray1::from_vec(py, areas))
     }
 
@@ -1206,27 +1311,55 @@ impl Engine {
         }
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
-        let areas: Vec<f64> = is
-            .par_iter()
-            .zip(js.par_iter())
-            .map(|(&i, &j)| {
-                polygon_intersection_area(
-                    &self.xs, &self.ys, ring_off, poly_off, i as usize, j as usize,
-                )
-            })
-            .collect();
+        // For MultiPolygons the pair area is the sum over their part pairs: parts within
+        // one polygon are disjoint, so the part intersections partition the overlap.
+        let areas: Vec<f64> = match &self.part_poly {
+            Some(pp) => {
+                let (offsets, parts) = polygon_parts_csr(pp, self.n_polygons);
+                let parts_of = |g: usize| &parts[offsets[g] as usize..offsets[g + 1] as usize];
+                is.par_iter()
+                    .zip(js.par_iter())
+                    .map(|(&i, &j)| {
+                        let mut area = 0.0;
+                        for &pi in parts_of(i as usize) {
+                            for &pj in parts_of(j as usize) {
+                                area += polygon_intersection_area(
+                                    &self.xs,
+                                    &self.ys,
+                                    ring_off,
+                                    poly_off,
+                                    pi as usize,
+                                    pj as usize,
+                                );
+                            }
+                        }
+                        area
+                    })
+                    .collect()
+            }
+            None => is
+                .par_iter()
+                .zip(js.par_iter())
+                .map(|(&i, &j)| {
+                    polygon_intersection_area(
+                        &self.xs, &self.ys, ring_off, poly_off, i as usize, j as usize,
+                    )
+                })
+                .collect(),
+        };
         Ok(PyArray1::from_vec(py, areas))
     }
 
-    /// Indices of Engine points within `distance` of a single query polygon.
-    /// The query polygon is given as its own ring arrays (exterior ring first, then
-    /// holes). Engine must be a point dataset.
+    /// Indices of Engine points within `distance` of a query polygon, which may be a
+    /// MultiPolygon. The query is given as its own ring arrays (exterior first, then
+    /// holes per part) plus poly_offsets grouping rings into parts. Point datasets only.
     fn points_within_distance_of_polygon<'py>(
         &mut self,
         py: Python<'py>,
         poly_xs: PyReadonlyArray1<f64>,
         poly_ys: PyReadonlyArray1<f64>,
         poly_ring_offsets: PyReadonlyArray1<i64>,
+        poly_offsets: PyReadonlyArray1<i64>,
         distance: f64,
     ) -> PyResult<Bound<'py, PyArray1<u64>>> {
         if self.ring_offsets.is_some() {
@@ -1243,13 +1376,14 @@ impl Engine {
         let pring = poly_ring_offsets
             .as_slice()
             .map_err(|_| PyValueError::new_err("poly_ring_offsets must be contiguous int64"))?;
+        let ppoly = poly_offsets
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("poly_offsets must be contiguous int64"))?;
         if pxs.len() != pys.len() {
             return Err(PyValueError::new_err(
                 "poly_xs and poly_ys must have the same length",
             ));
         }
-        // The query polygon is a single polygon spanning all its rings.
-        let single_poly_offsets: Vec<i64> = vec![0, (pring.len() - 1) as i64];
         let candidate = rtree_candidate(&self.stats);
         let bbox = Rect::new(
             coord! { x: 0.0, y: 0.0 },
@@ -1265,7 +1399,7 @@ impl Engine {
                 pxs,
                 pys,
                 pring,
-                &single_poly_offsets,
+                ppoly,
                 distance,
             ),
             _ => par_points_within_distance_of_polygon(
@@ -1275,7 +1409,7 @@ impl Engine {
                 pxs,
                 pys,
                 pring,
-                &single_poly_offsets,
+                ppoly,
                 distance,
             ),
         };

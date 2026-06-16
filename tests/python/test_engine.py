@@ -229,10 +229,25 @@ def test_from_polygons_stats_contains_n(poly_engine):
     assert "n=5" in poly_engine.stats()
 
 
-def test_from_polygons_rejects_multipolygon():
-    mp = MultiPolygon([SQUARES[0], SQUARES[1]])
-    with pytest.raises(TypeError, match="MultiPolygon"):
-        Engine.from_polygons([mp])
+def test_from_polygons_accepts_multipolygon():
+    # SQUARES[1] and SQUARES[2] are disjoint; as one MultiPolygon they are one logical
+    # polygon, so a point in either part returns the same index, counted once.
+    mp = MultiPolygon([SQUARES[1], SQUARES[2]])
+    eng = Engine.from_polygons([SQUARES[0], mp])
+    assert eng.contains(0.5, 0.5) == [0]  # in the plain polygon
+    assert eng.contains(2.5, 0.5) == [1]  # in the first part of the MultiPolygon
+    assert eng.contains(4.5, 0.5) == [1]  # in the second part -> same logical polygon
+    assert eng.contains(1.5, 0.5) == []  # between the parts -> no match
+
+
+def test_multipolygon_area_sums_parts():
+    # MultiPolygon area is the sum of its parts (two unit squares -> 2.0).
+    mp = MultiPolygon([SQUARES[1], SQUARES[2]])
+    eng = Engine.from_polygons([SQUARES[0], mp])
+    areas = eng.polygon_areas()
+    assert len(areas) == 2
+    assert areas[0] == pytest.approx(1.0)
+    assert areas[1] == pytest.approx(2.0)
 
 
 def test_from_polygons_rejects_non_polygon():

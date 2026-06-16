@@ -185,84 +185,134 @@ def _wkb_points_fast(arr: pa.Array) -> tuple[np.ndarray, np.ndarray] | None:
     )
 
 
+def _wkb_binary_buffers(column) -> tuple[np.ndarray, np.ndarray] | None:
+    """Return (data, offsets) numpy buffers of a WKB binary column, or None.
+
+    data is the concatenated value bytes (uint8); offsets are the n+1 int64 value
+    bounds into data. The heavy data buffer is a zero-copy view; only the small offsets
+    array is materialised. Returns None for nulls or non-binary input so the caller can
+    fall back to shapely.
+    """
+    if hasattr(column, "to_arrow"):
+        column = column.to_arrow()
+    if isinstance(column, pa.ChunkedArray):
+        column = column.combine_chunks()
+    if not isinstance(column, pa.Array):
+        return None
+    if not (pa.types.is_binary(column.type) or pa.types.is_large_binary(column.type)):
+        return None
+    if column.null_count != 0:
+        return None
+    n = len(column)
+    _validity, offsets_buf, data_buf = column.buffers()
+    if offsets_buf is None or data_buf is None:
+        return None
+    offset_dtype = "<i8" if pa.types.is_large_binary(column.type) else "<i4"
+    offsets = np.frombuffer(offsets_buf, dtype=offset_dtype)[column.offset : column.offset + n + 1]
+    data = np.frombuffer(data_buf, dtype=np.uint8)
+    return data, np.ascontiguousarray(offsets, dtype=np.int64)
+
+
 def _extract_polygon_rings(
     geometries,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Return (xs, ys, ring_offsets, poly_offsets) from a collection of shapely Polygons.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
+    """Return (xs, ys, ring_offsets, poly_offsets, part_poly) from Polygons/MultiPolygons.
 
-    Uses a two-level offset encoding (GeoArrow-compatible):
+    Each geometry is flattened into parts: a Polygon is one part, a MultiPolygon one part
+    per member. Uses a two-level offset encoding (GeoArrow-compatible) over the parts:
       ring_offsets[r]..ring_offsets[r+1] is ring r's coordinate range in xs/ys.
-      poly_offsets[i]..poly_offsets[i+1] is polygon i's ring range in ring_offsets.
-    The first ring per polygon is the exterior; remaining rings are interior holes.
+      poly_offsets[p]..poly_offsets[p+1] is part p's ring range (exterior first, then holes).
+    part_poly[p] is the logical polygon owning part p, or None when every geometry is a
+    single Polygon (then the part index already is the polygon index, the legacy path).
     All arrays are contiguous for zero-copy transfer into Rust via the numpy C API.
-    MultiPolygon geometries are rejected with a clear message.
     """
     geoms = np.asarray(geometries)
-
     type_ids = shapely.get_type_id(geoms)
-    for idx, (geom, tid) in enumerate(zip(geoms, type_ids)):
-        if tid == _SHAPELY_MULTIPOLYGON_TYPE_ID:
-            raise TypeError(
-                f"Geometry at index {idx} is a MultiPolygon. "
-                "Split into individual polygons first with .explode() (geopandas) "
-                "or by iterating over .geoms (shapely)."
-            )
-        if tid != _SHAPELY_POLYGON_TYPE_ID:
-            raise TypeError(
-                f"Geometry at index {idx} is not a Polygon (got {type(geom).__name__!r}). "
-                "Engine.from_polygons requires a collection of Polygon geometries."
-            )
 
-    # Build a flat list of rings: for each polygon, exterior first then holes.
-    n_interior = shapely.get_num_interior_rings(geoms)
-    exterior_rings = shapely.get_exterior_ring(geoms)
+    parts = []
+    part_poly = []
+    for idx, (geom, tid) in enumerate(zip(geoms, type_ids)):
+        if tid == _SHAPELY_POLYGON_TYPE_ID:
+            members = (geom,)
+        elif tid == _SHAPELY_MULTIPOLYGON_TYPE_ID:
+            members = shapely.get_parts(geom)
+        else:
+            raise TypeError(
+                f"Geometry at index {idx} is not a Polygon or MultiPolygon "
+                f"(got {type(geom).__name__!r}). Engine.from_polygons requires polygonal input."
+            )
+        for poly in members:
+            parts.append(poly)
+            part_poly.append(idx)
+
+    parts_arr = np.asarray(parts)
+    n_interior = shapely.get_num_interior_rings(parts_arr)
+    exterior_rings = shapely.get_exterior_ring(parts_arr)
 
     ring_objects = []
-    rings_per_poly = []
-    for i in range(len(geoms)):
+    rings_per_part = []
+    for i in range(len(parts_arr)):
         ring_objects.append(exterior_rings[i])
         for j in range(int(n_interior[i])):
-            ring_objects.append(shapely.get_interior_ring(geoms[i], j))
-        rings_per_poly.append(1 + int(n_interior[i]))
+            ring_objects.append(shapely.get_interior_ring(parts_arr[i], j))
+        rings_per_part.append(1 + int(n_interior[i]))
 
     all_rings = np.asarray(ring_objects)
-    rings_per_poly_arr = np.array(rings_per_poly, dtype=np.int64)
-
     coords = shapely.get_coordinates(all_rings)
     ring_coord_counts = shapely.get_num_coordinates(all_rings)
 
     ring_offsets = np.concatenate([[0], np.cumsum(ring_coord_counts)])
-    poly_offsets = np.concatenate([[0], np.cumsum(rings_per_poly_arr)])
+    poly_offsets = np.concatenate([[0], np.cumsum(np.array(rings_per_part, dtype=np.int64))])
+
+    # None when no geometry expanded into multiple parts: every part is its own polygon.
+    part_poly_arr = None
+    if len(parts_arr) != len(geoms):
+        part_poly_arr = np.ascontiguousarray(part_poly, dtype=np.int64)
 
     return (
         np.ascontiguousarray(coords[:, 0], dtype=np.float64),
         np.ascontiguousarray(coords[:, 1], dtype=np.float64),
         np.ascontiguousarray(ring_offsets, dtype=np.int64),
         np.ascontiguousarray(poly_offsets, dtype=np.int64),
+        part_poly_arr,
     )
 
 
-def _extract_single_polygon_rings(polygon) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return (xs, ys, ring_offsets) for a single shapely Polygon (exterior first, then holes).
+def _extract_query_polygon_rings(
+    polygon,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return (xs, ys, ring_offsets, poly_offsets) for a query Polygon or MultiPolygon.
 
-    ring_offsets[r]..ring_offsets[r+1] is ring r's coordinate range in xs/ys.
+    poly_offsets groups rings into parts (one part per Polygon, one per MultiPolygon
+    member), exterior ring first then holes within each part:
+      ring_offsets[r]..ring_offsets[r+1] is ring r's coordinate range in xs/ys.
+      poly_offsets[p]..poly_offsets[p+1] is part p's ring range.
     """
-    if shapely.get_type_id(polygon) != _SHAPELY_POLYGON_TYPE_ID:
-        raise TypeError(
-            f"Expected a single Polygon, got {type(polygon).__name__!r}. "
-            "Split MultiPolygons and pass one Polygon."
-        )
-    rings = [shapely.get_exterior_ring(polygon)]
-    for j in range(int(shapely.get_num_interior_rings(polygon))):
-        rings.append(shapely.get_interior_ring(polygon, j))
+    tid = shapely.get_type_id(polygon)
+    if tid == _SHAPELY_POLYGON_TYPE_ID:
+        members = (polygon,)
+    elif tid == _SHAPELY_MULTIPOLYGON_TYPE_ID:
+        members = shapely.get_parts(polygon)
+    else:
+        raise TypeError(f"Expected a Polygon or MultiPolygon, got {type(polygon).__name__!r}.")
+    rings = []
+    rings_per_part = []
+    for poly in members:
+        rings.append(shapely.get_exterior_ring(poly))
+        n_interior = int(shapely.get_num_interior_rings(poly))
+        for j in range(n_interior):
+            rings.append(shapely.get_interior_ring(poly, j))
+        rings_per_part.append(1 + n_interior)
     all_rings = np.asarray(rings)
     coords = shapely.get_coordinates(all_rings)
     ring_coord_counts = shapely.get_num_coordinates(all_rings)
     ring_offsets = np.concatenate([[0], np.cumsum(ring_coord_counts)])
+    poly_offsets = np.concatenate([[0], np.cumsum(np.array(rings_per_part, dtype=np.int64))])
     return (
         np.ascontiguousarray(coords[:, 0], dtype=np.float64),
         np.ascontiguousarray(coords[:, 1], dtype=np.float64),
         np.ascontiguousarray(ring_offsets, dtype=np.int64),
+        np.ascontiguousarray(poly_offsets, dtype=np.int64),
     )
 
 
@@ -285,18 +335,40 @@ class Engine:
         """Construct from a collection of polygon geometries. Interior holes are supported.
 
         Args:
-            geometries: A geopandas GeoSeries or list of shapely Polygon objects.
-                Polygons with holes are accepted. MultiPolygon geometries must be
-                split before loading (use GeoSeries.explode() or iterate over
-                shapely MultiPolygon.geoms).
+            geometries: A geopandas GeoSeries or list of shapely Polygon / MultiPolygon
+                objects. Polygons with holes are accepted; a MultiPolygon is treated as
+                one logical polygon spanning all of its parts.
 
         Returns:
             Engine ready to answer range and contains queries over polygon data.
         """
-        xs, ys, ring_offsets, poly_offsets = _extract_polygon_rings(geometries)
+        xs, ys, ring_offsets, poly_offsets, part_poly = _extract_polygon_rings(geometries)
         eng = cls.__new__(cls)
-        eng._core = _CoreEngine.from_polygon_rings(xs, ys, ring_offsets, poly_offsets)
+        eng._core = _CoreEngine.from_polygon_rings(xs, ys, ring_offsets, poly_offsets, part_poly)
         return eng
+
+    @classmethod
+    def from_wkb_polygons(cls, column) -> Engine:
+        """Construct from a WKB Polygon/MultiPolygon column, decoding the bytes in Rust.
+
+        Args:
+            column: A polars Binary Series or pyarrow Binary/LargeBinary array of WKB
+                Polygon / MultiPolygon geometries.
+
+        Returns:
+            Engine over the polygon data. Falls back to the shapely path for nulls or
+            WKB variants the fast decoder does not recognise.
+        """
+        eng = cls.__new__(cls)
+        buffers = _wkb_binary_buffers(column)
+        if buffers is not None:
+            try:
+                eng._core = _CoreEngine.from_wkb_polygons(*buffers)
+                return eng
+            except ValueError:
+                pass  # unusual WKB variant -> shapely fallback
+        raw = column.to_numpy() if hasattr(column, "to_numpy") else np.asarray(column)
+        return cls.from_polygons(shapely.from_wkb(raw))
 
     @classmethod
     def from_wkb_points(cls, points) -> Engine:
@@ -627,20 +699,21 @@ class Engine:
         )
 
     def points_within_distance_of_polygon(self, polygon, distance: float) -> np.ndarray:
-        """Return indices of engine points within `distance` of a single query polygon.
+        """Return indices of engine points within `distance` of a query polygon.
 
         Engine must be a point dataset.
 
         Args:
-            polygon: A single shapely Polygon (interior holes supported).
+            polygon: A shapely Polygon or MultiPolygon (interior holes supported); a
+                point matches when within `distance` of any part.
             distance: Maximum Euclidean point-to-polygon distance for a match.
 
         Returns:
             uint64 array of matching point indices.
         """
-        poly_xs, poly_ys, ring_offsets = _extract_single_polygon_rings(polygon)
+        poly_xs, poly_ys, ring_offsets, poly_offsets = _extract_query_polygon_rings(polygon)
         return self._core.points_within_distance_of_polygon(
-            poly_xs, poly_ys, ring_offsets, distance
+            poly_xs, poly_ys, ring_offsets, poly_offsets, distance
         )
 
     @staticmethod

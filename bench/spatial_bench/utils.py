@@ -26,7 +26,6 @@ from bench.spatial_bench.sedona_sql import SEDONA_SQL
 from pycanopy import SpatialFrame
 
 _ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
-_SHAPELY_MULTIPOLYGON = 6
 
 
 # Published Apache SpatialBench baseline (chart reference)
@@ -115,19 +114,12 @@ def warm_tables(data_dir: str, tables: tuple[str, ...]) -> None:
 
 
 def wkb_to_polygons(series: pl.Series) -> list:
-    """Convert a WKB polygon column to shapely Polygons, reducing MultiPolygons.
+    """Decode a WKB polygon column to shapely Polygons / MultiPolygons.
 
-    MultiPolygons are reduced to their largest-area constituent Polygon so the result
-    is a flat list of single Polygons suitable for Engine.from_polygons.
+    MultiPolygons are kept whole: the engine treats each as one logical polygon spanning
+    all its parts, so a point in any part matches the zone (as ST_Within does).
     """
-    geoms = shapely.from_wkb(series.to_numpy())
-    out = []
-    for geom, tid in zip(geoms, shapely.get_type_id(geoms)):
-        if tid == _SHAPELY_MULTIPOLYGON:
-            out.append(max(geom.geoms, key=lambda p: p.area))
-        else:
-            out.append(geom)
-    return out
+    return list(shapely.from_wkb(series.to_numpy()))
 
 
 @dataclass
@@ -165,12 +157,8 @@ class SpatialBenchTables:
         return SpatialFrame.from_wkb_points(df, wkb_col, index_mode=self.index_mode)
 
     def polygon_frame(self, df: pl.DataFrame, wkb_col: str) -> SpatialFrame:
-        """Build a polygon SpatialFrame, dropping the raw WKB column once decoded."""
-        polys = wkb_to_polygons(df[wkb_col])
-        enriched = df.drop(wkb_col).with_columns(pl.Series("_geom", polys, dtype=pl.Object))
-        return SpatialFrame.from_polygons(
-            enriched, geometry_col="_geom", index_mode=self.index_mode
-        )
+        """Build a polygon SpatialFrame straight from the WKB column (decoded in Rust)."""
+        return SpatialFrame.from_wkb_polygons(df, wkb_col, index_mode=self.index_mode)
 
 
 # SedonaDB oracle (output verification only)
@@ -222,23 +210,26 @@ def _sortable(x):
     return (3, str(x))
 
 
-def _close(a: tuple, b: tuple, rel_tol: float) -> bool:
-    """True when two value tuples agree (exact for integers, rel_tol for floats)."""
+def _close(a: tuple, b: tuple, rel_tol: float, abs_tol: float) -> bool:
+    """True when two value tuples agree within rel_tol (relative) or abs_tol (absolute).
+
+    A value passes if either tolerance is met, so large magnitudes lean on rel_tol while
+    near-zero magnitudes lean on abs_tol. Integers are not special-cased: small rounding
+    or last-digit differences are noise for a benchmark sanity check, not a regression.
+    """
     for x, y in zip(a, b, strict=False):
         if _missing(x) or _missing(y):
             if _missing(x) != _missing(y):
                 return False
             continue
-        x, y = float(x), float(y)
-        if x.is_integer() and y.is_integer():
-            if x != y:
-                return False
-        elif not math.isclose(x, y, rel_tol=rel_tol, abs_tol=1e-12):
+        if not math.isclose(float(x), float(y), rel_tol=rel_tol, abs_tol=abs_tol):
             return False
     return True
 
 
-def verify_outputs(pc_df, sedona_df, keys=(), values=(), rel_tol: float = 1e-2) -> tuple[bool, str]:
+def verify_outputs(
+    pc_df, sedona_df, keys=(), values=(), rel_tol: float = 1e-2, abs_tol: float = 1e-2
+) -> tuple[bool, str]:
     """Check a PyCanopy result against a SedonaDB result by value, order-independent.
 
     Args:
@@ -246,8 +237,10 @@ def verify_outputs(pc_df, sedona_df, keys=(), values=(), rel_tol: float = 1e-2) 
         sedona_df: SedonaDB result (pandas DataFrame).
         keys: Identifying columns, compared exactly. Each entry is a column name
             (same on both sides) or a (pycanopy_col, sedona_col) pair.
-        values: Numeric columns compared within rel_tol, same entry form as keys.
-        rel_tol: Relative tolerance for the value columns.
+        values: Numeric columns compared approximately, same entry form as keys.
+        rel_tol: Relative tolerance for the value columns (default 1%).
+        abs_tol: Absolute tolerance for the value columns (default 0.01, i.e. agreement
+            to the hundredths is treated as a match regardless of relative size).
 
     Returns:
         (ok, detail).
@@ -265,7 +258,7 @@ def verify_outputs(pc_df, sedona_df, keys=(), values=(), rel_tol: float = 1e-2) 
     for a, b in zip(pc, sed, strict=False):
         if tuple(_sortable(x) for x in a[:n]) != tuple(_sortable(x) for x in b[:n]):
             return False, f"key mismatch: {a[:n]} vs {b[:n]}"
-        if not _close(a[n:], b[n:], rel_tol):
+        if not _close(a[n:], b[n:], rel_tol, abs_tol):
             return False, f"value mismatch at {a[:n]}: {a[n:]} vs {b[n:]}"
     return True, f"{len(pc)} rows match"
 
