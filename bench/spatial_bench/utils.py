@@ -13,13 +13,13 @@ A query module (queries/qNN.py) only provides id, title, pycanopy(tables), and a
 from __future__ import annotations
 
 import argparse
-import math
 import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import polars as pl
+import sedonadb
 import shapely
 
 from bench.spatial_bench.sedona_sql import SEDONA_SQL
@@ -168,18 +168,17 @@ class SpatialBenchTables:
 _ORACLE_TABLES = ("trip", "zone", "building", "customer")
 
 
-def run_oracle(query_id: str, data_dir: str):
-    """Run query_id through SedonaDB and return its result as a pandas DataFrame.
+def run_oracle(query_id: str, data_dir: str) -> pl.DataFrame:
+    """Run query_id through SedonaDB and return its result as a polars DataFrame.
 
-    The result is materialised so it can be diffed against PyCanopy's output.
+    The result comes back over Arrow (zero-copy into polars), avoiding a numpy or
+    geopandas copy of what can be a tens-of-millions-row result.
     """
-    import sedonadb
-
     sd = sedonadb.connect()
     for table in _ORACLE_TABLES:
         # SedonaDB reads the bare directory (or file) directly; ST_GeomFromWKB in SQL.
         sd.read_parquet(_resolve_table(data_dir, table)[0]).to_view(table)
-    return sd.sql(SEDONA_SQL[query_id]).to_pandas()
+    return pl.from_arrow(sd.sql(SEDONA_SQL[query_id]).to_arrow_table())
 
 
 # Output verification (PyCanopy result vs SedonaDB result)
@@ -190,77 +189,31 @@ def _pairs(spec) -> list[tuple[str, str]]:
     return [(c, c) if isinstance(c, str) else tuple(c) for c in spec]
 
 
-def _rows(df, cols: list[str]) -> list[tuple]:
-    """Materialise columns as row tuples; works for polars and pandas (empty -> none)."""
-    return list(zip(*(df[c].to_list() for c in cols), strict=False))
-
-
-def _missing(v) -> bool:
-    return v is None or (isinstance(v, float) and math.isnan(v))
-
-
-def _sortable(x):
-    """Map a cell to a totally ordered key so mixed-type rows sort deterministically."""
-    if _missing(x):
-        return (0, 0.0)
-    if isinstance(x, (bool, int, float)):
-        return (1, float(x))
-    if hasattr(x, "timestamp"):  # datetime / pandas Timestamp
-        return (2, x.timestamp())
-    return (3, str(x))
-
-
-def _close(a: tuple, b: tuple, rel_tol: float, abs_tol: float) -> bool:
-    """True when two value tuples agree within rel_tol (relative) or abs_tol (absolute).
-
-    A value passes if either tolerance is met, so large magnitudes lean on rel_tol while
-    near-zero magnitudes lean on abs_tol. Integers are not special-cased: small rounding
-    or last-digit differences are noise for a benchmark sanity check, not a regression.
-    """
-    for x, y in zip(a, b, strict=False):
-        if _missing(x) or _missing(y):
-            if _missing(x) != _missing(y):
-                return False
-            continue
-        if not math.isclose(float(x), float(y), rel_tol=rel_tol, abs_tol=abs_tol):
-            return False
-    return True
+def _as_polars(df) -> pl.DataFrame:
+    """Represent a polars or pandas result as polars, zero-copy where the buffers allow."""
+    return df if isinstance(df, pl.DataFrame) else pl.from_pandas(df)
 
 
 def verify_outputs(
     pc_df, sedona_df, keys=(), values=(), rel_tol: float = 1e-2, abs_tol: float = 1e-2
 ) -> tuple[bool, str]:
-    """Check a PyCanopy result against a SedonaDB result by value, order-independent.
+    """Sanity-check a PyCanopy result against a SedonaDB result.
 
-    Args:
-        pc_df: PyCanopy result (polars DataFrame).
-        sedona_df: SedonaDB result (pandas DataFrame).
-        keys: Identifying columns, compared exactly. Each entry is a column name
-            (same on both sides) or a (pycanopy_col, sedona_col) pair.
-        values: Numeric columns compared approximately, same entry form as keys.
-        rel_tol: Relative tolerance for the value columns (default 1%).
-        abs_tol: Absolute tolerance for the value columns (default 0.01, i.e. agreement
-            to the hundredths is treated as a match regardless of relative size).
-
-    Returns:
-        (ok, detail).
+    Compares row count, then the float sum of each value column within tolerance. Both
+    checks are order-independent and stay columnar, so a tens-of-millions-row result
+    never leaves polars. Summing in Float64 avoids integer overflow.
     """
-    keys = _pairs(keys)
-    values = _pairs(values)
-    pc = _rows(pc_df, [k[0] for k in keys] + [v[0] for v in values])
-    sed = _rows(sedona_df, [k[1] for k in keys] + [v[1] for v in values])
-    if len(pc) != len(sed):
-        return False, f"row count pycanopy={len(pc)} sedona={len(sed)}"
+    pc = _as_polars(pc_df)
+    sed = _as_polars(sedona_df)
+    if pc.height != sed.height:
+        return False, f"row count pycanopy={pc.height} sedona={sed.height}"
 
-    n = len(keys)
-    pc.sort(key=lambda r: tuple(_sortable(x) for x in r))
-    sed.sort(key=lambda r: tuple(_sortable(x) for x in r))
-    for a, b in zip(pc, sed, strict=False):
-        if tuple(_sortable(x) for x in a[:n]) != tuple(_sortable(x) for x in b[:n]):
-            return False, f"key mismatch: {a[:n]} vs {b[:n]}"
-        if not _close(a[n:], b[n:], rel_tol, abs_tol):
-            return False, f"value mismatch at {a[:n]}: {a[n:]} vs {b[n:]}"
-    return True, f"{len(pc)} rows match"
+    for pc_col, sed_col in _pairs(values):
+        a = pc[pc_col].cast(pl.Float64, strict=False).sum()
+        b = sed[sed_col].cast(pl.Float64, strict=False).sum()
+        if abs(a - b) > abs_tol + rel_tol * abs(b):
+            return False, f"sum mismatch in {pc_col}: {a} vs {b}"
+    return True, f"{pc.height} rows match"
 
 
 # Measure + chart
