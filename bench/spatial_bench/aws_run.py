@@ -23,6 +23,7 @@ from pathlib import Path
 
 import boto3
 import yaml
+from botocore.exceptions import ClientError
 
 _DIR = Path(__file__).parent
 _ASSETS_DIR = _DIR.parent.parent / "assets"
@@ -108,8 +109,17 @@ def launch(ec2, ssm, cfg: dict, run_id: str, index_mode: str, no_verify: bool = 
 
 
 def _alive(ec2, instance_id: str) -> bool:
-    """Return True while the instance is still pending or running."""
-    inst = ec2.describe_instances(InstanceIds=[instance_id])
+    """Return True while the instance is still pending or running.
+
+    describe_instances is eventually consistent right after launch, so a transient
+    InvalidInstanceID.NotFound is treated as still-pending rather than as a dead box.
+    """
+    try:
+        inst = ec2.describe_instances(InstanceIds=[instance_id])
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "InvalidInstanceID.NotFound":
+            return True
+        raise
     state = inst["Reservations"][0]["Instances"][0]["State"]["Name"]
     return state in ("pending", "running")
 
