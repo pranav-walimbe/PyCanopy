@@ -1,13 +1,8 @@
 """High-level Python engine wrapping the Rust core.
 
-Accepts GeoArrow arrays, WKB point columns, geopandas GeoSeries, shapely geometry
-lists, numpy arrays, or plain coordinate sequences. All point input is normalized
-to a pair of contiguous float64 numpy arrays before crossing the Python/Rust
-boundary, which the Rust side receives as zero-copy slices via NumPy's C API.
-
-WKB point columns take a vectorised path: standard 2D little-endian points are a
-fixed 21-byte record, so the whole column is one contiguous Arrow value buffer that
-is read with a single strided numpy view, with no per-point object allocation.
+Normalizes varied point input (GeoArrow, WKB columns, geopandas, shapely, numpy,
+coordinate sequences) to contiguous float64 arrays crossing the Rust boundary zero-copy.
+Standard 2D little-endian WKB points decode via a single strided numpy view.
 """
 
 from __future__ import annotations
@@ -112,10 +107,8 @@ _WKB_POINT_RECORD = np.dtype([("order", "u1"), ("type", "<u4"), ("x", "<f8"), ("
 def wkb_points_to_xy(points) -> tuple[np.ndarray, np.ndarray]:
     """Decode a column of WKB point geometries to contiguous float64 x and y arrays.
 
-    Accepts a polars Binary Series, a pyarrow Binary/LargeBinary array (or
-    ChunkedArray), or a numpy object array of WKB byte strings. Standard 2D
-    little-endian points are decoded with a single vectorised buffer read; any other
-    WKB variant (big-endian, Z/M dimensions, nulls) falls back to shapely.
+    Standard 2D little-endian points use a vectorised buffer read. Other variants
+    (big-endian, Z/M, nulls) fall back to shapely.
 
     Args:
         points: A column of WKB point geometries in one of the accepted forms.
@@ -144,12 +137,8 @@ def wkb_points_to_xy(points) -> tuple[np.ndarray, np.ndarray]:
 def _wkb_points_fast(arr: pa.Array) -> tuple[np.ndarray, np.ndarray] | None:
     """Read x/y straight from a uniformly 21-byte WKB point column, or None if N/A.
 
-    A pyarrow binary column stores every value's bytes concatenated in one data
-    buffer, with an offsets array marking where each value begins. When every value
-    is a tightly packed 21-byte little-endian point, that data buffer is already a
-    flat array of point records, so we reinterpret it with one numpy view rather than
-    building a shapely object per point. Returns None (so the caller falls back to
-    shapely) for nulls, non-binary input, or any non-uniform or non-point layout.
+    One numpy view reinterprets the concatenated value buffer as point records. Returns
+    None (caller falls back to shapely) for nulls or any non-uniform or non-point layout.
     """
     if not (pa.types.is_binary(arr.type) or pa.types.is_large_binary(arr.type)):
         return None
@@ -188,10 +177,8 @@ def _wkb_points_fast(arr: pa.Array) -> tuple[np.ndarray, np.ndarray] | None:
 def _wkb_binary_buffers(column) -> tuple[np.ndarray, np.ndarray] | None:
     """Return (data, offsets) numpy buffers of a WKB binary column, or None.
 
-    data is the concatenated value bytes (uint8); offsets are the n+1 int64 value
-    bounds into data. The heavy data buffer is a zero-copy view; only the small offsets
-    array is materialised. Returns None for nulls or non-binary input so the caller can
-    fall back to shapely.
+    data is the concatenated value bytes (uint8) viewed zero-copy. offsets are the n+1
+    int64 bounds. None for nulls or non-binary input so the caller can use shapely.
     """
     if hasattr(column, "to_arrow"):
         column = column.to_arrow()
@@ -218,13 +205,10 @@ def _extract_polygon_rings(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
     """Return (xs, ys, ring_offsets, poly_offsets, part_poly) from Polygons/MultiPolygons.
 
-    Each geometry is flattened into parts: a Polygon is one part, a MultiPolygon one part
-    per member. Uses a two-level offset encoding (GeoArrow-compatible) over the parts:
+    Two-level GeoArrow-compatible offsets over parts (a MultiPolygon is one part per member).
       ring_offsets[r]..ring_offsets[r+1] is ring r's coordinate range in xs/ys.
       poly_offsets[p]..poly_offsets[p+1] is part p's ring range (exterior first, then holes).
-    part_poly[p] is the logical polygon owning part p, or None when every geometry is a
-    single Polygon (then the part index already is the polygon index, the legacy path).
-    All arrays are contiguous for zero-copy transfer into Rust via the numpy C API.
+    part_poly maps parts to logical polygons, or None when every geometry is a single Polygon.
     """
     geoms = np.asarray(geometries)
     type_ids = shapely.get_type_id(geoms)
@@ -283,8 +267,7 @@ def _extract_query_polygon_rings(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Return (xs, ys, ring_offsets, poly_offsets) for a query Polygon or MultiPolygon.
 
-    poly_offsets groups rings into parts (one part per Polygon, one per MultiPolygon
-    member), exterior ring first then holes within each part:
+    Two-level offsets group rings into parts (one part per Polygon or MultiPolygon member).
       ring_offsets[r]..ring_offsets[r+1] is ring r's coordinate range in xs/ys.
       poly_offsets[p]..poly_offsets[p+1] is part p's ring range.
     """
@@ -374,9 +357,8 @@ class Engine:
     def from_wkb_points(cls, points) -> Engine:
         """Construct from a column of WKB point geometries.
 
-        The points are decoded with a vectorised buffer read for standard 2D
-        little-endian WKB (no per-point object allocation), falling back to shapely
-        for other variants.
+        Decoded with a vectorised buffer read for standard 2D LE WKB, falling back to
+        shapely otherwise.
 
         Args:
             points: A polars Binary Series, a pyarrow Binary/LargeBinary array, or a
@@ -399,20 +381,14 @@ class Engine:
         return eng
 
     def build_index(self) -> None:
-        """Build the spatial index without issuing any query.
-
-        Forces index construction so the first query pays no build cost. Safe to
-        call multiple times — no-op if the index is already built.
-        """
+        """Build the spatial index ahead of any query (idempotent)."""
         self._core.build_index()
 
     def set_index_mode(self, mode: str) -> str:
         """Set the index build policy, returning the previous mode.
 
-        Modes: "eager" (build whenever a kind is selected), "none" (always scan
-        brute-force), "auto" (build only when the cost model beats a scan for the
-        probe count at hand). The previous mode is returned so a caller can restore
-        it after a scoped override. Already-built indexes are retained.
+        Modes: "eager" (build when a kind is selected), "none" (always brute-force scan),
+        "auto" (build only when the cost model beats a scan) and retains built indexes.
 
         Args:
             mode: "auto", "eager", or "none".
@@ -445,8 +421,7 @@ class Engine:
     ) -> list[int]:
         """Return the k nearest indices from a candidate subset of the dataset.
 
-        Computes squared distances from (x, y) to each survivor directly from the
-        coordinate arrays and partial-sorts to find the k nearest. Exact, O(M + k log k).
+        Squared distances to each survivor then a partial sort for the k nearest.
         Use when M survivors are already known (e.g. after scalar pre-filtering).
 
         Args:
@@ -495,9 +470,7 @@ class Engine:
     def intersect_ranges(self, queries: list[tuple[float, float, float, float]]) -> list[int]:
         """Return the sorted intersection of multiple bounding-box queries.
 
-        More efficient than calling range_query per predicate and intersecting in
-        Python: performs sorted merge in Rust, operating on O(K * |H|) elements
-        rather than O(K * N) bitmap AND passes.
+        Sorted merge in Rust over O(K * |H|) elements rather than O(K * N) bitmap ANDs.
 
         Args:
             queries: List of (min_x, min_y, max_x, max_y) bounding-box tuples.
@@ -515,8 +488,6 @@ class Engine:
         approximate: bool = False,
     ) -> np.ndarray:
         """For each query point, return the k nearest neighbours in the dataset.
-
-        Crosses the Python/Rust boundary once; loops in Rust via rayon.
 
         Args:
             query_xs: Contiguous float64 array of query x coordinates, shape (N,).
@@ -548,7 +519,7 @@ class Engine:
             query_ys: y coordinates of query points.
             distance: Maximum Euclidean distance for a match.
             flipped: Index query side and iterate engine points (faster when
-                len(query) << engine.n).
+                len(query) >> engine.n).
 
         Returns:
             Flat uint64 array of shape (M * 2,) interleaved [q0, e0, q1, e1, ...].
@@ -570,8 +541,6 @@ class Engine:
         max_y: float,
     ) -> np.ndarray:
         """For each query point, return its index if it falls within the bounding box.
-
-        Crosses the Python/Rust boundary once; filters in Rust via rayon.
 
         Args:
             query_xs: Contiguous float64 array of query x coordinates, shape (N,).
@@ -598,11 +567,7 @@ class Engine:
         query_xs: np.ndarray,
         query_ys: np.ndarray,
     ) -> np.ndarray:
-        """For each query point, return (query_idx, engine_idx) for every polygon
-        in the dataset that contains it.
-
-        Crosses the Python/Rust boundary once; loops in Rust via rayon.
-        Engine must be a polygon dataset.
+        """For each query point, (query_idx, engine_idx) for every containing Engine polygon.
 
         Args:
             query_xs: Contiguous float64 array of query x coordinates, shape (N,).
@@ -649,8 +614,6 @@ class Engine:
         k: int,
     ) -> tuple[np.ndarray, np.ndarray]:
         """For each query point, return the k nearest polygons by point-to-polygon distance.
-
-        Engine must be a polygon dataset.
 
         Args:
             query_xs: Contiguous float64 array of query x coordinates.
@@ -700,8 +663,6 @@ class Engine:
 
     def points_within_distance_of_polygon(self, polygon, distance: float) -> np.ndarray:
         """Return indices of engine points within `distance` of a query polygon.
-
-        Engine must be a point dataset.
 
         Args:
             polygon: A shapely Polygon or MultiPolygon (interior holes supported); a
@@ -755,12 +716,7 @@ class Engine:
 
     @property
     def index_bytes(self) -> int:
-        """Heap bytes allocated by all currently-built spatial indexes.
-
-        Excludes the coordinate arrays (xs/ys), which exist regardless of index
-        construction. Returns 0 if no query has been issued yet (indexes are built
-        lazily). Use this to measure the marginal memory cost of index construction.
-        """
+        """Heap bytes of all built indexes, excluding the xs/ys arrays (0 before any build)."""
         return self._core.index_bytes()
 
     @property

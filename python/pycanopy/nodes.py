@@ -13,8 +13,8 @@ import polars as pl
 
 
 class PluginPath(Enum):
-    EXPR = auto()  # expression plugin — default path
-    IO = auto()  # IO plugin — wide DataFrame + high selectivity
+    EXPR = auto()  # expression plugin, default path
+    IO = auto()  # IO plugin, wide DataFrame plus high selectivity
 
 
 @dataclass
@@ -72,9 +72,8 @@ class FusedSpatialNode:
 class KnnJoinNode:
     """Spatial join: for each row in query_df find k nearest in Engine's dataset.
 
-    Acts as a barrier in the plan — no nodes are reordered past it.
-    Result columns: all query_df columns followed by all Engine df columns
-    (conflicting names in the right side are prefixed with 'right_').
+    Acts as a barrier in the plan. Output is query_df columns then Engine df columns
+    (conflicting right-side names prefixed 'right_').
     """
 
     query_df: pl.DataFrame
@@ -88,9 +87,8 @@ class KnnJoinNode:
 class WithinJoinNode:
     """Spatial join: for each point in query_df find which Engine polygons contain it.
 
-    Acts as a barrier in the plan. Engine must be a polygon dataset.
-    Result columns: all query_df columns followed by all Engine df columns
-    (conflicting names in the right side are prefixed with 'right_').
+    Acts as a barrier on a polygon dataset. Output is query_df columns then Engine df
+    columns (conflicting right-side names prefixed 'right_').
     """
 
     query_df: pl.DataFrame
@@ -103,9 +101,8 @@ class WithinJoinNode:
 class WithinDistanceJoinNode:
     """Spatial join: for each point in query_df find Engine points within `distance`.
 
-    Acts as a barrier in the plan. Engine must be a point dataset.
-    Result columns: all query_df columns followed by all Engine df columns
-    (conflicting names in the right side are prefixed with 'right_').
+    Acts as a barrier on a point dataset. Output is query_df columns then Engine df
+    columns (conflicting right-side names prefixed 'right_').
     """
 
     query_df: pl.DataFrame
@@ -119,10 +116,8 @@ class WithinDistanceJoinNode:
 class PolygonWithinDistanceJoinNode:
     """Spatial join: for each point in query_df find Engine polygons within `distance`.
 
-    Acts as a barrier in the plan. Engine must be a polygon dataset. Distance is
-    measured to the polygon boundary (zero when the point is inside).
-    Result columns: all query_df columns followed by all Engine df columns
-    (conflicting names in the right side are prefixed with 'right_').
+    Acts as a barrier on a polygon dataset. Distance is to the polygon boundary (zero
+    inside). Output is query_df columns then Engine df columns (conflicts prefixed 'right_').
     """
 
     query_df: pl.DataFrame
@@ -148,8 +143,8 @@ class PointsWithinDistanceOfPolygonNode:
 class IntersectsSelfJoinNode:
     """Spatial self-join: all intersecting polygon pairs with overlap area and IoU.
 
-    Polygon datasets only. Acts as a terminal barrier — it produces a pair frame
-    (left, right, area_left, area_right, overlap_area, iou), not a row subset.
+    Polygon datasets only. A terminal barrier that produces a pair frame (left, right,
+    area_left, area_right, overlap_area, iou) rather than a row subset.
     """
 
 
@@ -157,10 +152,9 @@ class IntersectsSelfJoinNode:
 class PolygonKnnJoinNode:
     """Spatial join: for each point in query_df find its k nearest Engine polygons.
 
-    Acts as a barrier in the plan. Engine must be a polygon dataset. Ranking is by
-    exact point-to-polygon distance. A 'distance_to_polygon' column is appended.
-    Result columns: all query_df columns followed by all Engine df columns
-    (conflicting names in the right side are prefixed with 'right_').
+    Acts as a barrier on a polygon dataset. Ranks by exact point-to-polygon distance and
+    appends a 'distance_to_polygon' column. Output is query_df then Engine df columns
+    (conflicts prefixed 'right_').
     """
 
     query_df: pl.DataFrame

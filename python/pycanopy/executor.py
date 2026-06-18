@@ -25,9 +25,8 @@ from pycanopy.nodes import (
     WithinJoinNode,
 )
 
-# Internal column name used to track original row positions through scalar filters.
-# Engine results are always indices into the original dataset, so we need to
-# correlate them with post-filter rows using this persistent index.
+# Internal column tracking original row positions through scalar filters. Engine results
+# are indices into the original dataset and must correlate with post-filter rows.
 _ROW_IDX = "__orig_row__"
 
 # Join node types. All carry a `query_df` probe side, which is what gets streamed.
@@ -39,12 +38,8 @@ _JOIN_TYPES = (
     PolygonKnnJoinNode,
 )
 
-# Probe rows processed per morsel when a join's query side is streamed. A fixed,
-# cache and memory friendly constant in the spirit of a vectorised execution unit
-# (DuckDB-style: a tuned constant, not a per-query fanout prediction). At typical
-# fanout the per-morsel transient is a few hundred MB, and the value is validated at
-# SF1. Callers override per query via batch_size on collect / collect_batched. A join
-# whose probe fits in one morsel skips streaming entirely.
+# Probe rows per morsel when a join's query side is streamed (DuckDB-style fixed constant,
+# not a fanout prediction). Overridable via batch_size. Small probes skip streaming.
 MORSEL_ROWS = 1_048_576
 
 
@@ -206,14 +201,8 @@ class SpatialExecutor:
         batch_size: int | None,
     ) -> pl.DataFrame:
         """Run the optimised plan, dispatching scalar / IO / EXPR / streamed-join paths."""
-        # EXPR path requires x_col/y_col as real DataFrame columns (point datasets).
-        # Polygon SpatialFrames use synthetic coordinate column names that don't
-        # exist in df; degrade gracefully to the IO path in that case.
-        # Exception: join nodes are handled directly by the executor and do not
-        # use the plugin expression machinery, so they stay on EXPR path.
-        # Scalar-only fast path: no spatial ops means no index machinery needed.
-        # Feed filters directly to Polars as a zero-copy lazy chain — no _ROW_IDX
-        # column, no executor dispatch overhead, no bitmap allocation.
+        # Scalar-only fast path with no spatial ops. Feed filters straight to Polars as a
+        # zero-copy lazy chain (no _ROW_IDX, no dispatch, no bitmap).
         if all(isinstance(n, ScalarNode) for n in plan):
             lf = sf.df.lazy()
             for node in plan:
@@ -237,6 +226,9 @@ class SpatialExecutor:
                 frames = self._stream_join_frames(plan, sf, morsel)
                 return pl.concat(frames, how="vertical", rechunk=True)
 
+        # EXPR needs x_col/y_col as real columns (point datasets). Polygon frames use
+        # synthetic coord names absent from df and degrade to IO. Joins bypass the plugin
+        # machinery and stay on EXPR.
         if plugin_path == PluginPath.EXPR and sf.x_col not in sf.df.columns and not has_joins:
             plugin_path = PluginPath.IO
 
@@ -258,13 +250,10 @@ class SpatialExecutor:
     ) -> Iterator[pl.DataFrame]:
         """Yield the plan's result one morsel-frame at a time.
 
-        For a plan containing a spatial join the probe side is sliced into morsels
-        of batch_size rows (default MORSEL_ROWS); each morsel is joined and yielded
-        as its own DataFrame, so a caller can reduce it (group_by, count) before the
-        next morsel is computed and the full join result never materialises at once.
-
-        Plans without a join yield a single frame (the whole result) so the iterator
-        form is always usable.
+        For a join plan the probe is sliced into batch_size-row morsels (default
+        MORSEL_ROWS). Each is joined and yielded on its own so a caller can reduce it
+        before the next is computed and the full result never materialises at once.
+        Plans without a join yield a single frame.
 
         Args:
             plan: Execution-ordered plan from SpatialOptimizer.
@@ -283,12 +272,9 @@ class SpatialExecutor:
     def _stream_join_frames(self, plan: Plan, sf, morsel_rows: int) -> Iterator[pl.DataFrame]:
         """Slice the join's probe into morsels, emit each joined frame in turn.
 
-        The first join node is the streaming axis; its query_df is sliced with
-        iter_slices (a zero-copy view per slice). Each slice is run through the
-        existing join emitter with query_df replaced by the slice, then any nodes
-        after the join are applied to that morsel's result. Streaming is exact
-        because a join is row-independent: a probe row's matches do not depend on
-        which morsel its neighbours fall in, so the morsels partition the result.
+        The first join node is the streaming axis. Its query_df is sliced zero-copy via
+        iter_slices and run through the join emitter, then post-join nodes apply per
+        morsel. Exact because a join is row-independent so morsels partition the result.
 
         Args:
             plan: Execution-ordered plan containing at least one join node.
@@ -444,8 +430,8 @@ class SpatialExecutor:
         self, node: KnnNode, sf, lf: pl.LazyFrame, has_prior_scalar: bool = False
     ) -> pl.LazyFrame:
         if has_prior_scalar:
-            # Scalars ran first — M survivors arrive via _ROW_IDX. Linear scan over
-            # those M rows to find k nearest; no global index query needed.
+            # Scalars ran first. M survivors arrive via _ROW_IDX. A linear scan over those
+            # M rows finds the k nearest without a global index query.
             return lf.filter(_knn_plugin_expr(node.qx, node.qy, node.k, sf.engine))
         indices = sf.engine.knn(node.qx, node.qy, node.k, node.approximate)
         return self._filter_by_indices(lf, indices)
@@ -479,10 +465,9 @@ class SpatialExecutor:
     # join nodes
 
     def _emit_knn_join(self, node: KnnJoinNode, sf, lf: pl.LazyFrame) -> pl.LazyFrame:
-        """For each row in query_df find k nearest in Engine's dataset.
+        """For each row in query_df, find the k nearest in the Engine's dataset.
 
-        The current lf (representing the filtered target) is replaced by the
-        join result. __orig_row__ is not present in the output.
+        Replaces lf with the join result (no __orig_row__ in the output).
         """
         query_xs = node.query_df[node.x_col].to_numpy()
         query_ys = node.query_df[node.y_col].to_numpy()
@@ -502,10 +487,9 @@ class SpatialExecutor:
         return pl.concat([query_part, target_part], how="horizontal").lazy()
 
     def _emit_within_join(self, node: WithinJoinNode, sf, lf: pl.LazyFrame) -> pl.LazyFrame:
-        """For each point in query_df find the Engine polygons that contain it.
+        """For each point in query_df, find the Engine polygons that contain it.
 
-        Engine must be a polygon dataset. Returns one row per (query, polygon) match.
-        The current lf is replaced by the join result.
+        Polygon dataset only with one row per (query, polygon) match. Replaces lf.
         """
         query_xs = node.query_df[node.x_col].to_numpy()
         query_ys = node.query_df[node.y_col].to_numpy()
@@ -532,10 +516,10 @@ class SpatialExecutor:
     def _emit_within_distance_join(
         self, node: WithinDistanceJoinNode, sf, lf: pl.LazyFrame
     ) -> pl.LazyFrame:
-        """For each query point find Engine points within node.distance.
+        """For each query point, find Engine points within node.distance.
 
-        When node.flip is True the query side is indexed and engine points are
-        iterated — cheaper when len(query_df) << engine.n.
+        When node.flip, indexes the query side and iterates engine points instead,
+        which is cheaper when len(query_df) << engine.n.
         """
         query_xs = node.query_df[node.x_col].to_numpy()
         query_ys = node.query_df[node.y_col].to_numpy()

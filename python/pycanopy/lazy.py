@@ -110,7 +110,7 @@ def _fmt_plan(plan: Plan, path: PluginPath | None, n: int) -> str:
 class SpatialLazyFrame:
     """Builds a spatial query plan declaratively. Declaration order is not execution order.
 
-    All methods return a new SpatialLazyFrame with the node appended; no mutation.
+    All methods return a new SpatialLazyFrame with the node appended without mutation.
     The optimizer reorders filter nodes by cost when .collect() is called.
     Join nodes (knn_join, within_join) act as barriers and are never reordered.
 
@@ -125,10 +125,6 @@ class SpatialLazyFrame:
 
     def filter(self, expr: pl.Expr) -> SpatialLazyFrame:
         """Add a scalar Polars expression filter.
-
-        The expression is stored as a plan node and evaluated by Polars (not the
-        spatial engine). The optimizer may reorder it relative to spatial nodes
-        based on selectivity estimates.
 
         Args:
             expr: Any Polars expression that evaluates to a boolean column.
@@ -204,12 +200,10 @@ class SpatialLazyFrame:
         k: int,
         approximate: bool = False,
     ) -> SpatialLazyFrame:
-        """Spatial join: for each row in query_df find its k nearest neighbours
-        in this Engine's dataset.
+        """Spatial join: for each row in query_df find its k nearest in this Engine's dataset.
 
-        Acts as a barrier — no plan nodes are reordered past a join.
-        Result has query_df columns followed by Engine df columns (right-side
-        columns that conflict are prefixed with 'right_').
+        Result columns are query_df's followed by the Engine df's (conflicting right-side
+        columns are prefixed with 'right_').
 
         Args:
             query_df: DataFrame of query points.
@@ -235,9 +229,8 @@ class SpatialLazyFrame:
     ) -> SpatialLazyFrame:
         """Spatial join: for each point in query_df find Engine points within `distance`.
 
-        Acts as a barrier — no plan nodes are reordered past a join.
-        Result has query_df columns followed by Engine df columns (right-side
-        columns that conflict are prefixed with 'right_').
+        Result columns are query_df's followed by the Engine df's (conflicting right-side
+        columns are prefixed with 'right_').
 
         Args:
             query_df: DataFrame of query points.
@@ -262,9 +255,8 @@ class SpatialLazyFrame:
         """Spatial join: for each point in query_df find the Engine polygons
         that contain it. Engine must be a polygon dataset.
 
-        Acts as a barrier — no plan nodes are reordered past a join.
-        Result has query_df columns followed by Engine df columns (right-side
-        columns that conflict are prefixed with 'right_').
+        Result columns are query_df's followed by the Engine df's (conflicting right-side
+        columns are prefixed with 'right_').
 
         Args:
             query_df: DataFrame of query points.
@@ -288,9 +280,8 @@ class SpatialLazyFrame:
     ) -> SpatialLazyFrame:
         """Spatial join: for each point in query_df find Engine polygons within `distance`.
 
-        Engine must be a polygon dataset. Distance is measured to the polygon
-        boundary (zero when the point is inside). Acts as a barrier — no plan
-        nodes are reordered past a join.
+        Distance is to the polygon boundary (zero when the point is inside). Result columns
+        are query_df's then the Engine df's (conflicting right-side columns prefixed 'right_').
 
         Args:
             query_df: DataFrame of query points.
@@ -315,8 +306,8 @@ class SpatialLazyFrame:
     ) -> SpatialLazyFrame:
         """Spatial join: for each point in query_df find its k nearest Engine polygons.
 
-        Engine must be a polygon dataset. Ranking is by exact point-to-polygon
-        distance and a 'distance_to_polygon' column is appended. Acts as a barrier.
+        Ranking is by exact point-to-polygon distance and a 'distance_to_polygon' column
+        is appended.
 
         Args:
             query_df: DataFrame of query points.
@@ -335,8 +326,8 @@ class SpatialLazyFrame:
     def points_within_distance_of_polygon(self, polygon, distance: float) -> SpatialLazyFrame:
         """Keep points within `distance` of a single query polygon (point dataset).
 
-        Distance is measured to the polygon boundary (zero when the point is inside).
-        Behaves like a spatial filter: the result is a subset of this frame's rows.
+        Distance is measured to the polygon boundary (zero when the point is inside). The
+        result is a subset of this frame's rows like a spatial filter.
 
         Args:
             polygon: A single shapely Polygon (interior holes supported).
@@ -353,9 +344,6 @@ class SpatialLazyFrame:
     def intersects_pairs(self) -> SpatialLazyFrame:
         """Find all intersecting polygon pairs with overlap area and IoU (polygon dataset).
 
-        Terminal self-join: the result is a pair frame (left, right, area_left,
-        area_right, overlap_area, iou), one row per unordered intersecting pair.
-
         Returns:
             New SpatialLazyFrame with the intersects self-join node appended.
         """
@@ -364,9 +352,8 @@ class SpatialLazyFrame:
     def explain(self) -> str:
         """Return a human-readable description of the computed query plan.
 
-        Shows the plan after the optimizer has run: reordered operations, any fused
-        spatial predicates, and the chosen execution path (EXPR or IO) — i.e. what
-        collect() will actually execute, not the declaration order.
+        Shows the optimised plan that collect() will execute (reordered operations, fused
+        predicates, chosen EXPR or IO path) rather than the declaration order.
 
         Returns:
             Multi-line string describing the plan. Print it for readable output.
@@ -380,11 +367,9 @@ class SpatialLazyFrame:
     def collect(self, batch_size: int | None = None) -> pl.DataFrame:
         """Optimise (SpatialOptimizer) and execute (SpatialExecutor) the plan.
 
-        If the plan ends in a spatial join whose probe exceeds the morsel size, the
-        probe is streamed in morsels and the results concatenated, keeping the join
-        intermediate bounded; the result is identical to the unstreamed one. Use
-        collect_batched to reduce per morsel instead of concatenating. Indexing is
-        governed by the frame's index mode, fixed at construction.
+        A plan ending in a large-probe spatial join streams the probe in morsels and
+        concatenates, bounding the intermediate with an identical result. Use
+        collect_batched to reduce per morsel instead. Indexing follows the frame's mode.
 
         Args:
             batch_size: Probe rows per morsel for streamed joins. Defaults to
@@ -402,14 +387,8 @@ class SpatialLazyFrame:
     def collect_batched(self, batch_size: int | None = None) -> Iterator[pl.DataFrame]:
         """Execute the plan and yield the result one morsel-frame at a time.
 
-        For a plan ending in a spatial join the probe is sliced into morsels of
-        batch_size rows (default MORSEL_ROWS); each morsel is joined and yielded
-        separately, so the full join result never materialises at once. Callers
-        reduce each morsel (group_by, count, ...) before requesting the next; count
-        and sum combine additively across morsels. Plans without a join yield a
-        single frame. Two joins streamed from the same source table (equal height
-        and batch_size) yield morsel-aligned batches, so merging their i-th batches
-        is local and exact.
+        A join plan yields the result one joined morsel at a time so the full result never
+        materialises. Plans without a join yield one frame.
 
         Args:
             batch_size: Probe rows per morsel. Defaults to MORSEL_ROWS.
@@ -426,12 +405,8 @@ class SpatialLazyFrame:
     def collect_all(frames: list[SpatialLazyFrame]) -> list[pl.DataFrame]:
         """Collect multiple SpatialLazyFrames, caching any shared plan prefix.
 
-        Frames branched from the same base share plan nodes as identical Python
-        objects (plans are built via [*self._plan, new_node], reusing references).
-        This emits the shared prefix once as a cached Polars LazyFrame, builds each
-        branch's suffix from it, and collects all branches in one pl.collect_all()
-        call. Falls back to independent collect() calls when no common prefix is
-        found. All frames must belong to the same SpatialFrame.
+        Caches the plan prefix shared by frames branched from the same base, emitting it
+        once and building each branch's suffix from it.
 
         Args:
             frames: SpatialLazyFrames to collect. Must share a SpatialFrame.

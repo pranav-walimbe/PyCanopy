@@ -4,7 +4,7 @@ Passes (in order):
   1. _assign_selectivity: estimate selectivity for each node from engine stats
   2. _cost_sort: reorder scalar vs. spatial based on selectivity
   3. _fusion_pass: merge consecutive fusable spatial nodes
-  4. _join_side_pass: set flip=True on symmetric joins where query side is smaller
+  4. _join_side_pass: set flip=True on symmetric joins where query side is larger
   5. _detect_fanout: find the longest shared plan prefix across branches
      (used by collect_all to insert a Polars .cache() barrier)
 """
@@ -30,9 +30,8 @@ from pycanopy.nodes import (
     WithinJoinNode,
 )
 
-# Spatial nodes with selectivity below this threshold are too selective to fuse —
-# Polars' natural cascade leaves so few rows that a fresh index build on survivors
-# is cheaper than building on the full M rows.
+# Spatial nodes with selectivity below this threshold are too selective to fuse. Polars'
+# cascade leaves so few rows that a fresh index build on survivors beats the full M rows.
 _FUSION_SELECTIVITY_FLOOR = 0.05
 
 # Datasets smaller than this always use BruteForce; fusion overhead isn't worth it.
@@ -143,10 +142,8 @@ class SpatialOptimizer:
     def _assign_selectivity(self, plan: Plan, engine) -> Plan:
         """Estimate and attach selectivity to each node.
 
-        Spatial nodes use area-ratio or k/N estimates from engine stats.
-        Scalar nodes default to 1.0 — column histograms are not yet wired up.
-        Creates new node instances via dataclasses.replace so the originals
-        stored in SpatialLazyFrame._plan are never mutated.
+        Spatial nodes use area-ratio or k/N estimates from engine stats. Scalar nodes
+        default to 1.0 (column histograms are not yet wired up).
 
         Args:
             plan: Plan in any order.
@@ -189,9 +186,9 @@ class SpatialOptimizer:
     def _cost_sort(self, plan: Plan) -> Plan:
         """Reorder nodes so cheaper operations run first.
 
-        KnnNode, KnnJoinNode, and WithinJoinNode act as barriers — nodes on either
-        side are sorted independently. Within each run: scalar nodes go first
-        (Polars handles them cheaply), then spatial nodes sorted by ascending selectivity.
+        Joins and KNN act as barriers so nodes on either side sort independently. Within a
+        run, scalar nodes go first (Polars handles them cheaply), then spatials by ascending
+        selectivity.
 
         Args:
             plan: Plan with selectivity populated.
@@ -233,7 +230,7 @@ class SpatialOptimizer:
           - Adjacent spatial filter nodes with no scalar between them.
           - Selectivity >= _FUSION_SELECTIVITY_FLOOR (first predicate selective enough
             that Polars cascade won't shrink the second build cheaply on its own).
-          - N >= _FUSION_MIN_N (BruteForce dominates below this; marginal benefit).
+          - N >= _FUSION_MIN_N (BruteForce dominates below this).
 
         Runs are split at any node that fails the conditions.
 
@@ -278,9 +275,9 @@ class SpatialOptimizer:
     def _join_side_pass(self, plan: Plan, engine) -> Plan:
         """Set flip=True on join nodes where indexing the query side is cheaper.
 
-        Flips when len(query_df) < engine.n // 2 so the existing Engine index
+        Flips when len(query_df) > engine.n // 2 so the existing Engine index
         is not abandoned for a marginal size difference. knn_join is asymmetric
-        and never flipped; within_join and within_distance_join are symmetric.
+        and never flipped. within_join and within_distance_join are symmetric.
 
         Args:
             plan: Fusion-sorted plan.
@@ -300,10 +297,9 @@ class SpatialOptimizer:
     def _detect_fanout(self, plans: list[Plan]) -> int:
         """Return the length of the longest plan prefix shared by all plans.
 
-        A node at position i is shared if it is the same Python object across every
-        plan; the first diverging position ends the prefix. Identity works because
-        SpatialLazyFrame builds plans via [*self._plan, new_node], reusing node
-        references rather than copying them.
+        A node is shared when it is the same Python object across every plan, so the first
+        diverging position ends the prefix. Identity holds because plans are built via
+        [*self._plan, new_node], reusing node references.
 
         Args:
             plans: Two or more plans to compare.
@@ -323,17 +319,10 @@ class SpatialOptimizer:
     def _select_plugin_path(self, plan: Plan, engine) -> PluginPath:
         """Choose expression plugin (default) or IO plugin.
 
-        IO path: queries the pre-built Engine on N rows, slices sf.df to K candidates,
-        then applies scalar filters on K. Wins when spatial selectivity is tight
-        (K << N) so the index query is fast and the slice is small.
-
-        EXPR path: emits map_batches(is_elementwise=False) expressions. Polars runs
-        scalar filters first (barrier semantics), then the closure builds a fresh
-        local index on M remaining rows. Wins for moderate selectivity where M is
-        meaningfully smaller than N and rebuilding is cheap.
-
-        Join nodes and KNN always use EXPR — they need the global Engine index and
-        the _ROW_IDX correlation mechanism that the IO path skips.
+        The IO path queries the pre-built Engine then slices sf.df to K candidates, winning
+        at tight selectivity (K << N). The EXPR path runs scalar filters first then rebuilds
+        a local index on the M survivors, winning at moderate selectivity. Join nodes and
+        KNN always use EXPR for the global Engine index and _ROW_IDX correlation.
 
         Args:
             plan: Optimised plan with selectivity populated.

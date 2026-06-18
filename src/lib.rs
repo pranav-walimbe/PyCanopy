@@ -46,9 +46,8 @@ struct Engine {
     /// None for point datasets; Some for polygon datasets.
     /// ring_offsets[r]..ring_offsets[r+1] gives ring r's coordinate range.
     ring_offsets: Option<Arc<[i64]>>,
-    /// None for point datasets; Some for polygon datasets (always set alongside ring_offsets).
-    /// poly_offsets[i]..poly_offsets[i+1] gives polygon i's ring range in ring_offsets.
-    /// First ring per polygon is exterior; remaining rings are interior holes.
+    /// poly_offsets[i]..poly_offsets[i+1] gives polygon i's ring range. The first ring is
+    /// the exterior and the rest are interior holes. Set alongside ring_offsets.
     poly_offsets: Option<Arc<[i64]>>,
     stats: stats::types::DatasetStats,
     brute: Option<BruteForce>,
@@ -56,13 +55,10 @@ struct Engine {
     kdtree: Option<PackedKdTree>,
     grid: Option<UniformGrid>,
     /// Delta buffer: points appended since last flush (point datasets only).
-    /// Queries hit the main index + brute-force scan of delta.
-    /// Flushed when accumulated brute-force scan cost exceeds index rebuild cost,
-    /// or when delta exceeds DELTA_FLUSH_FRACTION of the main dataset (hard cap).
+    /// Queries hit the main index plus a brute-force scan of the delta.
     delta_xs: Vec<f64>,
     delta_ys: Vec<f64>,
-    /// Accumulated brute-force scan cost across all queries that touched the delta.
-    /// Each query increments this by delta_xs.len(). Reset to 0 on flush.
+    /// Accumulated delta-scan cost that drives the cost-based flush. Reset to 0 on flush.
     delta_query_cost: u64,
     /// Index build policy: Eager (default) / None / Auto.
     index_mode: IndexMode,
@@ -300,9 +296,7 @@ impl Engine {
 #[pymethods]
 impl Engine {
     /// Construct from contiguous float64 numpy arrays of x and y coordinates.
-    ///
-    /// Copies once from the numpy buffer into an Arc<[f64]>. All subsequent index
-    /// builds share this allocation via Arc::clone — no further coordinate copying.
+    /// Copies once into an Arc<[f64]> that all later index builds share via Arc::clone.
     #[staticmethod]
     fn from_points(xs: PyReadonlyArray1<f64>, ys: PyReadonlyArray1<f64>) -> PyResult<Self> {
         let xs_sl = xs
@@ -336,16 +330,11 @@ impl Engine {
         })
     }
 
-    /// Construct from two-level polygon ring arrays (supports holes).
+    /// Construct from two-level polygon ring arrays (supports holes and MultiPolygons).
     ///
-    /// ring_offsets has total_rings + 1 entries; ring r uses coordinates
-    /// xs[ring_offsets[r]..ring_offsets[r+1]].
-    /// poly_offsets has n_parts + 1 entries; part i uses rings
-    /// poly_offsets[i]..poly_offsets[i+1]. The first ring is the exterior;
-    /// any remaining rings are interior holes. A part is one single-exterior
-    /// polygon. part_poly, when given, maps each part to its logical polygon so
-    /// MultiPolygons (several parts per polygon) are supported; None means one
-    /// part per polygon. Copies once from each numpy buffer into Arc<[_]>.
+    /// ring_offsets and poly_offsets use the layout documented on the struct fields.
+    /// part_poly maps each part to its logical polygon (None means one part per polygon).
+    /// Copies once from each numpy buffer into Arc<[_]>.
     #[staticmethod]
     #[pyo3(signature = (xs, ys, ring_offsets, poly_offsets, part_poly=None))]
     fn from_polygon_rings(
@@ -399,8 +388,7 @@ impl Engine {
                 )));
             }
         }
-        // part_poly maps parts to logical polygons (MultiPolygon support); None is the
-        // single-part-per-polygon case, where the part index already is the polygon index.
+        // part_poly maps parts to logical polygons. None means part index == polygon index.
         let (part_poly_arc, n_polygons): (Option<Arc<[u32]>>, usize) = match part_poly {
             Some(pp) => {
                 let pp_sl = pp.as_slice().map_err(|_| {
@@ -428,10 +416,8 @@ impl Engine {
 
     /// Construct a polygon Engine directly from a WKB column, with no shapely roundtrip.
     ///
-    /// `data` is the concatenated WKB value buffer and `offsets` the n+1 value bounds,
-    /// so geometry i is data[offsets[i]..offsets[i+1]]. Decodes Polygon / MultiPolygon
-    /// in one pass into the flat ring arrays; raises for any other WKB variant so the
-    /// caller can fall back to shapely.
+    /// Geometry i is data[offsets[i]..offsets[i+1]]. Decodes Polygon / MultiPolygon in one
+    /// pass. Raises for any other WKB variant so the caller can fall back to shapely.
     #[staticmethod]
     fn from_wkb_polygons(
         data: PyReadonlyArray1<u8>,
@@ -458,10 +444,8 @@ impl Engine {
         ))
     }
 
-    /// Build the optimal index for this dataset without issuing any query.
-    ///
-    /// Uses a representative range query to select and construct the index. Safe
-    /// to call multiple times; no-op if the index is already built.
+    /// Build the optimal index for this dataset without issuing any query, via a
+    /// representative range query. Idempotent and a no-op if the index is already built.
     fn build_index(&mut self) -> PyResult<()> {
         let kind = select_index(
             &self.stats,
@@ -611,12 +595,9 @@ impl Engine {
         Ok(result)
     }
 
-    /// Intersect multiple bounding-box queries using sorted merge on hit arrays.
-    ///
-    /// Runs each range query independently then intersects results via a two-pointer
-    /// sorted merge. Operates in O(K * |H|) rather than O(K * N) bitmap AND passes,
-    /// where |H| is the per-predicate hit count and K is the predicate count.
-    /// Short-circuits when the running intersection becomes empty.
+    /// Intersect multiple bbox queries via two-pointer sorted merge on the hit arrays.
+    /// O(K * |H|) over K predicates and per-predicate hit count |H| rather than O(K * N)
+    /// bitmap ANDs. Short-circuits once the running intersection is empty.
     fn intersect_ranges(&mut self, queries: Vec<(f64, f64, f64, f64)>) -> PyResult<Vec<usize>> {
         if queries.is_empty() {
             return Ok(vec![]);
@@ -635,12 +616,9 @@ impl Engine {
         Ok(acc)
     }
 
-    /// k-nearest-neighbour query restricted to a candidate subset of the dataset.
-    ///
-    /// survivor_indices is a contiguous uint32 array of M row positions in the full
-    /// dataset. Computes squared distances from (x, y) to each survivor directly
-    /// from the coordinate arrays, then partial-sorts to find the k nearest.
-    /// O(M + k log k) — exact, no index traversal, no oversampling.
+    /// kNN restricted to a candidate subset. survivor_indices holds M uint32 row positions
+    /// in the full dataset. Squared distance to each survivor then a partial sort for the
+    /// top k. O(M + k log k) and exact with no index traversal.
     fn knn_from_candidates(
         &self,
         x: f64,
@@ -770,11 +748,8 @@ impl Engine {
         Ok(result)
     }
 
-    /// Append new points to the delta buffer (point datasets only).
-    ///
-    /// Queries immediately reflect the new points via brute-force delta scan.
-    /// The delta is automatically flushed into the main index when it exceeds
-    /// DELTA_FLUSH_FRACTION of the main dataset size.
+    /// Append new points to the delta buffer (point datasets only). Queries reflect them
+    /// immediately via the delta scan. Auto-flushed past DELTA_FLUSH_FRACTION of the main.
     fn append_delta(
         &mut self,
         xs: PyReadonlyArray1<f64>,
@@ -814,11 +789,8 @@ impl Engine {
         self.delta_xs.len()
     }
 
-    /// For each query point, return the k nearest neighbours in the Engine's dataset.
-    ///
-    /// Crosses the Python/Rust boundary once; loops in Rust via rayon.
-    /// Returns a flat array of shape `(n_queries * k,)`: block `i` holds the k
-    /// result indices for query point `i`, sorted nearest-first.
+    /// For each query point, return its k nearest neighbours in the Engine's dataset,
+    /// nearest-first.
     fn batch_knn_join<'py>(
         &mut self,
         py: Python<'py>,
@@ -906,13 +878,11 @@ impl Engine {
         Ok(PyArray1::from_vec(py, results))
     }
 
-    /// For each query point, return (query_idx, engine_idx) pairs for every engine
-    /// point within `distance` of it (Euclidean). Point datasets only.
+    /// For each query point, return (query_idx, engine_idx) pairs for every engine point
+    /// within `distance` (Euclidean). Point datasets only.
     ///
-    /// `flipped`: when true, indexes the query points and iterates engine points instead.
-    /// Produces identical results but is cheaper when len(query) << engine.n.
-    ///
-    /// Returns a flat u64 array of shape (M * 2,) interleaved [q0, e0, q1, e1, ...].
+    /// `flipped` indexes the query side and iterates engine points instead. Same results
+    /// and cheaper when len(query) >> engine.n.
     fn batch_within_distance<'py>(
         &mut self,
         py: Python<'py>,
@@ -985,11 +955,7 @@ impl Engine {
         Ok(PyArray1::from_vec(py, pairs))
     }
 
-    /// For each query point, return its position in the query array if it falls
-    /// within the given bounding box.
-    ///
-    /// Crosses the Python/Rust boundary once; filters in Rust via rayon.
-    /// Returns indices (into the query arrays) of matching points, in order.
+    /// Return the query-array positions of the points within the bounding box in order.
     #[allow(clippy::too_many_arguments)]
     fn batch_within<'py>(
         &self,
@@ -1016,13 +982,8 @@ impl Engine {
         Ok(PyArray1::from_vec(py, results))
     }
 
-    /// For each query point, return (query_idx, engine_idx) pairs for every polygon
-    /// in the Engine's dataset that contains that point.
-    ///
-    /// Crosses the Python/Rust boundary once; loops in Rust via rayon.
-    /// Engine must be a polygon dataset. Returns a flat u64 array of shape (M * 2,)
-    /// where M is the total number of (query, polygon) matches: pairs are interleaved
-    /// [q0, e0, q1, e1, ...] for easy reshaping to (-1, 2) in Python.
+    /// For each query point, return (query_idx, engine_idx) pairs for every polygon that
+    /// contains it. Polygon dataset only.
     fn batch_contains<'py>(
         &mut self,
         py: Python<'py>,
@@ -1435,12 +1396,8 @@ impl Engine {
         Ok(convex_hull_area(xs_sl, ys_sl))
     }
 
-    /// Heap bytes allocated by all currently-built spatial indexes.
-    ///
-    /// Excludes the coordinate arrays (xs/ys), which exist regardless of whether an
-    /// index has been built. Returns 0 if no index has been built yet. Sums all built
-    /// indexes — in practice at most one is built per query type, but multiple can
-    /// coexist if different query kinds were issued.
+    /// Heap bytes of all currently-built indexes (excludes the always-present xs/ys arrays).
+    /// 0 if none built. Sums every built index. Usually one but several can coexist.
     fn index_bytes(&self) -> usize {
         let mut total = 0;
         if let Some(ref b) = self.brute {

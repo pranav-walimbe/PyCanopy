@@ -12,9 +12,8 @@ from pycanopy.lazy import SpatialLazyFrame
 class SpatialFrame:
     """Owns a materialized DataFrame, a spatial index Engine, and cached column stats.
 
-    All spatial query planning begins with .lazy(). The DataFrame must be fully
-    materialized before construction — the Engine is built from the coordinate
-    columns at this point, making dataset statistics available to the optimizer.
+    All spatial query planning begins with .lazy(). The DataFrame must be materialized
+    before construction since the Engine and its dataset statistics are built here.
 
     Args:
         df: Materialized Polars DataFrame.
@@ -50,9 +49,8 @@ class SpatialFrame:
     ) -> SpatialFrame:
         """Construct a point SpatialFrame from a WKB point column of ``df``.
 
-        The WKB points are decoded to coordinates with a vectorised buffer read
-        (no per-point object allocation for standard 2D little-endian points), and
-        the result is appended as ``x_col`` / ``y_col`` before the index is built.
+        The WKB points are decoded (vectorised for standard 2D LE points) and appended as
+        ``x_col`` / ``y_col`` before the index is built.
 
         Args:
             df: Materialized Polars DataFrame with a WKB point column.
@@ -147,17 +145,12 @@ class SpatialFrame:
     # rather than the lazy plan.
 
     def polygon_areas(self) -> pl.DataFrame:
-        """Return this frame's DataFrame with an appended 'area' column.
-
-        Polygon datasets only. Area is the unsigned geometric area of each polygon.
-        """
+        """Return this frame's DataFrame with an appended unsigned 'area' column (polygon datasets)."""
         areas = self._engine.polygon_areas()
         return self._df.with_columns(pl.Series("area", areas))
 
     def intersects_pairs(self) -> pl.DataFrame:
-        """Return all intersecting polygon pairs with overlap area and IoU.
-
-        Polygon datasets only. One row per unordered intersecting pair (i < j).
+        """Return intersecting polygon pairs (i < j) with overlap area and IoU (polygon datasets).
 
         Returns:
             DataFrame with columns: left, right, area_left, area_right, overlap_area, iou.
@@ -197,9 +190,7 @@ class SpatialFrame:
         )
 
     def points_within_distance_of_polygon(self, polygon, distance: float) -> pl.DataFrame:
-        """Return the rows whose point lies within `distance` of a single polygon.
-
-        Point datasets only. Distance is to the polygon boundary (zero inside).
+        """Return the rows whose point lies within `distance` of a polygon boundary (zero inside).
 
         Args:
             polygon: A single shapely Polygon (interior holes supported).

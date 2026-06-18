@@ -61,14 +61,8 @@ pub fn par_knn_with_delta<I: SpatialIndex + Sync>(
         .collect()
 }
 
-/// For each query point, return (query_idx, polygon_idx) for every polygon in the
-/// Engine's dataset that contains the point. Used for within joins on polygon datasets.
-///
-/// Returns a flat array of interleaved pairs [q0, e0, q1, e1, ...] matching the
-/// layout of par_within_distance and par_within_distance_flipped. The point-in-polygon
-/// test uses the prepared edge index when supplied, else the linear `pip_raw` scan.
-/// part_poly, when present, maps matched parts to their logical polygon and collapses
-/// the per-query duplicates from a point hitting several parts of one MultiPolygon.
+/// For each query point, (query_idx, polygon_idx) for every Engine polygon containing it.
+/// Prepared edge index when supplied else `pip_raw`. part_poly dedups MultiPolygon parts.
 #[allow(clippy::too_many_arguments)]
 pub fn par_contains<I: SpatialIndex + Sync>(
     index: &I,
@@ -114,9 +108,8 @@ pub fn par_contains<I: SpatialIndex + Sync>(
         .collect()
 }
 
-/// For each query point, return (query_idx, engine_idx) for every engine point within `distance`.
-/// Uses a bbox pre-filter via the spatial index, then an exact Euclidean distance check.
-/// Returns a flat array of interleaved pairs [q0, e0, q1, e1, ...].
+/// For each query point, (query_idx, engine_idx) for every engine point within `distance`.
+/// Bbox pre-filter then exact Euclidean check.
 pub fn par_within_distance<I: SpatialIndex + Sync>(
     index: &I,
     qxs: &[f64],
@@ -143,9 +136,8 @@ pub fn par_within_distance<I: SpatialIndex + Sync>(
         .collect()
 }
 
-/// Flipped variant of par_within_distance: indexes the query points and iterates
-/// engine points. Produces the same (query_idx, engine_idx) pairs as par_within_distance
-/// but is cheaper when the number of query points is much smaller than engine points.
+/// Flipped par_within_distance. Indexes the query side and iterates engine points. Same
+/// pairs and cheaper when the query count is much larger than the engine count.
 pub fn par_within_distance_flipped(
     qxs: &[f64],
     qys: &[f64],
@@ -173,12 +165,8 @@ pub fn par_within_distance_flipped(
         .collect()
 }
 
-/// For each query point, return (query_idx, polygon_idx) for every Engine polygon
-/// within `distance` of the point. The Engine index is built over polygon MBRs, so
-/// a query box dilated by `distance` is a superset of candidate polygons; each
-/// candidate is refined with the exact point-to-polygon distance.
-///
-/// Returns a flat array of interleaved pairs [q0, e0, q1, e1, ...].
+/// For each query point, (query_idx, polygon_idx) for every Engine polygon within
+/// `distance`. MBR candidates (box dilated by `distance`) refined by exact distance.
 #[allow(clippy::too_many_arguments)]
 pub fn par_within_distance_to_polygons<I: SpatialIndex + Sync>(
     index: &I,
@@ -222,13 +210,10 @@ pub fn par_within_distance_to_polygons<I: SpatialIndex + Sync>(
         .collect()
 }
 
-/// For each query point, find the k nearest Engine polygons by exact point-to-polygon
-/// distance. The MBR index supplies an over-sampled candidate set (MBR-nearest is only
-/// approximate for true polygon distance), which is then refined and ranked exactly.
-///
-/// Returns (engine_indices, distances), each of length n_queries * k laid out in
-/// per-query blocks. Blocks for queries with fewer than k candidates are padded with
-/// u64::MAX / f64::INFINITY so the layout stays rectangular.
+/// For each query point, the k nearest Engine polygons by exact point-to-polygon distance.
+/// The MBR index over-samples candidates because MBR-nearest only approximates polygon
+/// distance. The candidates are then refined exactly. (indices, distances) in n_queries*k
+/// blocks. Short blocks padded with MAX and inf.
 #[allow(clippy::too_many_arguments)]
 pub fn par_knn_to_polygons<I: SpatialIndex + Sync>(
     index: &I,
@@ -291,11 +276,8 @@ pub fn par_knn_to_polygons<I: SpatialIndex + Sync>(
         )
 }
 
-/// Self-join: every unordered pair (i, j) with i < j of Engine polygons whose
-/// boundaries intersect. The MBR index supplies candidates; each is refined with an
-/// exact polygon-polygon intersection test.
-///
-/// Returns a flat array of interleaved pairs [i0, j0, i1, j1, ...].
+/// Self-join over Engine polygons. Unordered pairs (i, j) with i < j whose boundaries
+/// intersect. MBR candidates refined by an exact polygon-polygon test.
 pub fn par_polygon_intersects_join<I: SpatialIndex + Sync>(
     index: &I,
     xs: &[f64],
@@ -330,10 +312,9 @@ pub fn par_polygon_intersects_join<I: SpatialIndex + Sync>(
         .collect()
 }
 
-/// Filter Engine points to those within `distance` of a single query polygon, which
-/// may be a MultiPolygon (a point qualifies when within `distance` of any of its parts).
-/// The query polygon is given as its own flat ring arrays. The point index is queried
-/// over the polygon MBR dilated by `distance`, then refined with exact distance.
+/// Engine points within `distance` of one query polygon given as its own ring arrays.
+/// A MultiPolygon counts when any part qualifies. Point index over the dilated MBR then
+/// refined by exact distance.
 #[allow(clippy::too_many_arguments)]
 pub fn par_points_within_distance_of_polygon<I: SpatialIndex + Sync>(
     index: &I,
