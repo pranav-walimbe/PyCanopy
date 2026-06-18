@@ -203,6 +203,35 @@ def test_collect_batched_without_join_yields_single_frame(sf):
     assert batches[0].sort(batches[0].columns).equals(expected.sort(expected.columns))
 
 
+def test_sink_parquet_matches_single_shot_collect(sf, tmp_path):
+    query_df = _grid_query(250)
+    out = tmp_path / "knn_join.parquet"
+    sf.lazy().knn_join(query_df, "qx", "qy", k=3).sink_parquet(out, batch_size=50)
+    sunk = pl.read_parquet(out)
+    single = sf.lazy().knn_join(query_df, "qx", "qy", k=3).collect()
+    assert len(sunk) == len(single) == 250 * 3
+    assert sunk.sort(sunk.columns).equals(single.sort(single.columns))
+
+
+def test_sink_parquet_streams_within_distance_join(sf, tmp_path):
+    query_df = _grid_query(300)
+    out = tmp_path / "within_distance.parquet"
+    sf.lazy().within_distance_join(query_df, "qx", "qy", distance=1.1).sink_parquet(
+        out, batch_size=64
+    )
+    sunk = pl.read_parquet(out)
+    single = sf.lazy().within_distance_join(query_df, "qx", "qy", distance=1.1).collect()
+    assert sunk.sort(sunk.columns).equals(single.sort(single.columns))
+
+
+def test_sink_parquet_without_join_writes_single_frame(sf, tmp_path):
+    out = tmp_path / "range.parquet"
+    sf.lazy().range_query(0.0, 0.0, 4.0, 4.0).sink_parquet(out)
+    sunk = pl.read_parquet(out)
+    expected = sf.lazy().range_query(0.0, 0.0, 4.0, 4.0).collect()
+    assert sunk.sort(sunk.columns).equals(expected.sort(expected.columns))
+
+
 def test_streamed_within_join_polygons_matches_single_shot(sf_polygons):
     query_df = pl.DataFrame({"qx": [float(i) + 0.5 for i in range(200)], "qy": [0.5] * 200})
     single = sf_polygons.lazy().within_join(query_df, "qx", "qy").collect()

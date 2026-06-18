@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
 
 import polars as pl
+import pyarrow.parquet as pq
 
 from pycanopy.executor import _ROW_IDX, SpatialExecutor
 from pycanopy.nodes import (
@@ -400,6 +402,27 @@ class SpatialLazyFrame:
         executor = SpatialExecutor()
         optimized = optimizer.optimize(self._plan, self._sf.engine)
         return executor.stream(optimized, self._sf, batch_size)
+
+    def sink_parquet(self, path: str | Path, batch_size: int | None = None) -> None:
+        """Execute the plan and stream its result to a Parquet file in bounded memory.
+
+        Args:
+            path: Destination Parquet file path.
+            batch_size: Probe rows per morsel. Defaults to MORSEL_ROWS.
+        """
+        optimizer = SpatialOptimizer()
+        executor = SpatialExecutor()
+        optimized = optimizer.optimize(self._plan, self._sf.engine)
+        writer: pq.ParquetWriter | None = None
+        try:
+            for morsel in executor.stream(optimized, self._sf, batch_size):
+                table = morsel.to_arrow()
+                if writer is None:
+                    writer = pq.ParquetWriter(str(path), table.schema)
+                writer.write_table(table)
+        finally:
+            if writer is not None:
+                writer.close()
 
     @staticmethod
     def collect_all(frames: list[SpatialLazyFrame]) -> list[pl.DataFrame]:
