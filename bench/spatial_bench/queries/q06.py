@@ -2,8 +2,8 @@
 
 PyCanopy: a polygon range query selects zones whose MBR overlaps the bounding box,
 those candidates are refined to zones truly intersecting it (matching SedonaDB's
-ST_Intersects, which the MBR test only over-approximates), then a within-join counts
-trip pickups per surviving zone.
+ST_Intersects, which the MBR test only over-approximates), then a within aggregate-join
+counts and averages trip pickups per surviving zone without materialising the pair frame.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import numpy as np
 import polars as pl
 from shapely.geometry import box
 
+import pycanopy as pc
 from bench.spatial_bench.utils import wkb_to_polygons
 from pycanopy import wkb_points_to_xy
 
@@ -63,20 +64,20 @@ def pycanopy(tables) -> pl.DataFrame:
 
     trip = tables.table("trip", _TRIP_COLS)
     qx, qy = wkb_points_to_xy(trip["t_pickuploc"])
-    qdf = trip.select(["t_tripkey", "t_totalamount", "t_pickuptime", "t_dropofftime"]).with_columns(
-        pl.Series("qx", qx), pl.Series("qy", qy)
+    qdf = trip.select(["t_totalamount", "t_pickuptime", "t_dropofftime"]).with_columns(
+        pl.Series("qx", qx),
+        pl.Series("qy", qy),
+        duration_seconds=(pl.col("t_dropofftime") - pl.col("t_pickuptime")).dt.total_seconds(),
     )
 
-    joined = cand_sf.lazy().within_join(qdf, "qx", "qy").collect()
-    joined = joined.with_columns(
-        duration_seconds=(pl.col("t_dropofftime") - pl.col("t_pickuptime")).dt.total_seconds()
-    )
     return (
-        joined.group_by(["z_zonekey", "z_name"])
+        cand_sf.lazy()
+        .within_join(qdf, "qx", "qy")
+        .group_by(["z_zonekey", "z_name"])
         .agg(
-            total_pickups=pl.len(),
-            avg_distance=pl.col("t_totalamount").mean(),
-            avg_duration=pl.col("duration_seconds").mean(),
+            total_pickups=pc.agg.count(),
+            avg_distance=pc.agg.mean("t_totalamount"),
+            avg_duration=pc.agg.mean("duration_seconds"),
         )
         .sort(["total_pickups", "z_zonekey"], descending=[True, False])
     )

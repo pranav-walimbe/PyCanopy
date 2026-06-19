@@ -3,7 +3,8 @@
 PyCanopy: a point-to-polygon kNN join of trip pickups against building footprints.
 The library streams the trip points through the building index in morsels and
 concatenates internally, so the join intermediate stays bounded (collect auto-streams
-a large-probe join).
+a large-probe join). A terminal select is pushed into the join, so only the output
+columns are gathered rather than every building attribute.
 """
 
 from __future__ import annotations
@@ -30,5 +31,10 @@ def pycanopy(tables) -> pl.DataFrame:
     qx, qy = wkb_points_to_xy(trip["t_pickuploc"])
     query_df = trip.select("t_tripkey").with_columns(pl.Series("qx", qx), pl.Series("qy", qy))
 
-    joined = sf.lazy().polygon_knn_join(query_df, "qx", "qy", k=K).collect()
+    joined = (
+        sf.lazy()
+        .polygon_knn_join(query_df, "qx", "qy", k=K)
+        .select(["t_tripkey", "b_buildingkey", "distance_to_polygon"])
+        .collect()
+    )
     return joined.sort(["distance_to_polygon", "b_buildingkey"])

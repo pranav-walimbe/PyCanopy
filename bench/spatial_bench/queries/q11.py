@@ -39,8 +39,20 @@ def pycanopy(tables) -> pl.DataFrame:
     pickup_df = keys.with_columns(pl.Series("px", px), pl.Series("py", py))
     dropoff_df = keys.with_columns(pl.Series("dx", dx), pl.Series("dy", dy))
 
-    pickup_batches = sf.lazy().within_join(pickup_df, "px", "py").collect_batched()
-    dropoff_batches = sf.lazy().within_join(dropoff_df, "dx", "dy").collect_batched()
+    # Only t_tripkey and z_zonekey are needed downstream, so push a select into each join
+    # to gather just those two columns rather than the full zone boundary geometry.
+    pickup_batches = (
+        sf.lazy()
+        .within_join(pickup_df, "px", "py")
+        .select(["t_tripkey", "z_zonekey"])
+        .collect_batched()
+    )
+    dropoff_batches = (
+        sf.lazy()
+        .within_join(dropoff_df, "dx", "dy")
+        .select(["t_tripkey", "z_zonekey"])
+        .collect_batched()
+    )
 
     count = 0
     for pickup_joined, dropoff_joined in zip(pickup_batches, dropoff_batches, strict=True):

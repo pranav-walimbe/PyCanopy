@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import polars as pl
 
+import pycanopy as pc
 from pycanopy import wkb_points_to_xy
 
 id = "q4"
@@ -40,9 +41,10 @@ def pycanopy(tables) -> pl.DataFrame:
     zone = tables.table("zone", ["z_zonekey", "z_name", "z_boundary"])
     sf = tables.polygon_frame(zone, "z_boundary")
 
-    joined = sf.lazy().within_join(query_df, "qx", "qy").collect()
     return (
-        joined.group_by(["z_zonekey", "z_name"])
-        .agg(pl.len().alias("trip_count"))
+        sf.lazy()
+        .within_join(query_df, "qx", "qy")
+        .group_by(["z_zonekey", "z_name"])
+        .agg(trip_count=pc.agg.count())
         .sort(["trip_count", "z_zonekey"], descending=[True, False])
     )

@@ -1,13 +1,16 @@
 """Q8: Count trip pickups within ~500m of each building.
 
-PyCanopy: a polygon within-distance join of building footprints against trip pickup
-points, grouped per building.
+PyCanopy: a polygon within-distance aggregate-join of building footprints against trip
+pickup points, counted per building. The join is high fanout (each pickup can fall near
+many buildings), so the aggregate-join reduces each morsel to per-building partial counts
+rather than materialising the full pair frame.
 """
 
 from __future__ import annotations
 
 import polars as pl
 
+import pycanopy as pc
 from pycanopy import wkb_points_to_xy
 
 id = "q8"
@@ -26,11 +29,10 @@ def pycanopy(tables) -> pl.DataFrame:
     qx, qy = wkb_points_to_xy(trip["t_pickuploc"])
     query_df = pl.DataFrame({"qx": qx, "qy": qy})
 
-    joined = (
-        sf.lazy().polygon_within_distance_join(query_df, "qx", "qy", distance=THRESHOLD).collect()
-    )
     return (
-        joined.group_by(["b_buildingkey", "b_name"])
-        .agg(pl.len().alias("nearby_pickup_count"))
+        sf.lazy()
+        .polygon_within_distance_join(query_df, "qx", "qy", distance=THRESHOLD)
+        .group_by(["b_buildingkey", "b_name"])
+        .agg(nearby_pickup_count=pc.agg.count())
         .sort(["nearby_pickup_count", "b_buildingkey"], descending=[True, False])
     )
