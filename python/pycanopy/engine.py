@@ -480,6 +480,17 @@ class Engine:
         """
         return self._core.intersect_ranges(queries)
 
+    def intersect_hits(self, lists: list[list[int]]) -> list[int]:
+        """Return the sorted intersection of several hit lists via a Rust sorted merge.
+
+        Args:
+            lists: Hit-index lists from heterogeneous queries (range, contains, etc).
+
+        Returns:
+            Sorted list of indices present in every input list.
+        """
+        return self._core.intersect_hits(lists)
+
     def batch_knn_join(
         self,
         query_xs: np.ndarray,

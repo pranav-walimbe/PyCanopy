@@ -39,9 +39,8 @@ _JOIN_TYPES = (
     PolygonKnnJoinNode,
 )
 
-# Probe rows per morsel when a join's query side is streamed (DuckDB-style fixed constant,
-# not a fanout prediction). Overridable via batch_size. Small probes skip streaming.
-MORSEL_ROWS = 1_048_576
+# Probe rows per morsel for a streamed join. Conservative fixed cap (bounds rows not pairs), overridable via batch_size.
+MORSEL_ROWS = 262_144
 
 
 def _range_plugin_expr(
@@ -95,12 +94,7 @@ def _contains_plugin_expr(qx: float, qy: float, engine) -> pl.Expr:
 
 
 def _fused_plugin_expr(predicates: list[RangeNode | ContainsNode], engine) -> pl.Expr:
-    """Boolean mask expression applying all fused predicates via sorted merge in Rust.
-
-    Range predicates are intersected via engine.intersect_ranges — a Rust sorted merge
-    on hit arrays, O(K * |H|) rather than O(K * N) bitmap AND passes. Contains predicates
-    are intersected separately on the Python side (each returns at most a handful of hits).
-    """
+    """Boolean mask expression applying all fused predicates via sorted merge in Rust."""
     n_total = engine.n
     range_queries = [
         (pred.min_x, pred.min_y, pred.max_x, pred.max_y)
@@ -113,12 +107,14 @@ def _fused_plugin_expr(predicates: list[RangeNode | ContainsNode], engine) -> pl
         orig_idx = s.to_numpy()
         if len(orig_idx) == 0:
             return pl.Series("", [], dtype=pl.Boolean)
-        hits: list[int] | None = engine.intersect_ranges(range_queries) if range_queries else None
+        hit_lists: list[list[int]] = []
+        if range_queries:
+            hit_lists.append(engine.intersect_ranges(range_queries))
         for pred in contains_preds:
-            c_hits = set(engine.contains(pred.qx, pred.qy))
-            hits = sorted(c_hits) if hits is None else sorted(set(hits) & c_hits)
-            if not hits:
-                return pl.Series("", np.zeros(len(orig_idx), dtype=bool), dtype=pl.Boolean)
+            hit_lists.append(engine.contains(pred.qx, pred.qy))
+        hits = engine.intersect_hits(hit_lists) if hit_lists else None
+        if hits is not None and len(hits) == 0:
+            return pl.Series("", np.zeros(len(orig_idx), dtype=bool), dtype=pl.Boolean)
         hit_bitmap = np.zeros(n_total, dtype=bool)
         if hits:
             hit_bitmap[hits] = True
@@ -345,7 +341,7 @@ class SpatialExecutor:
         All spatial nodes are resolved against the global Engine (no index rebuild).
         Results are AND-intersected. Scalar nodes run on the small candidate slice.
         """
-        candidate_indices: set[int] | None = None
+        hit_lists: list[list[int]] = []
         scalar_nodes: list[ScalarNode] = []
 
         for node in plan:
@@ -361,36 +357,26 @@ class SpatialExecutor:
             elif isinstance(node, FusedSpatialNode):
                 for pred in node.predicates:
                     if isinstance(pred, RangeNode):
-                        pred_hits = sf.engine.range_query(
-                            pred.min_x, pred.min_y, pred.max_x, pred.max_y
+                        hit_lists.append(
+                            sf.engine.range_query(pred.min_x, pred.min_y, pred.max_x, pred.max_y)
                         )
                     elif isinstance(pred, ContainsNode):
-                        pred_hits = sf.engine.contains(pred.qx, pred.qy)
-                    else:
-                        continue
-                    pred_set = set(pred_hits)
-                    candidate_indices = (
-                        pred_set if candidate_indices is None else candidate_indices & pred_set
-                    )
-                    if not candidate_indices:
-                        return sf.df.clear()
+                        hit_lists.append(sf.engine.contains(pred.qx, pred.qy))
                 continue
             elif isinstance(node, ScalarNode):
                 scalar_nodes.append(node)
                 continue
 
             if hits is not None:
-                hits_set = set(hits)
-                candidate_indices = (
-                    hits_set if candidate_indices is None else candidate_indices & hits_set
-                )
-                if not candidate_indices:
-                    return sf.df.clear()
+                hit_lists.append(hits)
 
-        if candidate_indices is None:
+        if not hit_lists:
             lf = sf.df.lazy()
         else:
-            lf = sf.df[sorted(candidate_indices)].lazy()
+            candidates = sf.engine.intersect_hits(hit_lists)
+            if not candidates:
+                return sf.df.clear()
+            lf = sf.df[candidates].lazy()
 
         for node in scalar_nodes:
             lf = lf.filter(node.expr)

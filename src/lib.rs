@@ -616,6 +616,24 @@ impl Engine {
         Ok(acc)
     }
 
+    /// Intersect heterogeneous hit lists via iterative two-pointer sorted merge
+    fn intersect_hits(&self, mut lists: Vec<Vec<usize>>) -> PyResult<Vec<usize>> {
+        if lists.is_empty() {
+            return Ok(vec![]);
+        }
+        lists.sort_by_key(|l| l.len());
+        let mut acc = lists.swap_remove(0);
+        acc.sort_unstable();
+        for mut hits in lists {
+            if acc.is_empty() {
+                return Ok(vec![]);
+            }
+            hits.sort_unstable();
+            acc = Self::sorted_intersect(acc, hits);
+        }
+        Ok(acc)
+    }
+
     /// kNN restricted to a candidate subset. survivor_indices holds M uint32 row positions
     /// in the full dataset. Squared distance to each survivor then a partial sort for the
     /// top k. O(M + k log k) and exact with no index traversal.
