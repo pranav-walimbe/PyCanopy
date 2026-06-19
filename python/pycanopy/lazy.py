@@ -7,6 +7,7 @@ from pathlib import Path
 
 import polars as pl
 import pyarrow.parquet as pq
+from polars.io.plugins import register_io_source
 
 from pycanopy.agg import AggSpec, _partial_agg, _reduce_partials
 from pycanopy.executor import _ROW_IDX, SpatialExecutor
@@ -455,6 +456,43 @@ class SpatialLazyFrame:
         finally:
             if writer is not None:
                 writer.close()
+
+    def lazy_source(self, batch_size: int | None = None) -> pl.LazyFrame:
+        """Expose the plan's streamed output as a native Polars LazyFrame source.
+
+        The plan runs morsel by morsel as a Polars IO source, so downstream Polars ops
+        (sort, filter, sink_parquet) fuse with the spatial join into a single out-of-core
+        streaming pipeline and no intermediate the size of the full result is written or
+        held. A one-row probe is run first to learn the output schema.
+
+        Args:
+            batch_size: Probe rows per morsel. Defaults to MORSEL_ROWS.
+
+        Returns:
+            A Polars LazyFrame that streams this plan's output.
+        """
+        optimizer = SpatialOptimizer()
+        executor = SpatialExecutor()
+        optimized = optimizer.optimize(self._plan, self._sf.engine)
+
+        sample = next(executor.stream(optimized, self._sf, batch_size=1), None)
+        schema = sample.schema if sample is not None else pl.Schema({})
+
+        def source(with_columns, predicate, n_rows, batch_size_hint):
+            produced = 0
+            for morsel in executor.stream(optimized, self._sf, batch_size):
+                if predicate is not None:
+                    morsel = morsel.filter(predicate)
+                if with_columns is not None:
+                    morsel = morsel.select(with_columns)
+                if n_rows is not None and produced + morsel.height > n_rows:
+                    morsel = morsel.head(n_rows - produced)
+                produced += morsel.height
+                yield morsel
+                if n_rows is not None and produced >= n_rows:
+                    break
+
+        return register_io_source(source, schema=schema)
 
     @staticmethod
     def collect_all(frames: list[SpatialLazyFrame]) -> list[pl.DataFrame]:

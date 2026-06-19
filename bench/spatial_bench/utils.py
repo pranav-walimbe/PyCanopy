@@ -208,26 +208,47 @@ def _as_polars(df) -> pl.DataFrame:
     return df if isinstance(df, pl.DataFrame) else pl.from_pandas(df)
 
 
+def _height_and_sums(df, value_cols) -> tuple[int, dict[str, float]]:
+    """Return row count and Float64 column sums in one bounded pass.
+
+    A LazyFrame (an out-of-core sink result) is aggregated through the streaming engine,
+    so a result larger than RAM never materialises. Eager frames are wrapped in a lazy
+    scan for the same single-pass aggregation. Summing in Float64 avoids integer overflow.
+
+    Args:
+        df: A polars LazyFrame, polars DataFrame, or pandas DataFrame.
+        value_cols: Columns to sum in Float64.
+
+    Returns:
+        A (height, {column: sum}) tuple.
+    """
+    exprs = [pl.len().alias("__h__")]
+    exprs += [pl.col(c).cast(pl.Float64, strict=False).sum().alias(c) for c in value_cols]
+    lf = df if isinstance(df, pl.LazyFrame) else _as_polars(df).lazy()
+    row = lf.select(exprs).collect(engine="streaming")
+    return row["__h__"][0], {c: row[c][0] for c in value_cols}
+
+
 def verify_outputs(
     pc_df, sedona_df, keys=(), values=(), rel_tol: float = 1e-2, abs_tol: float = 1e-2
 ) -> tuple[bool, str]:
     """Sanity-check a PyCanopy result against a SedonaDB result.
 
     Compares row count, then the float sum of each value column within tolerance. Both
-    checks are order-independent and stay columnar, so a tens-of-millions-row result
-    never leaves polars. Summing in Float64 avoids integer overflow.
+    checks are order-independent and computed in a single streaming pass, so a result
+    larger than RAM (a LazyFrame over an out-of-core sink) never leaves polars.
     """
-    pc = _as_polars(pc_df)
-    sed = _as_polars(sedona_df)
-    if pc.height != sed.height:
-        return False, f"row count pycanopy={pc.height} sedona={sed.height}"
+    pairs = _pairs(values)
+    pc_h, pc_sums = _height_and_sums(pc_df, [a for a, _ in pairs])
+    sed_h, sed_sums = _height_and_sums(sedona_df, [b for _, b in pairs])
+    if pc_h != sed_h:
+        return False, f"row count pycanopy={pc_h} sedona={sed_h}"
 
-    for pc_col, sed_col in _pairs(values):
-        a = pc[pc_col].cast(pl.Float64, strict=False).sum()
-        b = sed[sed_col].cast(pl.Float64, strict=False).sum()
+    for pc_col, sed_col in pairs:
+        a, b = pc_sums[pc_col], sed_sums[sed_col]
         if abs(a - b) > abs_tol + rel_tol * abs(b):
             return False, f"sum mismatch in {pc_col}: {a} vs {b}"
-    return True, f"{pc.height} rows match"
+    return True, f"{pc_h} rows match"
 
 
 # Measure + chart

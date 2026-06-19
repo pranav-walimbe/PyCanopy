@@ -232,6 +232,24 @@ def test_sink_parquet_without_join_writes_single_frame(sf, tmp_path):
     assert sunk.sort(sunk.columns).equals(expected.sort(expected.columns))
 
 
+def test_lazy_source_matches_collect(sf):
+    query_df = _grid_query(250)
+    fused = sf.lazy().knn_join(query_df, "qx", "qy", k=3).lazy_source().collect()
+    single = sf.lazy().knn_join(query_df, "qx", "qy", k=3).collect()
+    assert len(fused) == len(single) == 250 * 3
+    assert fused.sort(fused.columns).equals(single.sort(single.columns))
+
+
+def test_lazy_source_fuses_sort_and_sink(sf, tmp_path):
+    out = tmp_path / "fused_sorted.parquet"
+    query_df = _grid_query(250)
+    sf.lazy().knn_join(query_df, "qx", "qy", k=3).lazy_source().sort("id").sink_parquet(out)
+    sunk = pl.read_parquet(out)
+    single = sf.lazy().knn_join(query_df, "qx", "qy", k=3).collect()
+    assert sunk["id"].is_sorted()
+    assert sunk.sort(sunk.columns).equals(single.sort(single.columns))
+
+
 def test_streamed_within_join_polygons_matches_single_shot(sf_polygons):
     query_df = pl.DataFrame({"qx": [float(i) + 0.5 for i in range(200)], "qy": [0.5] * 200})
     single = sf_polygons.lazy().within_join(query_df, "qx", "qy").collect()

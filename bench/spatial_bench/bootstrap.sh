@@ -61,6 +61,13 @@ maturin develop --release
 pip install -q --group bench  # benchmark deps, single list in pyproject.toml
 
 mkdir -p /data /opt/pycanopy/assets
+
+# /tmp is tmpfs (RAM) on Amazon Linux 2023, so spill out-of-core scratch and Polars sort to the EBS data volume.
+mkdir -p /data/scratch
+export PYCANOPY_SCRATCH=/data/scratch
+export POLARS_TEMP_DIR=/data/scratch
+export TMPDIR=/data/scratch
+
 SRC="${DATA_TEMPLATE//\{sf\}/$SCALE_FACTOR}"
 log "copying data ${SRC} -> /data/sf${SCALE_FACTOR}"
 aws s3 sync "$SRC" "/data/sf${SCALE_FACTOR}" --region "$REGION" \
