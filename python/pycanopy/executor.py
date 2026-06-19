@@ -224,7 +224,7 @@ class SpatialExecutor:
             join_node = next(n for n in plan if isinstance(n, _JOIN_TYPES))
             if join_node.query_df.height > morsel:
                 frames = self._stream_join_frames(plan, sf, morsel)
-                return pl.concat(frames, how="vertical", rechunk=True)
+                return pl.concat(frames, how="vertical", rechunk=False)
 
         # EXPR needs x_col/y_col as real columns (point datasets). Polygon frames use
         # synthetic coord names absent from df and degrade to IO. Joins bypass the plugin
