@@ -8,6 +8,7 @@ from pathlib import Path
 import polars as pl
 import pyarrow.parquet as pq
 
+from pycanopy.agg import AggSpec, _partial_agg, _reduce_partials
 from pycanopy.executor import _ROW_IDX, SpatialExecutor
 from pycanopy.nodes import (
     ContainsNode,
@@ -151,6 +152,21 @@ class SpatialLazyFrame:
         else:
             cols = tuple(columns)
         return SpatialLazyFrame(self._sf, [*self._plan, SelectNode(cols)])
+
+    def group_by(self, *keys: str | list[str] | tuple[str, ...]) -> SpatialGroupBy:
+        """Begin a grouped aggregation, reduced over the streamed join.
+
+        Args:
+            keys: Group-by key columns, as varargs or a single list/tuple.
+
+        Returns:
+            A SpatialGroupBy builder; call .agg() to run the aggregation.
+        """
+        if len(keys) == 1 and isinstance(keys[0], (list, tuple)):
+            key_cols = list(keys[0])
+        else:
+            key_cols = list(keys)
+        return SpatialGroupBy(self, key_cols)
 
     def range_query(
         self,
@@ -493,3 +509,39 @@ class SpatialLazyFrame:
 
         collected = pl.collect_all(branch_lfs)
         return [df.drop(_ROW_IDX) if _ROW_IDX in df.columns else df for df in collected]
+
+
+class SpatialGroupBy:
+    """Pending grouped aggregation over a SpatialLazyFrame. Created by .group_by().
+
+    Args:
+        slf: The SpatialLazyFrame to aggregate.
+        keys: Group-by key columns.
+    """
+
+    def __init__(self, slf: SpatialLazyFrame, keys: list[str]) -> None:
+        self._slf = slf
+        self._keys = keys
+
+    def agg(self, **named_aggs: AggSpec) -> pl.DataFrame:
+        """Run the grouped aggregation, reducing each join morsel into per-group partials.
+
+        Args:
+            named_aggs: Output column name to aggregation spec (pycanopy.agg.count, sum, etc).
+
+        Returns:
+            One row per group with the named aggregate columns.
+
+        Raises:
+            ValueError: If no aggregations are given.
+        """
+        if not named_aggs:
+            raise ValueError("agg requires at least one aggregation")
+        keep = list(
+            dict.fromkeys([*self._keys, *(c for spec in named_aggs.values() for c in spec.inputs)])
+        )
+        projected = self._slf.select(keep)
+        partials = [_partial_agg(m, self._keys, named_aggs) for m in projected.collect_batched()]
+        if not partials:
+            partials = [_partial_agg(projected.collect(), self._keys, named_aggs)]
+        return _reduce_partials(partials, self._keys, named_aggs)
