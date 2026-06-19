@@ -12,7 +12,7 @@ region: us-west-2
 instance_type: m7i.2xlarge
 scale_factor: 10  # 1 or 10
 volume_gb: 60
-max_runtime_min: 60  # watchdog hard-terminates the box after this many minutes
+max_runtime_min: 30  # watchdog hard-terminates the box after this many minutes
 
 # data ({sf} is replaced per scale factor; default is the official public dataset)
 data_template: s3://wherobots-examples/data/spatialbench/SpatialBench_sf{sf}
