@@ -342,3 +342,100 @@ def test_index_auto_matches_indexed_knn_join(sf):
     with _index_mode(sf, "auto"):
         auto = sf.lazy().knn_join(query_df, "qx", "qy", k=3).collect()
     assert auto.sort(auto.columns).equals(indexed.sort(indexed.columns))
+
+
+# .select() projection
+
+
+def test_select_restricts_join_output_columns(sf):
+    query_df = pl.DataFrame({"qx": [0.0, 5.0], "qy": [0.0, 50.0]})
+    result = sf.lazy().knn_join(query_df, "qx", "qy", k=3).select("id").collect()
+    assert result.columns == ["id"]
+    full = sf.lazy().knn_join(query_df, "qx", "qy", k=3).collect()
+    assert result.sort("id").equals(full.select("id").sort("id"))
+
+
+def test_select_accepts_list_form(sf):
+    query_df = pl.DataFrame({"qx": [0.0], "qy": [0.0]})
+    result = sf.lazy().knn_join(query_df, "qx", "qy", k=2).select(["qx", "id"]).collect()
+    assert result.columns == ["qx", "id"]
+
+
+def test_select_excluding_coords_still_joins(sf):
+    # Neither query coords nor engine coords are projected; the kernel still reads them.
+    query_df = pl.DataFrame({"qx": [3.0], "qy": [50.0]})
+    result = sf.lazy().knn_join(query_df, "qx", "qy", k=1).select("id").collect()
+    assert result["id"].to_list() == [503]
+
+
+def test_select_resolves_conflicting_column_names(sf):
+    # query_df.id conflicts with engine df.id: query keeps 'id', target becomes 'right_id'.
+    query_df = pl.DataFrame({"qx": [3.0], "qy": [50.0], "id": [999]})
+    both = sf.lazy().knn_join(query_df, "qx", "qy", k=1).select("id", "right_id").collect()
+    assert both["id"].to_list() == [999]
+    assert both["right_id"].to_list() == [503]
+    # Projecting only the target side must still produce the right_-prefixed name.
+    target_only = sf.lazy().knn_join(query_df, "qx", "qy", k=1).select("right_id").collect()
+    assert target_only.columns == ["right_id"]
+    assert target_only["right_id"].to_list() == [503]
+
+
+def test_select_keeps_columns_used_by_post_join_filter(sf):
+    # Filter references 'id' which is not in the projection; it must survive the gather.
+    query_df = _grid_query(20)
+    projected = (
+        sf.lazy().knn_join(query_df, "qx", "qy", k=2).filter(pl.col("id") < 500).select("qx")
+    ).collect()
+    full = sf.lazy().knn_join(query_df, "qx", "qy", k=2).filter(pl.col("id") < 500).collect()
+    assert projected.columns == ["qx"]
+    assert projected.sort("qx").equals(full.select("qx").sort("qx"))
+
+
+def test_select_on_streamed_join_matches_single_shot(sf):
+    query_df = _grid_query(300)
+    single = (
+        sf.lazy().within_distance_join(query_df, "qx", "qy", distance=1.1).select("id").collect()
+    )
+    streamed = (
+        sf.lazy()
+        .within_distance_join(query_df, "qx", "qy", distance=1.1)
+        .select("id")
+        .collect(batch_size=64)
+    )
+    assert streamed.columns == ["id"]
+    assert streamed.sort("id").equals(single.sort("id"))
+
+
+def test_select_via_collect_batched(sf):
+    query_df = _grid_query(250)
+    batches = list(
+        sf.lazy().knn_join(query_df, "qx", "qy", k=2).select("id").collect_batched(batch_size=100)
+    )
+    assert all(b.columns == ["id"] for b in batches)
+    full = pl.concat(batches)
+    single = sf.lazy().knn_join(query_df, "qx", "qy", k=2).select("id").collect()
+    assert full.sort("id").equals(single.sort("id"))
+
+
+def test_select_via_sink_parquet(sf, tmp_path):
+    query_df = _grid_query(250)
+    out = tmp_path / "projected.parquet"
+    sf.lazy().knn_join(query_df, "qx", "qy", k=3).select("id").sink_parquet(out, batch_size=50)
+    sunk = pl.read_parquet(out)
+    assert sunk.columns == ["id"]
+    single = sf.lazy().knn_join(query_df, "qx", "qy", k=3).select("id").collect()
+    assert sunk.sort("id").equals(single.sort("id"))
+
+
+def test_select_on_non_join_plan(sf):
+    result = sf.lazy().range_query(0.0, 0.0, 4.0, 4.0).select("id").collect()
+    assert result.columns == ["id"]
+    full = sf.lazy().range_query(0.0, 0.0, 4.0, 4.0).collect()
+    assert result.sort("id").equals(full.select("id").sort("id"))
+
+
+def test_select_drops_heavy_geom_column_on_within_join(sf_polygons):
+    query_df = pl.DataFrame({"qx": [0.5, 1.5], "qy": [0.5, 0.5]})
+    result = sf_polygons.lazy().within_join(query_df, "qx", "qy").select("qx", "poly_id").collect()
+    assert result.columns == ["qx", "poly_id"]
+    assert sorted(result["poly_id"].to_list()) == [0, 1]

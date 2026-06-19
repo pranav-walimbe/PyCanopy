@@ -21,6 +21,7 @@ from pycanopy.nodes import (
     PolygonWithinDistanceJoinNode,
     RangeNode,
     ScalarNode,
+    SelectNode,
     WithinDistanceJoinNode,
     WithinJoinNode,
 )
@@ -200,6 +201,41 @@ class SpatialExecutor:
         plugin_path: PluginPath,
         batch_size: int | None,
     ) -> pl.DataFrame:
+        """Strip a trailing projection, run the body, then apply the final select."""
+        projection, body = self._extract_projection(plan)
+        df = self._execute_body(body, sf, plugin_path, batch_size)
+        if projection is not None:
+            df = df.select(list(projection))
+        return df
+
+    def _extract_projection(self, plan: Plan) -> tuple[tuple[str, ...] | None, Plan]:
+        """Split a trailing SelectNode off the plan and push its keep-set onto join nodes."""
+        if not plan or not isinstance(plan[-1], SelectNode):
+            return None, plan
+        output_columns = plan[-1].columns
+        body = plan[:-1]
+        join_positions = [i for i, n in enumerate(body) if isinstance(n, _JOIN_TYPES)]
+        if not join_positions:
+            return output_columns, body
+        # Keep the projected columns plus any columns post-join filters read, as output names.
+        keep = set(output_columns)
+        for node in body[join_positions[-1] + 1 :]:
+            if isinstance(node, ScalarNode):
+                keep |= set(node.expr.meta.root_names())
+        keep_tuple = tuple(keep)
+        body = [
+            dataclasses.replace(n, keep_columns=keep_tuple) if isinstance(n, _JOIN_TYPES) else n
+            for n in body
+        ]
+        return output_columns, body
+
+    def _execute_body(
+        self,
+        plan: Plan,
+        sf,
+        plugin_path: PluginPath,
+        batch_size: int | None,
+    ) -> pl.DataFrame:
         """Run the optimised plan, dispatching scalar / IO / EXPR / streamed-join paths."""
         # Scalar-only fast path with no spatial ops. Feed filters straight to Polars as a
         # zero-copy lazy chain (no _ROW_IDX, no dispatch, no bitmap).
@@ -267,9 +303,12 @@ class SpatialExecutor:
             yield self.execute(plan, sf)
             return
         morsel = batch_size if batch_size is not None else MORSEL_ROWS
-        yield from self._stream_join_frames(plan, sf, morsel)
+        projection, body = self._extract_projection(plan)
+        yield from self._stream_join_frames(body, sf, morsel, projection)
 
-    def _stream_join_frames(self, plan: Plan, sf, morsel_rows: int) -> Iterator[pl.DataFrame]:
+    def _stream_join_frames(
+        self, plan: Plan, sf, morsel_rows: int, projection: tuple[str, ...] | None = None
+    ) -> Iterator[pl.DataFrame]:
         """Slice the join's probe into morsels, emit each joined frame in turn.
 
         The first join node is the streaming axis. Its query_df is sliced zero-copy via
@@ -295,7 +334,10 @@ class SpatialExecutor:
             lf = self._emit_node(sub, sf, placeholder, PluginPath.EXPR)
             for node in post_nodes:
                 lf = self._emit_node(node, sf, lf, PluginPath.EXPR)
-            yield lf.collect()
+            out = lf.collect()
+            if projection is not None:
+                out = out.select(list(projection))
+            yield out
 
     def _execute_io(self, plan: Plan, sf) -> pl.DataFrame:
         """IO path: query the pre-built Engine first, slice df, then apply scalars.
@@ -464,118 +506,94 @@ class SpatialExecutor:
 
     # join nodes
 
-    def _emit_knn_join(self, node: KnnJoinNode, sf, lf: pl.LazyFrame) -> pl.LazyFrame:
-        """For each row in query_df, find the k nearest in the Engine's dataset.
+    def _assemble_join(self, node, sf, q_idx: pl.Series, t_idx: pl.Series) -> pl.DataFrame:
+        """Gather both join sides at the paired indices, narrowed to node.keep_columns.
 
-        Replaces lf with the join result (no __orig_row__ in the output).
+        Right-side columns colliding with the query side are prefixed 'right_' (the output
+        names), so a keep-set in output names selects the right source columns. A side not
+        in the keep-set is dropped before the gather, the only full-width materialisation.
         """
+        query_cols = node.query_df.columns
+        target_cols = sf.df.columns
+        overlap = set(query_cols) & set(target_cols)
+        keep = None if node.keep_columns is None else set(node.keep_columns)
+        if keep is None:
+            query_keep, target_keep = query_cols, target_cols
+        else:
+            query_keep = [c for c in query_cols if c in keep]
+            target_keep = [c for c in target_cols if (f"right_{c}" if c in overlap else c) in keep]
+
+        parts: list[pl.DataFrame] = []
+        if query_keep:
+            parts.append(node.query_df.select(query_keep).gather(q_idx))
+        if target_keep:
+            target_part = sf.df.select(target_keep).gather(t_idx)
+            rename = {c: f"right_{c}" for c in target_keep if c in overlap}
+            if rename:
+                target_part = target_part.rename(rename)
+            parts.append(target_part)
+
+        if not parts:
+            return pl.DataFrame()
+        if len(parts) == 1:
+            return parts[0]
+        return pl.concat(parts, how="horizontal")
+
+    def _emit_knn_join(self, node: KnnJoinNode, sf, lf: pl.LazyFrame) -> pl.LazyFrame:
+        """For each row in query_df, find the k nearest in the Engine's dataset."""
         query_xs = node.query_df[node.x_col].to_numpy()
         query_ys = node.query_df[node.y_col].to_numpy()
         n_queries = len(node.query_df)
 
-        # batch_knn_join returns flat (n_queries * k,) array
+        # batch_knn_join returns flat (n_queries * k,) array; each query row repeats k times.
         match_indices = sf.engine.batch_knn_join(query_xs, query_ys, node.k, node.approximate)
-
-        # Expand query rows: each query row repeats k times
         q_idx = pl.Series("", np.repeat(np.arange(n_queries, dtype=np.uint32), node.k))
         t_idx = pl.Series("", match_indices.astype(np.uint32))
-
-        query_part = node.query_df.gather(q_idx)
-        target_part = sf.df.gather(t_idx)
-
-        target_part = _resolve_column_conflicts(query_part, target_part)
-        return pl.concat([query_part, target_part], how="horizontal").lazy()
+        return self._assemble_join(node, sf, q_idx, t_idx).lazy()
 
     def _emit_within_join(self, node: WithinJoinNode, sf, lf: pl.LazyFrame) -> pl.LazyFrame:
-        """For each point in query_df, find the Engine polygons that contain it.
-
-        Polygon dataset only with one row per (query, polygon) match. Replaces lf.
-        """
+        """For each point in query_df, find the Engine polygons that contain it."""
         query_xs = node.query_df[node.x_col].to_numpy()
         query_ys = node.query_df[node.y_col].to_numpy()
 
-        # batch_contains returns flat (M * 2,) array: [q0, e0, q1, e1, ...]
-        pairs_flat = sf.engine.batch_contains(query_xs, query_ys)
-
-        if len(pairs_flat) == 0:
-            # No matches — return empty DataFrame with correct schema
-            empty_q = node.query_df.clear()
-            empty_t = _resolve_column_conflicts(empty_q, sf.df.clear())
-            return pl.concat([empty_q, empty_t], how="horizontal").lazy()
-
-        pairs = pairs_flat.reshape(-1, 2)
+        # batch_contains returns flat (M * 2,) array: [q0, e0, q1, e1, ...].
+        pairs = sf.engine.batch_contains(query_xs, query_ys).reshape(-1, 2)
         q_idx = pl.Series("", pairs[:, 0].astype(np.uint32))
         t_idx = pl.Series("", pairs[:, 1].astype(np.uint32))
-
-        query_part = node.query_df.gather(q_idx)
-        target_part = sf.df.gather(t_idx)
-
-        target_part = _resolve_column_conflicts(query_part, target_part)
-        return pl.concat([query_part, target_part], how="horizontal").lazy()
+        return self._assemble_join(node, sf, q_idx, t_idx).lazy()
 
     def _emit_within_distance_join(
         self, node: WithinDistanceJoinNode, sf, lf: pl.LazyFrame
     ) -> pl.LazyFrame:
-        """For each query point, find Engine points within node.distance.
-
-        When node.flip, indexes the query side and iterates engine points instead,
-        which is cheaper when len(query_df) << engine.n.
-        """
+        """For each query point, find Engine points within node.distance."""
         query_xs = node.query_df[node.x_col].to_numpy()
         query_ys = node.query_df[node.y_col].to_numpy()
 
-        pairs_flat = sf.engine.batch_within_distance(query_xs, query_ys, node.distance, node.flip)
-
-        if len(pairs_flat) == 0:
-            empty_q = node.query_df.clear()
-            empty_t = _resolve_column_conflicts(empty_q, sf.df.clear())
-            return pl.concat([empty_q, empty_t], how="horizontal").lazy()
-
-        pairs = pairs_flat.reshape(-1, 2)
+        pairs = sf.engine.batch_within_distance(
+            query_xs, query_ys, node.distance, node.flip
+        ).reshape(-1, 2)
         q_idx = pl.Series("", pairs[:, 0].astype(np.uint32))
         t_idx = pl.Series("", pairs[:, 1].astype(np.uint32))
-
-        query_part = node.query_df.gather(q_idx)
-        target_part = sf.df.gather(t_idx)
-
-        target_part = _resolve_column_conflicts(query_part, target_part)
-        return pl.concat([query_part, target_part], how="horizontal").lazy()
+        return self._assemble_join(node, sf, q_idx, t_idx).lazy()
 
     def _emit_polygon_within_distance_join(
         self, node: PolygonWithinDistanceJoinNode, sf, lf: pl.LazyFrame
     ) -> pl.LazyFrame:
-        """For each query point find Engine polygons within node.distance.
-
-        Engine must be a polygon dataset. One row per (query, polygon) match.
-        """
+        """For each query point find Engine polygons within node.distance."""
         query_xs = node.query_df[node.x_col].to_numpy()
         query_ys = node.query_df[node.y_col].to_numpy()
 
-        pairs_flat = sf.engine.batch_within_distance_to_polygons(query_xs, query_ys, node.distance)
-
-        if len(pairs_flat) == 0:
-            empty_q = node.query_df.clear()
-            empty_t = _resolve_column_conflicts(empty_q, sf.df.clear())
-            return pl.concat([empty_q, empty_t], how="horizontal").lazy()
-
-        pairs = pairs_flat.reshape(-1, 2)
+        pairs = sf.engine.batch_within_distance_to_polygons(
+            query_xs, query_ys, node.distance
+        ).reshape(-1, 2)
         q_idx = pl.Series("", pairs[:, 0].astype(np.uint32))
         t_idx = pl.Series("", pairs[:, 1].astype(np.uint32))
-
-        query_part = node.query_df.gather(q_idx)
-        target_part = sf.df.gather(t_idx)
-
-        target_part = _resolve_column_conflicts(query_part, target_part)
-        return pl.concat([query_part, target_part], how="horizontal").lazy()
+        return self._assemble_join(node, sf, q_idx, t_idx).lazy()
 
     def _emit_polygon_knn_join(
         self, node: PolygonKnnJoinNode, sf, lf: pl.LazyFrame
     ) -> pl.LazyFrame:
-        """For each query point find its k nearest Engine polygons.
-
-        Engine must be a polygon dataset. Appends a 'distance_to_polygon' column.
-        Padding slots (queries with fewer than k polygons available) are dropped.
-        """
+        """For each query point find its k nearest Engine polygons, appending distance_to_polygon."""
         query_xs = node.query_df[node.x_col].to_numpy()
         query_ys = node.query_df[node.y_col].to_numpy()
         n_queries = len(node.query_df)
@@ -587,24 +605,10 @@ class SpatialExecutor:
         keep = indices != np.iinfo(np.uint64).max
         q_idx = pl.Series("", q_idx_full[keep].astype(np.uint32))
         t_idx = pl.Series("", indices[keep].astype(np.uint32))
-        kept_dists = dists[keep]
 
-        if len(t_idx) == 0:
-            empty_q = node.query_df.clear()
-            empty_t = _resolve_column_conflicts(empty_q, sf.df.clear())
-            out = pl.concat([empty_q, empty_t], how="horizontal")
-            return out.with_columns(pl.Series("distance_to_polygon", [], dtype=pl.Float64)).lazy()
-
-        query_part = node.query_df.gather(q_idx)
-        target_part = sf.df.gather(t_idx)
-        target_part = _resolve_column_conflicts(query_part, target_part)
-        joined = pl.concat([query_part, target_part], how="horizontal")
-        return joined.with_columns(pl.Series("distance_to_polygon", kept_dists)).lazy()
-
-
-def _resolve_column_conflicts(left: pl.DataFrame, right: pl.DataFrame) -> pl.DataFrame:
-    """Prefix any right-side columns that also appear in left with 'right_'."""
-    overlap = set(left.columns) & set(right.columns)
-    if overlap:
-        return right.rename({c: f"right_{c}" for c in overlap})
-    return right
+        joined = self._assemble_join(node, sf, q_idx, t_idx)
+        dist_series = pl.Series("distance_to_polygon", dists[keep])
+        # joined has no width only when the projection kept just distance_to_polygon.
+        if joined.width == 0:
+            return pl.DataFrame([dist_series]).lazy()
+        return joined.with_columns(dist_series).lazy()

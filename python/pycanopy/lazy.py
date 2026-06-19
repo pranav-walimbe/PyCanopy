@@ -22,6 +22,7 @@ from pycanopy.nodes import (
     PolygonWithinDistanceJoinNode,
     RangeNode,
     ScalarNode,
+    SelectNode,
     WithinDistanceJoinNode,
     WithinJoinNode,
 )
@@ -135,6 +136,21 @@ class SpatialLazyFrame:
             New SpatialLazyFrame with the scalar node appended.
         """
         return SpatialLazyFrame(self._sf, [*self._plan, ScalarNode(expr)])
+
+    def select(self, *columns: str | list[str] | tuple[str, ...]) -> SpatialLazyFrame:
+        """Restrict the collected output to these columns, pushed into a join gather when present.
+
+        Args:
+            columns: Output column names to keep, as varargs or a single list/tuple.
+
+        Returns:
+            New SpatialLazyFrame with the terminal select node appended.
+        """
+        if len(columns) == 1 and isinstance(columns[0], (list, tuple)):
+            cols = tuple(columns[0])
+        else:
+            cols = tuple(columns)
+        return SpatialLazyFrame(self._sf, [*self._plan, SelectNode(cols)])
 
     def range_query(
         self,

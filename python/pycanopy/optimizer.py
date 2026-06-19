@@ -26,6 +26,7 @@ from pycanopy.nodes import (
     PolygonWithinDistanceJoinNode,
     RangeNode,
     ScalarNode,
+    SelectNode,
     WithinDistanceJoinNode,
     WithinJoinNode,
 )
@@ -133,10 +134,18 @@ class SpatialOptimizer:
         """
         if not plan:
             return plan
-        plan = self._assign_selectivity(plan, engine)
-        plan = self._cost_sort(plan)
-        plan = self._fusion_pass(plan, engine)
-        plan = self._join_side_pass(plan, engine)
+        # A trailing SelectNode is a terminal projection, not a predicate, so the cost passes skip it
+        select_tail = None
+        if isinstance(plan[-1], SelectNode):
+            select_tail = plan[-1]
+            plan = plan[:-1]
+        if plan:
+            plan = self._assign_selectivity(plan, engine)
+            plan = self._cost_sort(plan)
+            plan = self._fusion_pass(plan, engine)
+            plan = self._join_side_pass(plan, engine)
+        if select_tail is not None:
+            plan = [*plan, select_tail]
         return plan
 
     def _assign_selectivity(self, plan: Plan, engine) -> Plan:

@@ -69,11 +69,25 @@ class FusedSpatialNode:
 
 
 @dataclass
+class SelectNode:
+    """Terminal projection restricting the collected output to these columns.
+
+    Pushed into a preceding join's gather (as keep_columns) so unused columns are
+    never materialized. Must be the last node in a plan.
+    """
+
+    columns: tuple[str, ...]
+
+
+@dataclass
 class KnnJoinNode:
     """Spatial join: for each row in query_df find k nearest in Engine's dataset.
 
     Acts as a barrier in the plan. Output is query_df columns then Engine df columns
     (conflicting right-side names prefixed 'right_').
+
+    keep_columns, when set by the optimizer from a trailing SelectNode, are the output
+    column names the gather must retain (projection plus any post-join filter inputs).
     """
 
     query_df: pl.DataFrame
@@ -81,6 +95,7 @@ class KnnJoinNode:
     y_col: str
     k: int
     approximate: bool = False
+    keep_columns: tuple[str, ...] | None = None
 
 
 @dataclass
@@ -95,6 +110,7 @@ class WithinJoinNode:
     x_col: str
     y_col: str
     flip: bool = False
+    keep_columns: tuple[str, ...] | None = None
 
 
 @dataclass
@@ -110,6 +126,7 @@ class WithinDistanceJoinNode:
     y_col: str
     distance: float
     flip: bool = False
+    keep_columns: tuple[str, ...] | None = None
 
 
 @dataclass
@@ -124,6 +141,7 @@ class PolygonWithinDistanceJoinNode:
     x_col: str
     y_col: str
     distance: float
+    keep_columns: tuple[str, ...] | None = None
 
 
 @dataclass
@@ -161,6 +179,7 @@ class PolygonKnnJoinNode:
     x_col: str
     y_col: str
     k: int
+    keep_columns: tuple[str, ...] | None = None
 
 
 # Type alias for a complete plan
@@ -177,4 +196,5 @@ Plan = list[
     | PolygonKnnJoinNode
     | PointsWithinDistanceOfPolygonNode
     | IntersectsSelfJoinNode
+    | SelectNode
 ]
