@@ -411,11 +411,11 @@ PyCanopy plans a query in two layers, then hands the result to Polars to run.
 
 Decisions about the whole chain, made before any data is touched:
 
-- **Predicate pushdown:** scalar filters run before spatial ops, cheapest first (cost estimated from the Polars expression tree). They shrink the row count for little cost.
-- **Fusion:** consecutive spatial predicates merge into one index build and one pass.
-- **Join side:** symmetric joins (`within_join`, `within_distance_join`) index the smaller side. `knn_join` always indexes the engine side.
-- **Projection pushdown:** a terminal `.select()` is pushed into the join, so only the requested columns are gathered from each side instead of the full width.
-- **Execution path:** very selective filters slice the prebuilt index directly (IO path). Otherwise filters run first and a small index is built on the survivors (EXPR path).
+- **Predicate pushdown:** scalar filters run first, cheapest first (cost from the Polars expression tree), shrinking the row count cheaply.
+- **Fusion:** consecutive spatial predicates merge into one index build and pass.
+- **Join side:** symmetric joins (`within_join`, `within_distance_join`) index the smaller side. `knn_join` indexes the engine side.
+- **Projection pushdown:** a terminal `.select()` pushes into the join, gathering only the requested columns, not the full width.
+- **Execution path:** very selective filters slice the prebuilt index directly (IO path). Otherwise filters run first and a small index builds on the survivors (EXPR path).
 
 ### Cost model: index or scan?
 
@@ -430,9 +430,9 @@ Building wins once `Q` passes roughly `log N`. A one-off lookup scans; a join wi
 
 `index_mode`, set per frame, picks how the estimate is used:
 
-- **`eager`** (default): always build the selected index.
-- **`auto`**: build only when the estimate beats a scan for this `Q`.
-- **`none`**: always scan.
+- **`eager`** (default): always build the selected index
+- **`auto`**: build only when the estimate beats a scan for this `Q`
+- **`none`**: always scan
 
 ### Index management
 
@@ -447,15 +447,6 @@ Indexes build lazily, never at load time. Dataset stats (extent, distribution, a
 | Polygons, any query                           | R-tree       |
 
 All index types share the same coordinate arrays with no duplication.
-
-### Streaming and out-of-core
-
-A join never has to fit in memory. The probe side is sliced into fixed-size morsels run one at a time, so the join intermediate stays bounded:
-
-- `collect()` auto-streams a large probe, bounding the transient.
-- `collect_batched()` and `sink_parquet()` bound the full output (to an iterator, or straight to a Parquet file).
-- `lazy_source()` exposes the streamed join as a native Polars source, fusing it with a downstream `sort` and `sink_parquet` into one pipeline that spills to disk, so an ordered result larger than RAM still completes.
-- `group_by(keys).agg(...)` reduces each morsel to associative partials that combine into the per-group result, so the join is never materialised at all.
 
 ### Why Rust
 
@@ -475,6 +466,17 @@ The hot paths need packed immutable index structures, zero-copy array slices at 
 | Separate coordinate sequences      | `Engine.from_coords(xs, ys)`               |
 | WKB point column (Binary)          | `SpatialFrame.from_wkb_points(df, "geom")` |
 | WKB polygon column (Binary)        | `SpatialFrame.from_wkb_polygons(df, "geom")` |
+
+---
+
+## Acknowledgements
+
+Some works that inspired this project:
+
+- [Polars](https://github.com/pola-rs/polars): a columnar DataFrame engine that PyCanopy builds on
+- [geo-index](https://github.com/georust/geo-index): provides packed, immutable, zero-copy KD-tree and R-tree structures used
+- [Spatial Polars](https://github.com/ATL2001/spatial_polars): an earlier effort to bring spatial functionality to Polars
+- [Apache Sedona](https://sedona.apache.org): state-of-the-art spatial SQL engine + benchmark for evals
 
 ---
 
