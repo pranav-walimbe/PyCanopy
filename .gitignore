@@ -41,7 +41,8 @@ env/
 CLAUDE.md
 pycanopy_logo_files/
 
-# Generated benchmark outputs in assets (keep only the logo and the SpatialBench chart)
+# Generated benchmark outputs in assets (keep only the logo and the SpatialBench charts)
 /assets/*
 !/assets/pycanopy_logo3.png
 !/assets/spatialbench_sf1_auto.png
+!/assets/spatialbench_sf10_auto.png
