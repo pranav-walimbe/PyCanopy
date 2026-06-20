@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum, auto
+from typing import Union
 
 import polars as pl
 
@@ -180,19 +181,22 @@ class PolygonKnnJoinNode:
     keep_columns: tuple[str, ...] | None = None
 
 
-# Type alias for a complete plan
+# Type alias for a complete plan. Union (not X | Y) because this alias is evaluated at
+# runtime, and the | operator on types needs Python 3.10 while the floor is 3.9.
 Plan = list[
-    ScalarNode
-    | RangeNode
-    | ContainsNode
-    | KnnNode
-    | FusedSpatialNode
-    | KnnJoinNode
-    | WithinJoinNode
-    | WithinDistanceJoinNode
-    | PolygonWithinDistanceJoinNode
-    | PolygonKnnJoinNode
-    | PointsWithinDistanceOfPolygonNode
-    | IntersectsSelfJoinNode
-    | SelectNode
+    Union[
+        ScalarNode,
+        RangeNode,
+        ContainsNode,
+        KnnNode,
+        FusedSpatialNode,
+        KnnJoinNode,
+        WithinJoinNode,
+        WithinDistanceJoinNode,
+        PolygonWithinDistanceJoinNode,
+        PolygonKnnJoinNode,
+        PointsWithinDistanceOfPolygonNode,
+        IntersectsSelfJoinNode,
+        SelectNode,
+    ]
 ]
