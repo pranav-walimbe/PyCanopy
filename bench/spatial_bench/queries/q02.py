@@ -27,5 +27,7 @@ def pycanopy(tables) -> pl.DataFrame:
 
     trip = tables.table("trip", ["t_pickuploc"])
     sf = tables.point_frame(trip, "t_pickuploc")
-    inside = sf.points_within_distance_of_polygon(poly, 0.0)
-    return pl.DataFrame({"trip_count_in_coconino_county": [len(inside)]})
+    # Only the count is needed, so take the engine's matching indices directly and skip
+    # gathering the in-zone rows into a DataFrame.
+    idx = sf.engine.points_within_distance_of_polygon(poly, 0.0)
+    return pl.DataFrame({"trip_count_in_coconino_county": [len(idx)]})
