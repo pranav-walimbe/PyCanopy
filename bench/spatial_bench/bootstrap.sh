@@ -53,6 +53,10 @@ log "installing uv"
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source "$HOME/.local/bin/env"
 
+# Amazon Linux 2023 ships Python 3.9, below the project floor, so pin uv to a managed
+# 3.10 for every sync and run. It is the supported floor, so the box exercises it.
+export UV_PYTHON=3.10
+
 log "cloning ${REPO_URL} @ ${REPO_BRANCH}"
 git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" /opt/pycanopy
 cd /opt/pycanopy
