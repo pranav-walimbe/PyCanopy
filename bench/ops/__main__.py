@@ -3,16 +3,17 @@
 Runs each operation on a fresh engine (cold, index build included) and again warm
 (index cached) against a naive GeoPandas baseline (no spatial index). Single-query
 ops run large, while the joins run smaller because the naive competitor loops over
-every query point. Prints one line per op and writes the summary table to assets/.
+every query point. Data is uniformly random and the engine indexes eagerly. Prints
+one line per op and writes the summary table to assets/.
 
 Usage:
-    python -m bench.ops.run
-    python -m bench.ops.run --distribution clustered
+    python -m bench.ops
 """
 
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import geopandas as gpd
@@ -58,9 +59,9 @@ def _query_points(n: int) -> pl.DataFrame:
     return pl.DataFrame({"qx": pts[:, 0], "qy": pts[:, 1]})
 
 
-def _point_query_ops(report: BenchmarkReport, distribution: str) -> None:
+def _point_query_ops(report: BenchmarkReport) -> None:
     # Range query and kNN on a point dataset, each vs the naive GeoPandas scan
-    ds = MockDataset("points", n=N_SINGLE, distribution=distribution, seed=42)
+    ds = MockDataset("points", n=N_SINGLE, seed=42)
     coords = ds.as_coords()
     gs = gpd.GeoSeries(shapely.points(coords[:, 0], coords[:, 1]))
     range_q = make_range_queries(coords, SELECTIVITY, n=1, seed=1)[0]
@@ -84,11 +85,9 @@ def _point_query_ops(report: BenchmarkReport, distribution: str) -> None:
     )
 
 
-def _polygon_query_ops(report: BenchmarkReport, distribution: str) -> None:
+def _polygon_query_ops(report: BenchmarkReport) -> None:
     # Point-in-polygon contains and MBR range on a polygon dataset, vs the naive scan
-    ds = MockDataset(
-        "polygons", n=N_SINGLE, distribution=distribution, seed=42, polygon_size=POLYGON_SIZE
-    )
+    ds = MockDataset("polygons", n=N_SINGLE, seed=42, polygon_size=POLYGON_SIZE)
     gs = gpd.GeoSeries(ds.as_shapely_list())
     first_centroid = gs.iloc[0].centroid
     contain_q = (first_centroid.x, first_centroid.y)
@@ -112,9 +111,9 @@ def _polygon_query_ops(report: BenchmarkReport, distribution: str) -> None:
     )
 
 
-def _point_join_ops(report: BenchmarkReport, distribution: str) -> None:
+def _point_join_ops(report: BenchmarkReport) -> None:
     # kNN join and within-distance join on points, each vs the naive O(Q*N) GeoPandas loop
-    ds = MockDataset("points", n=N_JOIN, distribution=distribution, seed=42)
+    ds = MockDataset("points", n=N_JOIN, seed=42)
     query_df = _query_points(N_JOIN)
     coords = ds.as_coords()
     gs = gpd.GeoSeries(shapely.points(coords[:, 0], coords[:, 1]))
@@ -141,11 +140,9 @@ def _point_join_ops(report: BenchmarkReport, distribution: str) -> None:
     )
 
 
-def _polygon_join_ops(report: BenchmarkReport, distribution: str) -> None:
+def _polygon_join_ops(report: BenchmarkReport) -> None:
     # Polygon joins (within, kNN, within-distance) and the intersects self-join, vs naive
-    ds = MockDataset(
-        "polygons", n=N_POLY, distribution=distribution, seed=42, polygon_size=POLYGON_SIZE
-    )
+    ds = MockDataset("polygons", n=N_POLY, seed=42, polygon_size=POLYGON_SIZE)
     query_df = _query_points(N_POLY)
     gs = gpd.GeoSeries(ds.as_shapely_list())
 
@@ -207,39 +204,33 @@ def _warm_polars_jit() -> None:
     )
 
 
-def run(distribution: str = "uniform") -> BenchmarkReport:
-    """Run every operation and write the summary table to assets/.
-
-    Args:
-        distribution: Spatial distribution ("uniform" or "clustered").
+def run() -> BenchmarkReport:
+    """Run every operation on uniform data and write the summary table to assets/.
 
     Returns:
         The populated BenchmarkReport.
     """
     report = BenchmarkReport()
-    _point_query_ops(report, distribution)
-    _polygon_query_ops(report, distribution)
-    _point_join_ops(report, distribution)
-    _polygon_join_ops(report, distribution)
-    out = _ASSETS_DIR / f"ops_{distribution}.txt"
+    _point_query_ops(report)
+    _polygon_query_ops(report)
+    _point_join_ops(report)
+    _polygon_join_ops(report)
+    out = _ASSETS_DIR / "ops.txt"
     out.parent.mkdir(parents=True, exist_ok=True)
     report.write_table(out)
     return report
 
 
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Run PyCanopy operation benchmarks.")
-    parser.add_argument(
-        "--distribution",
-        choices=["uniform", "clustered"],
-        default="uniform",
-        help="Spatial distribution (default: uniform).",
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Run PyCanopy operation benchmarks on uniform data."
     )
-    args = parser.parse_args(argv)
+    parser.parse_args(argv)
 
     _warm_polars_jit()
-    run(args.distribution)
+    run()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

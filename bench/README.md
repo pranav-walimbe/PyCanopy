@@ -10,12 +10,12 @@ PyCanopy ships two benchmark suites. Both render their output into `assets/`.
 ## Ops benchmark
 
 ```bash
-python -m bench.ops.run                       # uniform data
-python -m bench.ops.run --distribution clustered
+python -m bench.ops
 ```
 
-Each op runs on a fresh engine (cold, with index build) and again warm. The run prints
-one line per op and writes a summary table to `assets/`.
+Each op runs on a fresh engine (cold, with index build) and again warm, on uniformly
+random data with eager indexing. The run prints one line per op and writes a summary
+table to `assets/ops.txt`.
 
 ## SpatialBench
 

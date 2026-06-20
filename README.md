@@ -13,18 +13,15 @@
 
 ---
 
-## State of the art on Apache SpatialBench
+> [!NOTE]
+> **State of the art on [Apache SpatialBench](https://sedona.apache.org/spatialbench/single-node-benchmarks/):** the fastest engine on 10 of 12 queries at SF1 and 7 of 12 at SF10, ahead of Apache SedonaDB, DuckDB, and GeoPandas.
 
-PyCanopy reaches state of the art on [Apache SpatialBench](https://sedona.apache.org/spatialbench/single-node-benchmarks/), the standard single-node spatial-analytics benchmark. On matched hardware it beats the best open-source engines like Apache SedonaDB and DuckDB on most queries, without leaving Polars-like syntax at all.
+Apache SpatialBench is the standard single-node spatial-analytics benchmark: 12 queries over millions of trips and zones. PyCanopy runs the whole suite in Polars-like syntax, never dropping to SQL or a separate engine.
 
 <p align="center">
   <img src="assets/spatialbench_sf1_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1" width="100%"/>
 </p>
-
-<p align="center"><sub>Apache SpatialBench SF1 · log scale, lower is better · missing bars are TIMEOUT / ERROR</sub></p>
-
-> [!NOTE]
-> Versus GeoPandas microbenchmarks: up to **199×** on range queries · **1,024×** on kNN · **931×** on polygon contains · **3,307×** on within joins · [Full benchmarks](#benchmarks)
+<p align="center"><sub>Apache SpatialBench SF1 · lower is better · linear axis, bars past the cap truncated with their value · TIMEOUT / ERROR annotated</sub></p>
 
 ---
 
@@ -54,7 +51,7 @@ Every spatial option for a Polars user asks you to give something up:
 - **DuckDB spatial** is fast and out-of-core, but you leave Polars for SQL and create the R-tree index by hand.
 - **SedonaDB** is a capable spatial engine, but it is a separate SQL engine rather than a Polars-native API.
 
-PyCanopy's principle is to stay inside Polars and add a real query planner. You declare spatial ops in any order. It reorders them, fuses adjacent predicates, pushes projections into joins, and uses a cost model to decide per query whether to build an index at all (and which kind). 
+PyCanopy's principle is to stay inside Polars and add a real query planner. You declare spatial ops in any order. It reorders them, fuses adjacent predicates, pushes projections into joins, and uses a cost model to decide per query whether to build an index at all (and which kind).
 
 How the options compare:
 
@@ -347,21 +344,21 @@ sf.engine.flush()
 
 ### Apache SpatialBench
 
-Run on a single `m7i.2xlarge` (8 vCPU, 32 GB), the same instance as the published [SedonaDB / DuckDB / GeoPandas numbers](https://sedona.apache.org/spatialbench/single-node-benchmarks/).
+Run on a single `m7i.2xlarge` (8 vCPU, 32 GB), the same instance as the published [SedonaDB / DuckDB / GeoPandas numbers](https://sedona.apache.org/spatialbench/single-node-benchmarks/). PyCanopy is measured with `index_mode="auto"`; the other engines are the published baseline.
 
-**SF1** (~6M trips). PyCanopy beats SedonaDB on 11 of 12 queries and wins the heavy cross-zone joins q10/q11/q12 by 2 to 4x.
+**SF1** (~6M trips). PyCanopy is the fastest of the four engines on 10 of 12 queries, losing only q1 (to SedonaDB) and q5 (to DuckDB), and wins the heavy cross-zone joins q10-q12 by up to 4x over SedonaDB.
 
 <p align="center">
   <img src="assets/spatialbench_sf1_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1" width="100%"/>
 </p>
-<p align="center"><sub>Apache SpatialBench SF1 · log scale, lower is better · missing bars are TIMEOUT / ERROR</sub></p>
+<p align="center"><sub>Apache SpatialBench SF1 · lower is better · linear axis, bars past the cap truncated with their value · TIMEOUT / ERROR annotated</sub></p>
 
-**SF10** (~60M trips). PyCanopy wins 8 of 12. q12 returns a result larger than the 32 GB box, so it streams the join and spills the sort to disk, completing where DuckDB errors and GeoPandas times out.
+**SF10** (~60M trips). PyCanopy is fastest on 7 of 12. q12 returns a result larger than the 32 GB box, so it streams the join and spills the sort to disk, completing where DuckDB errors and GeoPandas times out.
 
 <p align="center">
   <img src="assets/spatialbench_sf10_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF10" width="100%"/>
 </p>
-<p align="center"><sub>Apache SpatialBench SF10 · log scale, lower is better · missing bars are TIMEOUT / ERROR</sub></p>
+<p align="center"><sub>Apache SpatialBench SF10 · lower is better · linear axis, bars past the cap truncated with their value · TIMEOUT / ERROR annotated</sub></p>
 
 ### Per-operation vs GeoPandas
 
@@ -369,16 +366,16 @@ Apple M-series. **Cold** = fresh engine, index build included. **Warm** = cached
 
 | Operation                          |       N |    Cold |    Warm | GeoPandas |   Speedup |
 |:-----------------------------------|--------:|--------:|--------:|----------:|----------:|
-| Range query (points)               | 100,000 |  2.6 ms |   28 µs |    5.6 ms |   **199×** |
-| kNN k=10                           | 100,000 |  9.9 ms |    7 µs |    7.3 ms | **1,024×** |
-| Contains (polygons)                | 100,000 |  6.1 ms |    6 µs |    5.4 ms |   **931×** |
-| Range (polygons)                   | 100,000 |  6.1 ms |    9 µs |    4.4 ms |   **503×** |
-| kNN join k=5                       |  10,000 | 10.4 ms |  2.2 ms |    5.5 s  | **2,463×** |
-| Within-distance join               |  10,000 | 14.1 ms | 13.6 ms |    3.5 s  |   **260×** |
-| Within join (polygons)             |   5,000 |  2.8 ms | 0.37 ms |    1.2 s  | **3,307×** |
-| Point→polygon kNN join k=5         |   5,000 |  6.7 ms |  5.7 ms |    6.1 s  | **1,076×** |
-| Point→polygon within-distance join |   5,000 |  6.6 ms |  6.4 ms |    5.4 s  |   **845×** |
-| Intersects self-join               |   5,000 |  2.2 ms |  1.1 ms |   0.86 s  |   **796×** |
+| Range query (points)               | 100,000 |  2.7 ms |   31 µs |    5.5 ms |   **177×** |
+| kNN k=10                           | 100,000 |  9.5 ms |    5 µs |    7.4 ms | **1,452×** |
+| Contains (polygons)                | 100,000 |  5.1 ms |    3 µs |    5.2 ms | **1,922×** |
+| Range (polygons)                   | 100,000 |  5.5 ms |    7 µs |    3.2 ms |   **470×** |
+| kNN join k=5                       |  10,000 |  8.8 ms |  2.8 ms |    5.6 s  | **1,958×** |
+| Within-distance join               |  10,000 | 15.7 ms | 13.9 ms |    3.7 s  |   **266×** |
+| Within join (polygons)             |   5,000 |  3.3 ms | 0.73 ms |    1.2 s  | **1,663×** |
+| Point→polygon kNN join k=5         |   5,000 |  7.4 ms |  4.4 ms |    6.3 s  | **1,414×** |
+| Point→polygon within-distance join |   5,000 |  6.9 ms |  6.5 ms |    5.5 s  |   **858×** |
+| Intersects self-join               |   5,000 |  3.0 ms | 0.89 ms |   0.84 s  |   **943×** |
 
 ---
 
