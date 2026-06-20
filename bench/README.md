@@ -19,40 +19,32 @@ one line per op and writes a summary table to `assets/`.
 
 ## SpatialBench
 
-The heavy run happens on an ephemeral EC2 box, matched to the published `m7i.2xlarge`
-hardware. The only thing that comes back is a comparison chart PNG in `assets/`.
+Benchmarking runs **only** on an ephemeral EC2 box matched to the published
+`m7i.2xlarge` hardware, never locally, so the numbers stay comparable to the published
+baseline. The only thing that comes back is a comparison chart PNG in `assets/`.
 
 ```bash
 uv sync --group bench                         # boto3, geopandas, etc.
 # edit spatial_bench/config.yaml: set result_bucket and instance_profile
-python -m bench.spatial_bench.aws_run
+python -m bench.spatial_bench --scale 1
 ```
 
-The box builds PyCanopy, runs every query, uploads the chart, and self-terminates.
-Locally, `aws_run.py` polls S3, streams progress, downloads the PNG, and terminates the
-box.
+The box builds PyCanopy, runs every query, uploads the chart, and self-terminates. The
+launcher polls S3, streams progress, downloads the PNG, and terminates the box.
 
 **Flags**
 
 | Flag | Effect |
 | --- | --- |
+| `--scale {1,10}` | Scale factor to benchmark (required) |
 | `--index-eager` (default) | Build an index whenever a kind is selected |
 | `--index-auto` | Build an index only when the cost model beats a scan |
 | `--index-none` | Brute-force every query |
 | `--no-verify` | Skip the live SedonaDB output check |
 
-Scale factor and data location live in `config.yaml`.
-
-### Run one scale factor locally
-
-No AWS needed. Same flags, plus `--queries q1 q4 ...` for a subset.
-
-```bash
-python -m bench.spatial_bench --data-dir <local|s3://...> --scale-factor 1
-```
-
-Writes `assets/spatialbench_sf1.png`. This is the exact entry point the EC2 box runs, so
-local and cloud runs render identically.
+The scale factor, index mode, and verification are CLI flags. The fixed infrastructure
+(bucket, instance, data location, repo) lives in `config.yaml`. Writes
+`assets/spatialbench_sf{N}.png`.
 
 ### AWS setup
 
@@ -75,9 +67,9 @@ local and cloud runs render identically.
    }
    ```
 
-3. **Runner permissions.** Whoever runs `aws_run.py` needs `ec2:RunInstances`,
-   `ec2:DescribeInstances`, `ec2:TerminateInstances`, `ssm:GetParameter`, `iam:PassRole`,
-   and read access to the result bucket.
+3. **Runner permissions.** Whoever runs `python -m bench.spatial_bench` needs
+   `ec2:RunInstances`, `ec2:DescribeInstances`, `ec2:TerminateInstances`,
+   `ssm:GetParameter`, `iam:PassRole`, and read access to the result bucket.
 
 The box always terminates: shutdown-on-terminate, a `max_runtime_min` watchdog, and a
-`finally` in `aws_run.py` that kills it even on interrupt.
+`finally` in the launcher that kills it even on interrupt.

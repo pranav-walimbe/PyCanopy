@@ -18,6 +18,8 @@ from pycanopy import SpatialFrame
 
 matplotlib.use("Agg")  # headless backend, set before any figure is created
 
+_ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
+
 
 # Published Apache SpatialBench baseline (chart reference)
 
@@ -409,3 +411,37 @@ def write_chart(results: dict, out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=120)
     plt.close(fig)
+
+
+def run_suite(
+    query_modules: list,
+    data_dir: str,
+    scale_factor: float,
+    index_mode: str = "eager",
+    output: str | None = None,
+    verify: bool = True,
+) -> Path:
+    """Measure each query module and render the comparison chart, returning its path.
+
+    This is the on-box driver bootstrap.sh re-enters through the package. It loops
+    measure_query over the modules then writes the chart for the scale and index mode.
+
+    Args:
+        query_modules: Query modules to run, each exposing id, pycanopy, and compare.
+        data_dir: Local directory or ``s3://`` URI of the parquet tables.
+        scale_factor: Scale factor, used for the chart label and output filename.
+        index_mode: PyCanopy index build policy ("eager" / "none" / "auto").
+        output: Explicit PNG path, or None for assets/spatialbench_sf{N}[_mode].png.
+        verify: Run the SedonaDB output check per query when True.
+
+    Returns:
+        The chart PNG path written.
+    """
+    results = {"scale_factor": scale_factor, "index_mode": index_mode, "queries": {}}
+    for query in query_modules:
+        results["queries"][query.id] = measure_query(query, data_dir, index_mode, verify=verify)
+    sf = int(scale_factor)
+    suffix = "" if index_mode == "eager" else f"_{index_mode}"
+    out_path = Path(output) if output else _ASSETS_DIR / f"spatialbench_sf{sf}{suffix}.png"
+    write_chart(results, out_path)
+    return out_path
