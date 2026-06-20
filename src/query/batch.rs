@@ -79,7 +79,7 @@ pub fn par_contains<I: SpatialIndex + Sync>(
         .zip(qys.par_iter())
         .enumerate()
         .flat_map_iter(|(qi, (&qx, &qy))| {
-            // MBR pre-filter via index, then exact PIP, mapping parts to polygons.
+            // MBR pre-filter via index, then exact PIP, mapping parts to polygons
             let mut out: Vec<u64> = Vec::new();
             let mut seen: Vec<u32> = Vec::new();
             for ei in index.range(qx, qy, qx, qy) {
@@ -146,7 +146,7 @@ pub fn par_within_distance_flipped(
     distance: f64,
 ) -> Vec<u64> {
     let d2 = distance * distance;
-    // Build a KD-tree on the (smaller) query side.
+    // Build a KD-tree on the (smaller) query side
     let q_index = PackedKdTree::build(Arc::from(qxs.to_vec()), Arc::from(qys.to_vec()));
     xs.par_iter()
         .zip(ys.par_iter())
@@ -183,7 +183,7 @@ pub fn par_within_distance_to_polygons<I: SpatialIndex + Sync>(
         .zip(qys.par_iter())
         .enumerate()
         .flat_map_iter(|(qi, (&qx, &qy))| {
-            // MBR pre-filter, exact distance, then map parts to polygons (dedup per query).
+            // MBR pre-filter, exact distance, then map parts to polygons (dedup per query)
             let mut out: Vec<u64> = Vec::new();
             let mut seen: Vec<u32> = Vec::new();
             for ei in index.range(qx - distance, qy - distance, qx + distance, qy + distance) {
@@ -243,7 +243,7 @@ pub fn par_knn_to_polygons<I: SpatialIndex + Sync>(
                     (id, d)
                 })
                 .collect();
-            // Reduce parts of one polygon to its nearest part before ranking by distance.
+            // Reduce parts of one polygon to its nearest part before ranking by distance
             if part_poly.is_some() {
                 cands.sort_unstable_by(|a, b| {
                     a.0.cmp(&b.0)
@@ -304,7 +304,7 @@ pub fn par_polygon_intersects_join<I: SpatialIndex + Sync>(
             index
                 .range(min_x, min_y, max_x, max_y)
                 .into_iter()
-                // Keep ordered pairs i < j to emit each unordered pair once.
+                // Keep ordered pairs i < j to emit each unordered pair once
                 .filter(move |&j| j > i)
                 .filter(move |&j| polygons_intersect(xs, ys, ring_offsets, poly_offsets, i, j))
                 .flat_map(move |j| [i as u64, j as u64])

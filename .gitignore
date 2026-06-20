@@ -39,6 +39,7 @@ env/
 # Internal development files
 CLAUDE.md
 pycanopy_logo_files/
+scripts/
 
 # Generated benchmark outputs in assets (keep only the logo and the SpatialBench charts)
 /assets/*

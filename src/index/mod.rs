@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 /// Common interface for all spatial index backends.
 /// Coordinates are passed as Arc<[f64]> so indexes can share Engine's allocation
-/// without copying — storing an Arc<[f64]> is an atomic refcount bump, not a memcpy.
+/// without copying, since storing an Arc<[f64]> is an atomic refcount bump, not a memcpy.
 pub trait SpatialIndex: Send + Sync {
     fn build(xs: Arc<[f64]>, ys: Arc<[f64]>) -> Self
     where

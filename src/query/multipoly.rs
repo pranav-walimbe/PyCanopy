@@ -28,7 +28,7 @@ pub fn dedup_self_pairs(pairs: Vec<u64>, part_poly: &[u32]) -> Vec<u64> {
     out
 }
 
-/// Map part indices to logical polygon indices, preserving order and dropping repeats.
+/// Map part indices to logical polygon indices, preserving order and dropping repeats
 pub fn dedup_indices(parts: Vec<usize>, part_poly: &[u32]) -> Vec<usize> {
     let mut out: Vec<usize> = Vec::with_capacity(parts.len());
     for p in parts {
@@ -40,7 +40,7 @@ pub fn dedup_indices(parts: Vec<usize>, part_poly: &[u32]) -> Vec<usize> {
     out
 }
 
-/// Sum per-part areas into per-polygon areas.
+/// Sum per-part areas into per-polygon areas
 pub fn sum_part_areas(part_areas: &[f64], part_poly: &[u32], n_polygons: usize) -> Vec<f64> {
     let mut out = vec![0.0; n_polygons];
     for (p, &a) in part_areas.iter().enumerate() {
@@ -49,7 +49,7 @@ pub fn sum_part_areas(part_areas: &[f64], part_poly: &[u32], n_polygons: usize) 
     out
 }
 
-/// Group parts by polygon as CSR: polygon `g` owns parts `parts[offsets[g]..offsets[g+1]]`.
+/// Group parts by polygon as CSR: polygon `g` owns parts `parts[offsets[g]..offsets[g+1]]`
 pub fn polygon_parts_csr(part_poly: &[u32], n_polygons: usize) -> (Vec<u32>, Vec<u32>) {
     let mut offsets = vec![0u32; n_polygons + 1];
     for &g in part_poly {
@@ -71,12 +71,12 @@ pub fn polygon_parts_csr(part_poly: &[u32], n_polygons: usize) -> (Vec<u32>, Vec
 mod tests {
     use super::*;
 
-    // Parts 0,1 -> polygon 0 (a MultiPolygon); part 2 -> polygon 1.
+    // Parts 0,1 -> polygon 0 (a MultiPolygon), part 2 -> polygon 1
     const PART_POLY: [u32; 3] = [0, 0, 1];
 
     #[test]
     fn self_pairs_drop_same_polygon_and_dedup() {
-        // (0,1) same polygon -> dropped; (1,2) and (0,2) both -> logical (0,1).
+        // (0,1) same polygon -> dropped, (1,2) and (0,2) both -> logical (0,1)
         let pairs = vec![0, 1, 1, 2, 0, 2];
         assert_eq!(dedup_self_pairs(pairs, &PART_POLY), vec![0, 1]);
     }

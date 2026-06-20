@@ -35,7 +35,7 @@ from pycanopy.nodes import (
 # cascade leaves so few rows that a fresh index build on survivors beats the full M rows.
 _FUSION_SELECTIVITY_FLOOR = 0.05
 
-# Datasets smaller than this always use BruteForce; fusion overhead isn't worth it.
+# Datasets smaller than this always use BruteForce, fusion overhead isn't worth it
 _FUSION_MIN_N = 500
 
 # Spatial selectivity below this threshold means the spatial filter is tighter than
@@ -76,6 +76,7 @@ _BOOLEAN_FUNCTION_COST: dict[str, int] = {
 
 
 def _function_cost(fn: object) -> int:
+    # Cost of a Polars function expression from its serialized AST node
     if not isinstance(fn, dict):
         return 1
     for key, val in fn.items():
@@ -90,6 +91,7 @@ def _function_cost(fn: object) -> int:
 
 
 def _walk_ast_cost(node: object) -> int:
+    # Recursively sum the estimated cost of a serialized Polars expression AST
     if isinstance(node, dict):
         if "BinaryExpr" in node:
             expr = node["BinaryExpr"]
@@ -112,6 +114,7 @@ def _walk_ast_cost(node: object) -> int:
 
 
 def _scalar_cost(expr) -> int:
+    # Estimate a scalar expression's cost from its serialized AST, defaulting to 1
     try:
         tree = json.loads(expr.meta.serialize(format="json"))
         return max(1, _walk_ast_cost(tree))
@@ -149,18 +152,8 @@ class SpatialOptimizer:
         return plan
 
     def _assign_selectivity(self, plan: Plan, engine) -> Plan:
-        """Estimate and attach selectivity to each node.
-
-        Spatial nodes use area-ratio or k/N estimates from engine stats. Scalar nodes
-        default to 1.0 (column histograms are not yet wired up).
-
-        Args:
-            plan: Plan in any order.
-            engine: Engine with dataset statistics.
-
-        Returns:
-            New plan with .selectivity populated on every node.
-        """
+        # Estimate and attach selectivity to each node. Spatial nodes use area-ratio or k/N
+        # estimates from engine stats, and scalar nodes default to 1.0.
         n = engine.n
         extent = engine.extent
         result = []
@@ -183,6 +176,7 @@ class SpatialOptimizer:
         node: RangeNode,
         extent: tuple[float, float, float, float] | None,
     ) -> float:
+        # Selectivity of a range query as its area divided by the dataset extent area
         if extent is None:
             return 1.0
         min_x, min_y, max_x, max_y = extent
@@ -193,18 +187,8 @@ class SpatialOptimizer:
         return min(1.0, query_area / total_area)
 
     def _cost_sort(self, plan: Plan) -> Plan:
-        """Reorder nodes so cheaper operations run first.
-
-        Joins and KNN act as barriers so nodes on either side sort independently. Within a
-        run, scalar nodes go first (Polars handles them cheaply), then spatials by ascending
-        selectivity.
-
-        Args:
-            plan: Plan with selectivity populated.
-
-        Returns:
-            Reordered plan.
-        """
+        # Reorder nodes so cheaper operations run first. Joins and KNN are barriers, and within
+        # a run scalars go first (Polars handles them cheaply) then spatials by ascending selectivity.
         result: Plan = []
         run: Plan = []
         _barrier_types = (
@@ -227,29 +211,14 @@ class SpatialOptimizer:
         return result
 
     def _sort_run(self, run: Plan) -> Plan:
-        """Sort a barrier-separated run: scalars first by cost, then spatials by selectivity."""
+        # Sort a barrier-separated run: scalars first by cost, then spatials by selectivity
         scalars = [n for n in run if isinstance(n, ScalarNode)]
         spatials = [n for n in run if not isinstance(n, ScalarNode)]
         return sorted(scalars, key=lambda n: n.cost) + sorted(spatials, key=lambda n: n.selectivity)
 
     def _fusion_pass(self, plan: Plan, engine) -> Plan:
-        """Merge consecutive fusable spatial filter nodes into FusedSpatialNode.
-
-        Fusion conditions (all must hold for every node in the run):
-          - Adjacent spatial filter nodes with no scalar between them.
-          - Selectivity >= _FUSION_SELECTIVITY_FLOOR (first predicate selective enough
-            that Polars cascade won't shrink the second build cheaply on its own).
-          - N >= _FUSION_MIN_N (BruteForce dominates below this).
-
-        Runs are split at any node that fails the conditions.
-
-        Args:
-            plan: Cost-sorted plan.
-            engine: Engine with dataset statistics.
-
-        Returns:
-            Plan with eligible consecutive spatial nodes merged.
-        """
+        # Merge consecutive fusable spatial filter nodes into a FusedSpatialNode, splitting the
+        # run at any node that is not fusable (too selective, or dataset below _FUSION_MIN_N).
         if engine.n < _FUSION_MIN_N:
             return plan
 
@@ -276,25 +245,15 @@ class SpatialOptimizer:
         return result
 
     def _is_fusable(self, node) -> bool:
+        # A range or contains node is fusable when its selectivity clears the fusion floor
         return (
             isinstance(node, (RangeNode, ContainsNode))
             and node.selectivity >= _FUSION_SELECTIVITY_FLOOR
         )
 
     def _join_side_pass(self, plan: Plan, engine) -> Plan:
-        """Set flip=True on join nodes where indexing the query side is cheaper.
-
-        Flips when len(query_df) > engine.n // 2 so the existing Engine index
-        is not abandoned for a marginal size difference. knn_join is asymmetric
-        and never flipped. within_join and within_distance_join are symmetric.
-
-        Args:
-            plan: Fusion-sorted plan.
-            engine: Engine instance for dataset size.
-
-        Returns:
-            Plan with flip flags set on eligible join nodes.
-        """
+        # Set flip=True on symmetric join nodes when the query side is over half the dataset,
+        # so the existing Engine index is not abandoned for a marginal size difference.
         result = []
         for node in plan:
             if isinstance(node, (WithinJoinNode, WithinDistanceJoinNode)):
@@ -304,19 +263,8 @@ class SpatialOptimizer:
         return result
 
     def _detect_fanout(self, plans: list[Plan]) -> int:
-        """Return the length of the longest plan prefix shared by all plans.
-
-        A node is shared when it is the same Python object across every plan, so the first
-        diverging position ends the prefix. Identity holds because plans are built via
-        [*self._plan, new_node], reusing node references.
-
-        Args:
-            plans: Two or more plans to compare.
-
-        Returns:
-            Number of leading nodes that are the same object across all plans.
-            Returns 0 if fewer than two plans are provided or no prefix is shared.
-        """
+        # Return the length of the longest plan prefix shared by all plans, where a node is
+        # shared when it is the same Python object across every plan (plans reuse references).
         if len(plans) < 2:
             return 0
         min_len = min(len(p) for p in plans)
@@ -326,20 +274,8 @@ class SpatialOptimizer:
         return min_len
 
     def _select_plugin_path(self, plan: Plan, engine) -> PluginPath:
-        """Choose expression plugin (default) or IO plugin.
-
-        The IO path queries the pre-built Engine then slices sf.df to K candidates, winning
-        at tight selectivity (K << N). The EXPR path runs scalar filters first then rebuilds
-        a local index on the M survivors, winning at moderate selectivity. Join nodes and
-        KNN always use EXPR for the global Engine index and _ROW_IDX correlation.
-
-        Args:
-            plan: Optimised plan with selectivity populated.
-            engine: Engine instance (unused currently; reserved for future n-based tuning).
-
-        Returns:
-            PluginPath.IO or PluginPath.EXPR.
-        """
+        # Choose the IO path when a spatial filter is selective enough (K << N) to beat
+        # rebuilding a local index, otherwise EXPR. Joins and KNN always use EXPR.
         if any(
             isinstance(
                 n,

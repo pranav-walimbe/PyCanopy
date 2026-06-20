@@ -7,7 +7,7 @@ use crate::index::SpatialIndex;
 /// Uniform grid index with CSR (compressed sparse row) cell storage.
 /// Best for large datasets with uniform spatial distribution.
 ///
-/// xs/ys are shared Arcs from the Engine — no coordinate data is copied.
+/// xs/ys are shared Arcs from the Engine, so no coordinate data is copied.
 /// The CSR arrays (cell_offsets, indices) are new allocations derived from the data.
 pub struct UniformGrid {
     /// cell_offsets[i]..cell_offsets[i+1] is the slice of indices in cell i
@@ -104,14 +104,14 @@ impl SpatialIndex for UniformGrid {
             counts[c as usize] += 1;
         }
 
-        // Prefix sum → cell_offsets (length num_cells + 1).
+        // Prefix sum → cell_offsets (length num_cells + 1)
         let mut cell_offsets = Vec::with_capacity(num_cells + 1);
         cell_offsets.push(0u32);
         for &cnt in &counts {
             cell_offsets.push(cell_offsets.last().unwrap() + cnt);
         }
 
-        // Pass 2: scatter point indices into their cell slots.
+        // Pass 2: scatter point indices into their cell slots
         let mut indices = vec![0u32; n];
         let mut write_pos = cell_offsets[..num_cells].to_vec();
         for (i, &c) in cell_for_point.iter().enumerate() {

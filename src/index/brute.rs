@@ -6,7 +6,7 @@ use crate::index::SpatialIndex;
 ///
 /// Stores per-geometry bounding boxes for MBR filtering. For point datasets the
 /// bbox is degenerate (min == max == coordinate) and xs/ys are shared Arcs from
-/// the Engine — no data is copied. For polygon datasets, bbox arrays are derived
+/// the Engine, so no data is copied. For polygon datasets, bbox arrays are derived
 /// from ring coordinates and centroids are stored for nearest queries.
 pub struct BruteForce {
     /// Representative point coordinates: actual coords for points, centroids for polygons
@@ -22,7 +22,7 @@ pub struct BruteForce {
 }
 
 impl SpatialIndex for BruteForce {
-    /// Build from point coordinates. bbox arrays share the xs/ys Arcs (no copy).
+    /// Build from point coordinates. bbox arrays share the xs/ys Arcs (no copy)
     fn build(xs: Arc<[f64]>, ys: Arc<[f64]>) -> Self {
         BruteForce {
             bbox_min_x: Arc::clone(&xs),
@@ -67,8 +67,8 @@ impl SpatialIndex for BruteForce {
 impl BruteForce {
     /// Heap bytes allocated by this index, excluding coordinates shared with the Engine.
     ///
-    /// Point datasets share all bbox arcs with the Engine's xs/ys — marginal cost is zero.
-    /// Polygon datasets allocate new centroid and MBR arrays — 6 * N * 8 bytes.
+    /// Point datasets share all bbox arcs with the Engine's xs/ys, so marginal cost is zero.
+    /// Polygon datasets allocate new centroid and MBR arrays of 6 * N * 8 bytes.
     pub fn heap_bytes(&self) -> usize {
         if Arc::ptr_eq(&self.xs, &self.bbox_min_x) {
             0
@@ -95,7 +95,7 @@ impl BruteForce {
         let mut mx_ys = Vec::with_capacity(n_polys);
 
         for &ext_ring_i64 in poly_offsets.iter().take(n_polys) {
-            // MBR and centroid come from the exterior ring only.
+            // MBR and centroid come from the exterior ring only
             let ext_ring = ext_ring_i64 as usize;
             let start = ring_offsets[ext_ring] as usize;
             let end = ring_offsets[ext_ring + 1] as usize;

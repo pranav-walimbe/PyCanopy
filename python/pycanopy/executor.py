@@ -1,4 +1,4 @@
-"""SpatialExecutor — walks the optimised plan and emits a Polars LazyFrame chain."""
+"""Define SpatialExecutor which walks the optimised plan and emits a Polars LazyFrame chain."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ from pycanopy.nodes import (
 # are indices into the original dataset and must correlate with post-filter rows.
 _ROW_IDX = "__orig_row__"
 
-# Join node types. All carry a `query_df` probe side, which is what gets streamed.
+# Join node types. All carry a `query_df` probe side, which is what gets streamed
 _JOIN_TYPES = (
     KnnJoinNode,
     WithinJoinNode,
@@ -39,7 +39,7 @@ _JOIN_TYPES = (
     PolygonKnnJoinNode,
 )
 
-# Probe rows per morsel for a streamed join. Conservative fixed cap (bounds rows not pairs), overridable via batch_size.
+# Probe rows per morsel for a streamed join. Conservative fixed cap (bounds rows not pairs), overridable via batch_size
 MORSEL_ROWS = 262_144
 
 
@@ -50,13 +50,8 @@ def _range_plugin_expr(
     max_y: float,
     engine,
 ) -> pl.Expr:
-    """Boolean mask expression for a bounding-box filter via map_batches.
-
-    is_elementwise=False acts as a Polars barrier: scalar predicates upstream
-    execute first, so the closure receives only the M already-filtered rows via
-    their _ROW_IDX values. The pre-built global Engine is queried and the hit
-    bitmap is indexed by the surviving original row positions to produce the mask.
-    """
+    # Boolean mask for a bounding-box filter via map_batches. is_elementwise=False is a
+    # barrier, so the closure sees only post-scalar-filter rows queried against the global index.
     n_total = engine.n
 
     def _apply(s: pl.Series) -> pl.Series:
@@ -73,11 +68,8 @@ def _range_plugin_expr(
 
 
 def _contains_plugin_expr(qx: float, qy: float, engine) -> pl.Expr:
-    """Boolean mask expression for a point exact-match filter via map_batches.
-
-    Queries the pre-built global Engine and intersects hits with the surviving
-    _ROW_IDX values from upstream scalar filters via a hit bitmap.
-    """
+    # Boolean mask for a point exact-match filter via map_batches. It intersects the global
+    # Engine hits with the surviving _ROW_IDX values from upstream scalar filters via a bitmap.
     n_total = engine.n
 
     def _apply(s: pl.Series) -> pl.Series:
@@ -94,7 +86,7 @@ def _contains_plugin_expr(qx: float, qy: float, engine) -> pl.Expr:
 
 
 def _fused_plugin_expr(predicates: list[RangeNode | ContainsNode], engine) -> pl.Expr:
-    """Boolean mask expression applying all fused predicates via sorted merge in Rust."""
+    # Boolean mask applying all fused predicates via sorted merge in Rust
     n_total = engine.n
     range_queries = [
         (pred.min_x, pred.min_y, pred.max_x, pred.max_y)
@@ -124,18 +116,12 @@ def _fused_plugin_expr(predicates: list[RangeNode | ContainsNode], engine) -> pl
 
 
 def _knn_plugin_expr(qx: float, qy: float, k: int, engine) -> pl.Expr:
-    """Boolean mask for kNN restricted to M survivors from upstream scalar filters.
-
-    is_elementwise=False acts as a Polars barrier — scalar predicates upstream
-    execute first. The closure receives M _ROW_IDX values and delegates to
-    knn_from_candidates: a linear scan over the M survivors that computes squared
-    distances directly from the coordinate arrays and partial-sorts to find the k
-    nearest. O(M + k log k), exact, no global index query.
-    """
+    # Boolean mask for kNN over the M survivors from upstream scalar filters. Delegates to
+    # knn_from_candidates, an exact O(M + k log k) linear scan with no global index query.
     n_total = engine.n
 
     def _apply(s: pl.Series) -> pl.Series:
-        orig_idx = s.to_numpy()  # uint32 — _ROW_IDX is always UInt32 from with_row_index
+        orig_idx = s.to_numpy()  # uint32, _ROW_IDX is always UInt32 from with_row_index
         if len(orig_idx) == 0:
             return pl.Series("", [], dtype=pl.Boolean)
         hits = engine.knn_from_candidates(qx, qy, k, orig_idx)
@@ -175,7 +161,7 @@ class SpatialExecutor:
         """Execute the optimised plan against sf.
 
         The engine's index mode (eager/none/auto, fixed at frame construction)
-        governs whether indexes are built; the executor does not change it.
+        governs whether indexes are built, the executor does not change it.
 
         Args:
             plan: Execution-ordered plan from SpatialOptimizer.
@@ -197,7 +183,7 @@ class SpatialExecutor:
         plugin_path: PluginPath,
         batch_size: int | None,
     ) -> pl.DataFrame:
-        """Strip a trailing projection, run the body, then apply the final select."""
+        # Strip a trailing projection, run the body, then apply the final select
         projection, body = self._extract_projection(plan)
         df = self._execute_body(body, sf, plugin_path, batch_size)
         if projection is not None:
@@ -205,7 +191,7 @@ class SpatialExecutor:
         return df
 
     def _extract_projection(self, plan: Plan) -> tuple[tuple[str, ...] | None, Plan]:
-        """Split a trailing SelectNode off the plan and push its keep-set onto join nodes."""
+        # Split a trailing SelectNode off the plan and push its keep-set onto join nodes
         if not plan or not isinstance(plan[-1], SelectNode):
             return None, plan
         output_columns = plan[-1].columns
@@ -213,7 +199,7 @@ class SpatialExecutor:
         join_positions = [i for i, n in enumerate(body) if isinstance(n, _JOIN_TYPES)]
         if not join_positions:
             return output_columns, body
-        # Keep the projected columns plus any columns post-join filters read, as output names.
+        # Keep the projected columns plus any columns post-join filters read, as output names
         keep = set(output_columns)
         for node in body[join_positions[-1] + 1 :]:
             if isinstance(node, ScalarNode):
@@ -232,7 +218,8 @@ class SpatialExecutor:
         plugin_path: PluginPath,
         batch_size: int | None,
     ) -> pl.DataFrame:
-        """Run the optimised plan, dispatching scalar / IO / EXPR / streamed-join paths."""
+        # Run the optimised plan, dispatching scalar / IO / EXPR / streamed-join paths
+
         # Scalar-only fast path with no spatial ops. Feed filters straight to Polars as a
         # zero-copy lazy chain (no _ROW_IDX, no dispatch, no bitmap).
         if all(isinstance(n, ScalarNode) for n in plan):
@@ -282,10 +269,8 @@ class SpatialExecutor:
     ) -> Iterator[pl.DataFrame]:
         """Yield the plan's result one morsel-frame at a time.
 
-        For a join plan the probe is sliced into batch_size-row morsels (default
-        MORSEL_ROWS). Each is joined and yielded on its own so a caller can reduce it
-        before the next is computed and the full result never materialises at once.
-        Plans without a join yield a single frame.
+        For a join plan the probe is sliced into batch_size-row morsels (default MORSEL_ROWS)
+        and each joined morsel is yielded on its own, so the full result never materialises.
 
         Args:
             plan: Execution-ordered plan from SpatialOptimizer.
@@ -305,25 +290,13 @@ class SpatialExecutor:
     def _stream_join_frames(
         self, plan: Plan, sf, morsel_rows: int, projection: tuple[str, ...] | None = None
     ) -> Iterator[pl.DataFrame]:
-        """Slice the join's probe into morsels, emit each joined frame in turn.
-
-        The first join node is the streaming axis. Its query_df is sliced zero-copy via
-        iter_slices and run through the join emitter, then post-join nodes apply per
-        morsel. Exact because a join is row-independent so morsels partition the result.
-
-        Args:
-            plan: Execution-ordered plan containing at least one join node.
-            sf: SpatialFrame owning the Engine and DataFrame.
-            morsel_rows: Probe rows per morsel.
-
-        Yields:
-            One joined DataFrame per probe morsel.
-        """
+        # Slice the join's probe into morsels and emit each joined frame, applying
+        # post-join nodes per morsel so the full result never materialises.
         join_pos = next(i for i, n in enumerate(plan) if isinstance(n, _JOIN_TYPES))
         join_node = plan[join_pos]
         post_nodes = plan[join_pos + 1 :]
         # Join emitters ignore the incoming lf (they gather from sf.df directly), so a
-        # placeholder is fine; post-join nodes receive the real joined lf.
+        # placeholder is fine, post-join nodes receive the real joined lf.
         placeholder = sf.df.lazy()
         for chunk in join_node.query_df.iter_slices(morsel_rows):
             sub = dataclasses.replace(join_node, query_df=chunk)
@@ -336,11 +309,8 @@ class SpatialExecutor:
             yield out
 
     def _execute_io(self, plan: Plan, sf) -> pl.DataFrame:
-        """IO path: query the pre-built Engine first, slice df, then apply scalars.
-
-        All spatial nodes are resolved against the global Engine (no index rebuild).
-        Results are AND-intersected. Scalar nodes run on the small candidate slice.
-        """
+        # IO path: resolve every spatial node against the global Engine (no index rebuild),
+        # AND-intersect the hits, slice df to candidates, then run scalars on that small slice.
         hit_lists: list[list[int]] = []
         scalar_nodes: list[ScalarNode] = []
 
@@ -384,11 +354,8 @@ class SpatialExecutor:
         return lf.collect()
 
     def _execute_intersects(self, plan: Plan, sf) -> pl.DataFrame:
-        """Build the polygon intersects pair frame, then apply any trailing filters.
-
-        The self-join spans the whole dataset (it takes no probe side), so nodes
-        before it do not constrain it; scalar nodes after it filter the pair frame.
-        """
+        # Build the polygon intersects pair frame, then apply any trailing scalar filters.
+        # The self-join takes no probe side, so only scalar nodes after it constrain the result.
         pos = next(i for i, n in enumerate(plan) if isinstance(n, IntersectsSelfJoinNode))
         lf = sf.intersects_pairs().lazy()
         for node in plan[pos + 1 :]:
@@ -399,6 +366,7 @@ class SpatialExecutor:
     def _emit_chain(
         self, plan: Plan, sf, lf: pl.LazyFrame, plugin_path: PluginPath
     ) -> pl.LazyFrame:
+        # Emit each plan node in order, routing KNN through the scalar-aware emitter
         has_seen_scalar = False
         for node in plan:
             if isinstance(node, KnnNode):
@@ -410,6 +378,7 @@ class SpatialExecutor:
         return lf
 
     def _emit_node(self, node, sf, lf: pl.LazyFrame, plugin_path: PluginPath) -> pl.LazyFrame:
+        # Dispatch one plan node to its emitter by type
         if isinstance(node, ScalarNode):
             return lf.filter(node.expr)
         if isinstance(node, RangeNode):
@@ -439,6 +408,7 @@ class SpatialExecutor:
     def _emit_range(
         self, node: RangeNode, sf, lf: pl.LazyFrame, plugin_path: PluginPath
     ) -> pl.LazyFrame:
+        # Emit a range filter as an EXPR mask or an IO index slice
         if plugin_path == PluginPath.EXPR:
             return lf.filter(
                 _range_plugin_expr(node.min_x, node.min_y, node.max_x, node.max_y, sf.engine)
@@ -449,6 +419,7 @@ class SpatialExecutor:
     def _emit_contains(
         self, node: ContainsNode, sf, lf: pl.LazyFrame, plugin_path: PluginPath
     ) -> pl.LazyFrame:
+        # Emit a point-in-polygon filter as an EXPR mask or an IO index slice
         if plugin_path == PluginPath.EXPR:
             return lf.filter(_contains_plugin_expr(node.qx, node.qy, sf.engine))
         indices = sf.engine.contains(node.qx, node.qy)
@@ -457,6 +428,7 @@ class SpatialExecutor:
     def _emit_knn(
         self, node: KnnNode, sf, lf: pl.LazyFrame, has_prior_scalar: bool = False
     ) -> pl.LazyFrame:
+        # Emit kNN over post-scalar survivors via EXPR, otherwise a global index query
         if has_prior_scalar:
             # Scalars ran first. M survivors arrive via _ROW_IDX. A linear scan over those
             # M rows finds the k nearest without a global index query.
@@ -467,6 +439,7 @@ class SpatialExecutor:
     def _emit_fused(
         self, node: FusedSpatialNode, sf, lf: pl.LazyFrame, plugin_path: PluginPath
     ) -> pl.LazyFrame:
+        # Emit fused predicates as one EXPR mask, or as separate IO filters
         if plugin_path == PluginPath.EXPR:
             return lf.filter(_fused_plugin_expr(node.predicates, sf.engine))
         for pred in node.predicates:
@@ -476,16 +449,13 @@ class SpatialExecutor:
     def _emit_points_within_distance_of_polygon(
         self, node: PointsWithinDistanceOfPolygonNode, sf, lf: pl.LazyFrame
     ) -> pl.LazyFrame:
-        """Keep points within node.distance of the query polygon.
-
-        The engine queries the polygon against all points (independent of any
-        upstream survivors), so the matching indices are resolved once and the
-        current lf is filtered to them by original row position.
-        """
+        # Keep points within node.distance of the query polygon. The polygon is queried
+        # against all points, so indices resolve once and the lf filters by original row.
         indices = sf.engine.points_within_distance_of_polygon(node.polygon, node.distance).tolist()
         return self._filter_by_indices(lf, indices)
 
     def _filter_by_indices(self, lf: pl.LazyFrame, indices: list[int]) -> pl.LazyFrame:
+        # Filter the lf to the given original row indices, or to nothing when empty
         if not indices:
             return lf.filter(pl.lit(False))
         return lf.filter(pl.col(_ROW_IDX).is_in(indices))
@@ -493,12 +463,8 @@ class SpatialExecutor:
     # join nodes
 
     def _assemble_join(self, node, sf, q_idx: pl.Series, t_idx: pl.Series) -> pl.DataFrame:
-        """Gather both join sides at the paired indices, narrowed to node.keep_columns.
-
-        Right-side columns colliding with the query side are prefixed 'right_' (the output
-        names), so a keep-set in output names selects the right source columns. A side not
-        in the keep-set is dropped before the gather, the only full-width materialisation.
-        """
+        # Gather both join sides at the paired indices, narrowed to node.keep_columns, with
+        # 'right_' prefixing right-side name collisions and unkept sides dropped before gather.
         query_cols = node.query_df.columns
         target_cols = sf.df.columns
         overlap = set(query_cols) & set(target_cols)
@@ -526,19 +492,19 @@ class SpatialExecutor:
         return pl.concat(parts, how="horizontal")
 
     def _emit_knn_join(self, node: KnnJoinNode, sf, lf: pl.LazyFrame) -> pl.LazyFrame:
-        """For each row in query_df, find the k nearest in the Engine's dataset."""
+        # For each row in query_df, find the k nearest in the Engine's dataset
         query_xs = node.query_df[node.x_col].to_numpy()
         query_ys = node.query_df[node.y_col].to_numpy()
         n_queries = len(node.query_df)
 
-        # batch_knn_join returns flat (n_queries * k,) array; each query row repeats k times.
+        # batch_knn_join returns a flat (n_queries * k,) array, each query row repeats k times
         match_indices = sf.engine.batch_knn_join(query_xs, query_ys, node.k, node.approximate)
         q_idx = pl.Series("", np.repeat(np.arange(n_queries, dtype=np.uint32), node.k))
         t_idx = pl.Series("", match_indices.astype(np.uint32))
         return self._assemble_join(node, sf, q_idx, t_idx).lazy()
 
     def _emit_within_join(self, node: WithinJoinNode, sf, lf: pl.LazyFrame) -> pl.LazyFrame:
-        """For each point in query_df, find the Engine polygons that contain it."""
+        # For each point in query_df, find the Engine polygons that contain it
         query_xs = node.query_df[node.x_col].to_numpy()
         query_ys = node.query_df[node.y_col].to_numpy()
 
@@ -551,7 +517,7 @@ class SpatialExecutor:
     def _emit_within_distance_join(
         self, node: WithinDistanceJoinNode, sf, lf: pl.LazyFrame
     ) -> pl.LazyFrame:
-        """For each query point, find Engine points within node.distance."""
+        # For each query point, find Engine points within node.distance
         query_xs = node.query_df[node.x_col].to_numpy()
         query_ys = node.query_df[node.y_col].to_numpy()
 
@@ -565,7 +531,7 @@ class SpatialExecutor:
     def _emit_polygon_within_distance_join(
         self, node: PolygonWithinDistanceJoinNode, sf, lf: pl.LazyFrame
     ) -> pl.LazyFrame:
-        """For each query point find Engine polygons within node.distance."""
+        # For each query point find Engine polygons within node.distance
         query_xs = node.query_df[node.x_col].to_numpy()
         query_ys = node.query_df[node.y_col].to_numpy()
 
@@ -579,7 +545,7 @@ class SpatialExecutor:
     def _emit_polygon_knn_join(
         self, node: PolygonKnnJoinNode, sf, lf: pl.LazyFrame
     ) -> pl.LazyFrame:
-        """For each query point find its k nearest Engine polygons, appending distance_to_polygon."""
+        # For each query point find its k nearest Engine polygons, appending distance_to_polygon
         query_xs = node.query_df[node.x_col].to_numpy()
         query_ys = node.query_df[node.y_col].to_numpy()
         n_queries = len(node.query_df)
@@ -587,14 +553,14 @@ class SpatialExecutor:
         indices, dists = sf.engine.batch_knn_to_polygons(query_xs, query_ys, node.k)
 
         q_idx_full = np.repeat(np.arange(n_queries, dtype=np.uint64), node.k)
-        # Drop padding slots (no polygon for that rank).
+        # Drop padding slots (no polygon for that rank)
         keep = indices != np.iinfo(np.uint64).max
         q_idx = pl.Series("", q_idx_full[keep].astype(np.uint32))
         t_idx = pl.Series("", indices[keep].astype(np.uint32))
 
         joined = self._assemble_join(node, sf, q_idx, t_idx)
         dist_series = pl.Series("distance_to_polygon", dists[keep])
-        # joined has no width only when the projection kept just distance_to_polygon.
+        # joined has no width only when the projection kept just distance_to_polygon
         if joined.width == 0:
             return pl.DataFrame([dist_series]).lazy()
         return joined.with_columns(dist_series).lazy()

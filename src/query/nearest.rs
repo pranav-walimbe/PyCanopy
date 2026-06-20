@@ -8,6 +8,6 @@ pub fn query_nearest<I: SpatialIndex>(
     k: usize,
     _approximate: bool,
 ) -> Vec<usize> {
-    // `approximate` is reserved for future use (e.g. skip exact refinement).
+    // `approximate` is reserved for future use (e.g. skip exact refinement)
     index.nearest(qx, qy, k)
 }

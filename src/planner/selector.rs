@@ -48,7 +48,7 @@ pub fn select_index(stats: &DatasetStats, query: &Query) -> IndexKind {
 /// Apply the index mode to a candidate kind, returning the kind to actually use.
 /// None always scans. Eager keeps the candidate. Auto keeps it only when its
 /// estimated cost beats brute force over `q_count` probes. Kernels that require a
-/// specific index (e.g. an R-tree) pass that as the candidate; the standard path
+/// specific index (e.g. an R-tree) pass that as the candidate, the standard path
 /// gets the candidate from `select_index` via `plan_access`.
 pub fn plan_access_with_kind(
     stats: &DatasetStats,
@@ -73,7 +73,7 @@ pub fn plan_access_with_kind(
     }
 }
 
-/// Candidate index for a point distance probe (brute force / grid / KD-tree).
+/// Candidate index for a point distance probe (brute force / grid / KD-tree)
 pub fn point_distance_candidate(stats: &DatasetStats) -> IndexKind {
     if stats.n < BRUTE_FORCE_N {
         IndexKind::BruteForce
@@ -84,7 +84,7 @@ pub fn point_distance_candidate(stats: &DatasetStats) -> IndexKind {
     }
 }
 
-/// Candidate for an R-tree kernel: brute force below the small-dataset threshold.
+/// Candidate for an R-tree kernel: brute force below the small-dataset threshold
 pub fn rtree_candidate(stats: &DatasetStats) -> IndexKind {
     if stats.n < BRUTE_FORCE_N {
         IndexKind::BruteForce
@@ -126,7 +126,7 @@ mod tests {
         }
     }
 
-    // A small bbox covering only 1% of the extent → selectivity = 0.01, below threshold.
+    // A small bbox covering only 1% of the extent → selectivity = 0.01, below threshold
     fn small_bbox() -> Query {
         Query::Range {
             bbox: Rect::new(coord! { x: 0.0, y: 0.0 }, coord! { x: 10.0, y: 10.0 }),
@@ -219,7 +219,7 @@ mod tests {
     fn mode_eager_matches_selector() {
         let s = stats(1_000_000, GeometryKind::Point, Distribution::Clustered);
         let f = CostFactors::default();
-        // Eager ignores q_count and returns the selector's kind.
+        // Eager ignores q_count and returns the selector's kind
         assert_eq!(
             plan_access(&s, &big_knn(), 1, IndexMode::Eager, &f),
             select_index(&s, &big_knn())
@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn auto_skips_index_for_single_probe() {
-        // One probe against a large dataset: build cost is not amortised.
+        // One probe against a large dataset: build cost is not amortised
         let s = stats(1_000_000, GeometryKind::Point, Distribution::Clustered);
         let f = CostFactors::default();
         assert_eq!(
@@ -239,7 +239,7 @@ mod tests {
 
     #[test]
     fn auto_builds_index_for_many_probes() {
-        // Many probes amortise the build, so the index wins.
+        // Many probes amortise the build, so the index wins
         let s = stats(1_000_000, GeometryKind::Point, Distribution::Clustered);
         let f = CostFactors::default();
         assert_eq!(

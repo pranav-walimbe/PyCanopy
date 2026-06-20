@@ -1,4 +1,4 @@
-"""SpatialLazyFrame — immutable plan builder. No execution until .collect()."""
+"""Define SpatialLazyFrame, an immutable plan builder that does not execute until .collect()."""
 
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ from pycanopy.optimizer import SpatialOptimizer
 
 
 def _fmt_expr(expr: pl.Expr) -> str:
+    # Format a Polars expression as a compact one-line string
     s = str(expr)
     if s.startswith("[") and s.endswith("]"):
         s = s[1:-1]
@@ -39,6 +40,7 @@ def _fmt_expr(expr: pl.Expr) -> str:
 
 
 def _fmt_node(node) -> str:
+    # Format one plan node as its explain() line or lines
     if isinstance(node, ScalarNode):
         return f"FILTER [{_fmt_expr(node.expr)}]"
     if isinstance(node, RangeNode):
@@ -86,6 +88,7 @@ def _fmt_node(node) -> str:
 
 
 def _fmt_plan(plan: Plan, path: PluginPath | None, n: int) -> str:
+    # Format the full plan as Polars-style indented explain() text
     path_suffix = ""
     if path is not None:
         path_label = "EXPR" if path == PluginPath.EXPR else "IO"
@@ -95,9 +98,8 @@ def _fmt_plan(plan: Plan, path: PluginPath | None, n: int) -> str:
     if not plan:
         return df_line
 
-    # Polars convention: outermost (last executed) op at top, source at bottom.
-    # Each op is followed by FROM at the same indent level, then its source indented
-    # one level deeper — matching how Polars formats single-path plans.
+    # Polars convention: outermost (last executed) op at top, source at bottom
+    # Each op is followed by FROM, then its source indented one level deeper.
     reversed_plan = list(reversed(plan))
     lines = []
     for depth, node in enumerate(reversed_plan):
@@ -161,7 +163,7 @@ class SpatialLazyFrame:
             keys: Group-by key columns, as varargs or a single list/tuple.
 
         Returns:
-            A SpatialGroupBy builder; call .agg() to run the aggregation.
+            A SpatialGroupBy builder. Call .agg() to run the aggregation.
         """
         if len(keys) == 1 and isinstance(keys[0], (list, tuple)):
             key_cols = list(keys[0])
@@ -287,11 +289,10 @@ class SpatialLazyFrame:
         x_col: str,
         y_col: str,
     ) -> SpatialLazyFrame:
-        """Spatial join: for each point in query_df find the Engine polygons
-        that contain it. Engine must be a polygon dataset.
+        """Spatial join: for each point in query_df find the Engine polygons that contain it.
 
-        Result columns are query_df's followed by the Engine df's (conflicting right-side
-        columns are prefixed with 'right_').
+        Engine must be a polygon dataset. Result columns are query_df's then the Engine df's
+        (conflicting right-side columns are prefixed with 'right_').
 
         Args:
             query_df: DataFrame of query points.
@@ -403,8 +404,7 @@ class SpatialLazyFrame:
         """Optimise (SpatialOptimizer) and execute (SpatialExecutor) the plan.
 
         A plan ending in a large-probe spatial join streams the probe in morsels and
-        concatenates, bounding the intermediate with an identical result. Use
-        collect_batched to reduce per morsel instead. Indexing follows the frame's mode.
+        concatenates, bounding the intermediate. Indexing follows the frame's mode.
 
         Args:
             batch_size: Probe rows per morsel for streamed joins. Defaults to
@@ -460,10 +460,8 @@ class SpatialLazyFrame:
     def lazy_source(self, batch_size: int | None = None) -> pl.LazyFrame:
         """Expose the plan's streamed output as a native Polars LazyFrame source.
 
-        The plan runs morsel by morsel as a Polars IO source, so downstream Polars ops
-        (sort, filter, sink_parquet) fuse with the spatial join into a single out-of-core
-        streaming pipeline and no intermediate the size of the full result is written or
-        held. A one-row probe is run first to learn the output schema.
+        The plan runs morsel by morsel as a Polars IO source, so downstream ops (sort,
+        sink_parquet) fuse with the join into one out-of-core pipeline. A one-row probe runs first.
 
         Args:
             batch_size: Probe rows per morsel. Defaults to MORSEL_ROWS.
@@ -479,6 +477,7 @@ class SpatialLazyFrame:
         schema = sample.schema if sample is not None else pl.Schema({})
 
         def source(with_columns, predicate, n_rows, batch_size_hint):
+            # Stream plan morsels, applying Polars predicate, projection, and row-count pushdown
             produced = 0
             for morsel in executor.stream(optimized, self._sf, batch_size):
                 if predicate is not None:
@@ -527,13 +526,13 @@ class SpatialLazyFrame:
         if prefix_len == 0:
             return [f.collect() for f in frames]
 
-        # Optimise the shared prefix as a standalone plan and cache its Polars chain.
+        # Optimise the shared prefix as a standalone plan and cache its Polars chain
         prefix_plan = plans[0][:prefix_len]
         optimized_prefix = optimizer.optimize(prefix_plan, sf.engine)
         base_lf = sf.df.with_row_index(_ROW_IDX).lazy()
         cached_lf = executor._emit_chain(optimized_prefix, sf, base_lf, PluginPath.EXPR).cache()
 
-        # Build each branch's suffix chain starting from the cached result.
+        # Build each branch's suffix chain starting from the cached result
         branch_lfs: list[pl.LazyFrame] = []
         for frame in frames:
             suffix_plan = frame._plan[prefix_len:]

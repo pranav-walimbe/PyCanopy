@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 import polars as pl
 
-# Prefix for intermediate (partial) columns, kept distinct from user output names.
+# Prefix for intermediate (partial) columns, kept distinct from user output names
 _P = "__pc_agg__"
 
 
@@ -24,7 +24,11 @@ class AggSpec:
 
     @property
     def inputs(self) -> set[str]:
-        """Source columns this spec reads, for the join keep-set."""
+        """Source columns this spec reads, for the join keep-set.
+
+        Returns:
+            The set of source column names, empty for count.
+        """
         return set() if self.column is None else {self.column}
 
     def partial(self, name: str) -> list[pl.Expr]:
@@ -105,32 +109,64 @@ class AggSpec:
 
 
 def count() -> AggSpec:
-    """Count rows (pairs) per group, like Polars pl.len()."""
+    """Count rows (pairs) per group, like Polars pl.len().
+
+    Returns:
+        An AggSpec for the count aggregation.
+    """
     return AggSpec("count")
 
 
 def sum(column: str) -> AggSpec:
-    """Sum a column per group."""
+    """Sum a column per group.
+
+    Args:
+        column: Name of the column to sum.
+
+    Returns:
+        An AggSpec for the sum aggregation.
+    """
     return AggSpec("sum", column)
 
 
 def mean(column: str) -> AggSpec:
-    """Mean of a column per group, ignoring nulls."""
+    """Mean of a column per group, ignoring nulls.
+
+    Args:
+        column: Name of the column to average.
+
+    Returns:
+        An AggSpec for the mean aggregation.
+    """
     return AggSpec("mean", column)
 
 
 def min(column: str) -> AggSpec:
-    """Minimum of a column per group."""
+    """Minimum of a column per group.
+
+    Args:
+        column: Name of the column to reduce.
+
+    Returns:
+        An AggSpec for the min aggregation.
+    """
     return AggSpec("min", column)
 
 
 def max(column: str) -> AggSpec:
-    """Maximum of a column per group."""
+    """Maximum of a column per group.
+
+    Args:
+        column: Name of the column to reduce.
+
+    Returns:
+        An AggSpec for the max aggregation.
+    """
     return AggSpec("max", column)
 
 
 def _partial_agg(frame: pl.DataFrame, keys: list[str], specs: dict[str, AggSpec]) -> pl.DataFrame:
-    """Reduce one joined morsel to per-group partial columns."""
+    # Reduce one joined morsel to per-group partial columns
     return frame.group_by(keys).agg([e for name, spec in specs.items() for e in spec.partial(name)])
 
 
@@ -139,16 +175,7 @@ def _reduce_partials(
     keys: list[str],
     specs: dict[str, AggSpec],
 ) -> pl.DataFrame:
-    """Combine per-morsel partial frames into the final grouped aggregate.
-
-    Args:
-        partials: Per-morsel partial frames from _partial_agg.
-        keys: Group-by key columns.
-        specs: Output name to aggregation spec.
-
-    Returns:
-        The grouped aggregate with one row per key combination.
-    """
+    # Combine per-morsel partial frames into the final grouped aggregate
     combine_exprs = [e for name, spec in specs.items() for e in spec.combine(name)]
     final_exprs = [spec.finalize(name) for name, spec in specs.items()]
     combined = pl.concat(partials).group_by(keys).agg(combine_exprs)

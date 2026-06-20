@@ -3,15 +3,15 @@
 /// ops benchmark without changing the planner logic.
 #[derive(Debug, Clone)]
 pub struct CostFactors {
-    /// Brute-force scan cost per (probe, item) pair.
+    /// Brute-force scan cost per (probe, item) pair
     pub scan_ns_per_item: f64,
-    /// Index build cost per item (multiplied by log2(n) for tree indexes).
+    /// Index build cost per item (multiplied by log2(n) for tree indexes)
     pub build_ns_per_item: f64,
-    /// R-tree probe cost per node visited or result reported.
+    /// R-tree probe cost per node visited or result reported
     pub rtree_ns_per_result: f64,
-    /// KD-tree probe cost per node visited or result reported.
+    /// KD-tree probe cost per node visited or result reported
     pub kdtree_ns_per_result: f64,
-    /// Grid probe cost per cell visited or result reported.
+    /// Grid probe cost per cell visited or result reported
     pub grid_ns_per_result: f64,
 }
 

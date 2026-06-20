@@ -35,7 +35,7 @@ pub fn polygon_from_flat(
     Polygon::new(exterior, interiors)
 }
 
-/// Squared distance from point (px, py) to segment (ax, ay)-(bx, by). Zero allocation.
+/// Squared distance from point (px, py) to segment (ax, ay)-(bx, by). Zero allocation
 #[inline]
 fn point_segment_dist2(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
     let dx = bx - ax;
@@ -90,7 +90,7 @@ pub fn point_to_polygon_distance(
     best.sqrt()
 }
 
-/// Unsigned area of polygon `i` (exterior minus holes).
+/// Unsigned area of polygon `i` (exterior minus holes)
 pub fn polygon_area(
     xs: &[f64],
     ys: &[f64],
@@ -101,7 +101,7 @@ pub fn polygon_area(
     polygon_from_flat(xs, ys, ring_offsets, poly_offsets, i).unsigned_area()
 }
 
-/// True when polygons `i` and `j` (in the same flat arrays) intersect.
+/// True when polygons `i` and `j` (in the same flat arrays) intersect
 pub fn polygons_intersect(
     xs: &[f64],
     ys: &[f64],
@@ -115,7 +115,7 @@ pub fn polygons_intersect(
     a.intersects(&b)
 }
 
-/// Unsigned area of the intersection of polygons `i` and `j`.
+/// Unsigned area of the intersection of polygons `i` and `j`
 pub fn polygon_intersection_area(
     xs: &[f64],
     ys: &[f64],
@@ -129,7 +129,7 @@ pub fn polygon_intersection_area(
     a.intersection(&b).unsigned_area()
 }
 
-/// Area of the convex hull of a set of points.
+/// Area of the convex hull of a set of points
 pub fn convex_hull_area(pxs: &[f64], pys: &[f64]) -> f64 {
     if pxs.len() < 3 {
         return 0.0;
@@ -146,7 +146,7 @@ pub fn convex_hull_area(pxs: &[f64], pys: &[f64]) -> f64 {
 mod tests {
     use super::*;
 
-    // A unit square at the origin: (0,0)-(1,1), single exterior ring (closed).
+    // A unit square at the origin: (0,0)-(1,1), single exterior ring (closed)
     fn unit_square() -> (Vec<f64>, Vec<f64>, Vec<i64>, Vec<i64>) {
         let xs = vec![0.0, 1.0, 1.0, 0.0, 0.0];
         let ys = vec![0.0, 0.0, 1.0, 1.0, 0.0];
@@ -171,14 +171,14 @@ mod tests {
     #[test]
     fn distance_to_left_edge() {
         let (xs, ys, ro, po) = unit_square();
-        // Point one unit to the left of the square's left edge.
+        // Point one unit to the left of the square's left edge
         let d = point_to_polygon_distance(-1.0, 0.5, &xs, &ys, &ro, &po, 0);
         assert!((d - 1.0).abs() < 1e-9);
     }
 
     #[test]
     fn two_overlapping_squares() {
-        // Square A: (0,0)-(2,2). Square B: (1,1)-(3,3). Overlap is the 1x1 square (1,1)-(2,2).
+        // Square A: (0,0)-(2,2). Square B: (1,1)-(3,3). Overlap is the 1x1 square (1,1)-(2,2)
         let xs = vec![
             0.0, 2.0, 2.0, 0.0, 0.0, // A
             1.0, 3.0, 3.0, 1.0, 1.0, // B
@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn convex_hull_area_of_square_corners() {
-        // Four corners of a 2x2 square plus an interior point; hull area is 4.
+        // Four corners of a 2x2 square plus an interior point, hull area is 4
         let pxs = vec![0.0, 2.0, 2.0, 0.0, 1.0];
         let pys = vec![0.0, 0.0, 2.0, 2.0, 1.0];
         assert!((convex_hull_area(&pxs, &pys) - 4.0).abs() < 1e-9);

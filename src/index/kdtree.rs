@@ -8,9 +8,9 @@ use crate::stats::types::SpatialHistogram;
 
 /// Packed immutable KD-tree backed by geo-index, optimised for point datasets.
 ///
-/// xs/ys are shared Arcs from the Engine — no coordinate data is copied at
+/// xs/ys are shared Arcs from the Engine, so no coordinate data is copied at
 /// build time. geo-index makes one internal sorted copy (unavoidable for tree
-/// traversal); the xs/ys Arcs are kept for the kNN distance refinement step.
+/// traversal). The xs/ys Arcs are kept for the kNN distance refinement step.
 pub struct PackedKdTree {
     tree: KDTree<f64>,
     xs: Arc<[f64]>,

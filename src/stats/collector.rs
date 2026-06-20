@@ -4,7 +4,7 @@ use crate::stats::types::{
     DatasetStats, Distribution, GeometryKind, SpatialHistogram, HISTOGRAM_RESOLUTION,
 };
 
-/// Collect statistics from a flat point coordinate dataset.
+/// Collect statistics from a flat point coordinate dataset
 pub fn collect_points(xs: &[f64], ys: &[f64]) -> DatasetStats {
     let n = xs.len();
     if n == 0 {
@@ -42,7 +42,7 @@ pub fn collect_points(xs: &[f64], ys: &[f64]) -> DatasetStats {
     }
 }
 
-/// Collect statistics from a two-level polygon coordinate dataset.
+/// Collect statistics from a two-level polygon coordinate dataset
 pub fn collect_polygons(
     xs: &[f64],
     ys: &[f64],
@@ -105,7 +105,7 @@ fn compute_extent(xs: &[f64], ys: &[f64]) -> Option<Rect<f64>> {
     }
 }
 
-// Grid-based coefficient-of-variation test. CV > 1.5 → Clustered, otherwise Uniform.
+// Grid-based coefficient-of-variation test. CV > 1.5 → Clustered, otherwise Uniform
 fn estimate_distribution(xs: &[f64], ys: &[f64], extent: &Option<Rect<f64>>) -> Distribution {
     let n = xs.len();
     if n < 20 {
@@ -186,7 +186,7 @@ fn build_polygon_centroid_histogram(
     let mut counts = vec![0u32; HISTOGRAM_RESOLUTION * HISTOGRAM_RESOLUTION];
     let n_polys = poly_offsets.len().saturating_sub(1);
     for &ext_ring_i64 in poly_offsets.iter().take(n_polys) {
-        // Centroid from exterior ring only.
+        // Centroid from exterior ring only
         let ext_ring = ext_ring_i64 as usize;
         let start = ring_offsets[ext_ring] as usize;
         let end = ring_offsets[ext_ring + 1] as usize;

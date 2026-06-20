@@ -31,7 +31,7 @@ fn build_cost(kind: IndexKind, n: usize, factors: &CostFactors) -> f64 {
 }
 
 /// Estimated nanoseconds to run `q_count` probes against `kind`.
-/// Brute force scans all n per probe; an index descends log2(n) and reports the
+/// Brute force scans all n per probe, an index descends log2(n) and reports the
 /// expected results per probe at the kind's per-result factor.
 fn probe_cost(
     kind: IndexKind,

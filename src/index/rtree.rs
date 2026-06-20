@@ -8,7 +8,7 @@ use crate::index::SpatialIndex;
 /// Packed immutable R-tree backed by geo-index with Hilbert sort.
 ///
 /// geo-index stores coordinates internally (one unavoidable copy at build time).
-/// The xs/ys Arcs passed to build() are not retained — they are iterated once
+/// The xs/ys Arcs passed to build() are not retained, they are iterated once
 /// to feed the builder and then dropped.
 /// For polygon datasets use build_polygons, which computes per-polygon MBRs.
 pub struct PackedRTree {
@@ -16,14 +16,14 @@ pub struct PackedRTree {
 }
 
 impl SpatialIndex for PackedRTree {
-    /// Build from point coordinates. Each point becomes a degenerate bbox.
+    /// Build from point coordinates. Each point becomes a degenerate bbox
     fn build(xs: Arc<[f64]>, ys: Arc<[f64]>) -> Self {
         let n = xs.len() as u32;
         let mut builder = RTreeBuilder::<f64>::new(n);
         for (&x, &y) in xs.iter().zip(ys.iter()) {
             builder.add(x, y, x, y);
         }
-        // xs and ys Arcs drop here — geo-index owns its internal copy.
+        // xs and ys Arcs drop here, geo-index owns its internal copy
         PackedRTree {
             tree: builder.finish::<HilbertSort>(),
         }
@@ -49,7 +49,7 @@ impl SpatialIndex for PackedRTree {
 impl PackedRTree {
     /// Heap bytes allocated by this index (the geo-index internal flat buffer).
     ///
-    /// The coordinate Arcs passed to build() are not retained — they're dropped
+    /// The coordinate Arcs passed to build() are not retained, they're dropped
     /// after the builder consumes them, so there is nothing shared to exclude.
     pub fn heap_bytes(&self) -> usize {
         self.tree.metadata().data_buffer_length()

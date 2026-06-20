@@ -16,7 +16,7 @@ pub struct ParsedPolygons {
     pub part_poly: Option<Vec<u32>>,
 }
 
-/// Little cursor over one geometry's bytes with endian-aware reads.
+/// Little cursor over one geometry's bytes with endian-aware reads
 struct Reader<'a> {
     bytes: &'a [u8],
     pos: usize,
@@ -62,7 +62,7 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Read one polygon body (its rings) into the coordinate arrays, recording ring bounds.
+/// Read one polygon body (its rings) into the coordinate arrays, recording ring bounds
 fn read_polygon_body(
     r: &mut Reader,
     le: bool,
@@ -82,7 +82,7 @@ fn read_polygon_body(
     Ok(())
 }
 
-/// Append part p as one ring group: poly_offsets tracks the cumulative ring count.
+/// Append part p as one ring group: poly_offsets tracks the cumulative ring count
 fn push_part(
     poly_offsets: &mut Vec<i64>,
     part_poly: &mut Vec<u32>,
@@ -93,7 +93,7 @@ fn push_part(
     part_poly.push(geom as u32);
 }
 
-/// Parse one top-level geometry, returning how many parts it contributed.
+/// Parse one top-level geometry, returning how many parts it contributed
 fn read_geometry(
     r: &mut Reader,
     geom: usize,
@@ -126,7 +126,7 @@ fn read_geometry(
     }
 }
 
-/// Parse a whole WKB column. `data` is the concatenated value buffer; geometry g is
+/// Parse a whole WKB column. `data` is the concatenated value buffer, geometry g is
 /// `data[offsets[g]..offsets[g+1]]`.
 pub fn parse_polygons(data: &[u8], offsets: &[i64]) -> Result<ParsedPolygons, String> {
     let n = offsets.len().saturating_sub(1);
@@ -165,7 +165,7 @@ pub fn parse_polygons(data: &[u8], offsets: &[i64]) -> Result<ParsedPolygons, St
 mod tests {
     use super::*;
 
-    // Little-endian WKB for a unit square at (cx, cy): one closed 5-point ring.
+    // Little-endian WKB for a unit square at (cx, cy): one closed 5-point ring
     fn le_square(cx: f64, cy: f64) -> Vec<u8> {
         let mut b = vec![1]; // little-endian
         b.extend_from_slice(&WKB_POLYGON.to_le_bytes());

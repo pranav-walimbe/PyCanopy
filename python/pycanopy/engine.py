@@ -25,15 +25,8 @@ _SHAPELY_MULTIPOLYGON_TYPE_ID = 6
 
 
 def _to_numpy_xy(geometries) -> tuple[np.ndarray, np.ndarray]:
-    """Return (xs, ys) as contiguous float64 numpy arrays.
-
-    Args:
-        geometries: GeoArrow PyArrow array, geopandas GeoSeries, numpy (N, 2) array,
-            list of shapely Points, or list of (x, y) tuples.
-
-    Returns:
-        Pair of 1-D contiguous float64 arrays.
-    """
+    # Return (xs, ys) as contiguous float64 arrays from a numpy (N, 2) array, GeoArrow
+    # array, GeoSeries, shapely Points, or (x, y) tuples.
     if isinstance(geometries, np.ndarray):
         if geometries.ndim != 2 or geometries.shape[1] < 2:
             raise ValueError("numpy array must be shape (N, 2)")
@@ -67,10 +60,8 @@ def _to_numpy_xy(geometries) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _geoarrow_to_numpy_xy(array: pa.Array | pa.ChunkedArray) -> tuple[np.ndarray, np.ndarray]:
-    """Extract x/y from a GeoArrow array as contiguous float64 numpy arrays.
-
-    Supports struct<x: float64, y: float64> and FixedSizeList<2, float64> encodings.
-    """
+    # Extract x/y from a GeoArrow array as contiguous float64 arrays, supporting
+    # struct<x, y> and FixedSizeList<2> encodings.
     if isinstance(array, pa.ChunkedArray):
         array = array.combine_chunks()
 
@@ -135,11 +126,8 @@ def wkb_points_to_xy(points) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _wkb_points_fast(arr: pa.Array) -> tuple[np.ndarray, np.ndarray] | None:
-    """Read x/y straight from a uniformly 21-byte WKB point column, or None if N/A.
-
-    One numpy view reinterprets the concatenated value buffer as point records. Returns
-    None (caller falls back to shapely) for nulls or any non-uniform or non-point layout.
-    """
+    # Read x/y from a uniformly 21-byte WKB point column via one numpy view, or None for
+    # nulls or any non-uniform or non-point layout so the caller can fall back to shapely.
     if not (pa.types.is_binary(arr.type) or pa.types.is_large_binary(arr.type)):
         return None
     if arr.null_count != 0:
@@ -157,7 +145,7 @@ def _wkb_points_fast(arr: pa.Array) -> tuple[np.ndarray, np.ndarray] | None:
     offset_dtype = "<i8" if pa.types.is_large_binary(arr.type) else "<i4"
     offsets = np.frombuffer(offsets_buf, dtype=offset_dtype)[arr.offset : arr.offset + n + 1]
 
-    # Fast path needs every value to be exactly _WKB_POINT_NBYTES, tightly packed.
+    # Fast path needs every value to be exactly _WKB_POINT_NBYTES, tightly packed
     if not np.array_equal(offsets - offsets[0], np.arange(n + 1) * _WKB_POINT_NBYTES):
         return None
 
@@ -175,11 +163,8 @@ def _wkb_points_fast(arr: pa.Array) -> tuple[np.ndarray, np.ndarray] | None:
 
 
 def _wkb_binary_buffers(column) -> tuple[np.ndarray, np.ndarray] | None:
-    """Return (data, offsets) numpy buffers of a WKB binary column, or None.
-
-    data is the concatenated value bytes (uint8) viewed zero-copy. offsets are the n+1
-    int64 bounds. None for nulls or non-binary input so the caller can use shapely.
-    """
+    # Return zero-copy (data, offsets) numpy buffers of a WKB binary column, where data is
+    # the concatenated value bytes and offsets the n+1 bounds, or None for null/non-binary.
     if hasattr(column, "to_arrow"):
         column = column.to_arrow()
     if isinstance(column, pa.ChunkedArray):
@@ -203,13 +188,8 @@ def _wkb_binary_buffers(column) -> tuple[np.ndarray, np.ndarray] | None:
 def _extract_polygon_rings(
     geometries,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
-    """Return (xs, ys, ring_offsets, poly_offsets, part_poly) from Polygons/MultiPolygons.
-
-    Two-level GeoArrow-compatible offsets over parts (a MultiPolygon is one part per member).
-      ring_offsets[r]..ring_offsets[r+1] is ring r's coordinate range in xs/ys.
-      poly_offsets[p]..poly_offsets[p+1] is part p's ring range (exterior first, then holes).
-    part_poly maps parts to logical polygons, or None when every geometry is a single Polygon.
-    """
+    # Return (xs, ys, ring_offsets, poly_offsets, part_poly) from Polygons/MultiPolygons via
+    # two-level GeoArrow-compatible offsets, with part_poly mapping parts to logical polygons.
     geoms = np.asarray(geometries)
     type_ids = shapely.get_type_id(geoms)
 
@@ -248,7 +228,7 @@ def _extract_polygon_rings(
     ring_offsets = np.concatenate([[0], np.cumsum(ring_coord_counts)])
     poly_offsets = np.concatenate([[0], np.cumsum(np.array(rings_per_part, dtype=np.int64))])
 
-    # None when no geometry expanded into multiple parts: every part is its own polygon.
+    # None when no geometry expanded into multiple parts: every part is its own polygon
     part_poly_arr = None
     if len(parts_arr) != len(geoms):
         part_poly_arr = np.ascontiguousarray(part_poly, dtype=np.int64)
@@ -265,12 +245,8 @@ def _extract_polygon_rings(
 def _extract_query_polygon_rings(
     polygon,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Return (xs, ys, ring_offsets, poly_offsets) for a query Polygon or MultiPolygon.
-
-    Two-level offsets group rings into parts (one part per Polygon or MultiPolygon member).
-      ring_offsets[r]..ring_offsets[r+1] is ring r's coordinate range in xs/ys.
-      poly_offsets[p]..poly_offsets[p+1] is part p's ring range.
-    """
+    # Return (xs, ys, ring_offsets, poly_offsets) for a query Polygon or MultiPolygon via
+    # two-level offsets grouping rings into parts (one part per member).
     tid = shapely.get_type_id(polygon)
     if tid == _SHAPELY_POLYGON_TYPE_ID:
         members = (polygon,)
@@ -319,8 +295,8 @@ class Engine:
 
         Args:
             geometries: A geopandas GeoSeries or list of shapely Polygon / MultiPolygon
-                objects. Polygons with holes are accepted; a MultiPolygon is treated as
-                one logical polygon spanning all of its parts.
+                objects. Polygons with holes are accepted, and a MultiPolygon is treated
+                as one logical polygon spanning all of its parts.
 
         Returns:
             Engine ready to answer range and contains queries over polygon data.
@@ -372,7 +348,15 @@ class Engine:
 
     @classmethod
     def from_coords(cls, xs: Sequence[float], ys: Sequence[float]) -> Engine:
-        """Construct directly from x and y coordinate sequences."""
+        """Construct directly from x and y coordinate sequences.
+
+        Args:
+            xs: Sequence of x coordinates.
+            ys: Sequence of y coordinates.
+
+        Returns:
+            Engine ready to answer point queries.
+        """
         eng = cls.__new__(cls)
         eng._core = _CoreEngine.from_points(
             np.ascontiguousarray(xs, dtype=np.float64),
@@ -650,7 +634,11 @@ class Engine:
         return self._core.polygon_intersects_self_join()
 
     def polygon_areas(self) -> np.ndarray:
-        """Return the unsigned area of every polygon in dataset order. Polygon datasets only."""
+        """Return the unsigned area of every polygon in dataset order (polygon datasets only).
+
+        Returns:
+            float64 array of unsigned polygon areas in dataset order.
+        """
         return self._core.polygon_areas()
 
     def polygon_pairs_intersection_area(
@@ -676,7 +664,7 @@ class Engine:
         """Return indices of engine points within `distance` of a query polygon.
 
         Args:
-            polygon: A shapely Polygon or MultiPolygon (interior holes supported); a
+            polygon: A shapely Polygon or MultiPolygon (interior holes supported). A
                 point matches when within `distance` of any part.
             distance: Maximum Euclidean point-to-polygon distance for a match.
 
@@ -722,26 +710,46 @@ class Engine:
 
     @property
     def delta_len(self) -> int:
-        """Number of points currently in the delta buffer."""
+        """Report how many points are currently in the delta buffer.
+
+        Returns:
+            The number of points in the delta buffer.
+        """
         return self._core.delta_len()
 
     @property
     def index_bytes(self) -> int:
-        """Heap bytes of all built indexes, excluding the xs/ys arrays (0 before any build)."""
+        """Report the heap bytes of all built indexes, excluding the xs/ys arrays.
+
+        Returns:
+            Heap bytes of built indexes, zero before any build.
+        """
         return self._core.index_bytes()
 
     @property
     def n(self) -> int:
-        """Number of geometries in the dataset."""
+        """Report the number of geometries in the dataset.
+
+        Returns:
+            The number of geometries in the dataset.
+        """
         return self._core.n()
 
     @property
     def extent(self) -> tuple[float, float, float, float] | None:
-        """Bounding extent as (min_x, min_y, max_x, max_y), or None if empty."""
+        """Report the bounding extent of the dataset.
+
+        Returns:
+            The extent as (min_x, min_y, max_x, max_y), or None if empty.
+        """
         return self._core.extent()
 
     def stats(self) -> str:
-        """Return a human-readable summary of dataset statistics."""
+        """Return a human-readable summary of dataset statistics.
+
+        Returns:
+            A human-readable summary of dataset statistics.
+        """
         return self._core.stats_info()
 
     def __repr__(self) -> str:

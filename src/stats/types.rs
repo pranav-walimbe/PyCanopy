@@ -172,7 +172,7 @@ mod tests {
 
     #[test]
     fn histogram_selectivity_full_bbox_returns_one() {
-        // 32x32 cells, 1 point each = 1024 total; full bbox should return 1.0
+        // 32x32 cells, 1 point each = 1024 total, full bbox should return 1.0
         let hist = uniform_histogram(HISTOGRAM_RESOLUTION, 1);
         let bbox = rect(0.0, 0.0, 1.0, 1.0);
         assert!((hist.selectivity(&bbox, 1024) - 1.0).abs() < 1e-10);
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn histogram_selectivity_quarter_bbox() {
-        // 1024 points uniform; bbox covering bottom-left quarter should return ~0.25.
+        // 1024 points uniform, bbox covering bottom-left quarter should return ~0.25.
         // Tolerance is 0.05 because exact cell-boundary alignment causes floor() to
         // include the boundary cell, giving a small over-count (17x17 vs 16x16 cells).
         let hist = uniform_histogram(HISTOGRAM_RESOLUTION, 1);
@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn histogram_selectivity_empty_region_returns_zero() {
-        // All counts in bottom-left quarter; top-right query should return 0
+        // All counts in bottom-left quarter, top-right query should return 0
         let mut counts = vec![0u32; HISTOGRAM_RESOLUTION * HISTOGRAM_RESOLUTION];
         counts[0] = 100; // only cell (col=0, row=0) has data
         let hist = SpatialHistogram {
@@ -207,8 +207,8 @@ mod tests {
 
     #[test]
     fn histogram_selectivity_skewed_data_outperforms_area_ratio() {
-        // 100 points all in the bottom-left cell; query covers that cell.
-        // Area ratio would give 1/1024 ≈ 0.001; histogram should give 1.0.
+        // 100 points all in the bottom-left cell, query covers that cell.
+        // Area ratio would give 1/1024 ≈ 0.001, histogram should give 1.0.
         let mut counts = vec![0u32; HISTOGRAM_RESOLUTION * HISTOGRAM_RESOLUTION];
         counts[0] = 100;
         let hist = SpatialHistogram {

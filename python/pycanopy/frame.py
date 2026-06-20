@@ -1,4 +1,4 @@
-"""SpatialFrame — entry point for spatial query planning."""
+"""Define SpatialFrame which is the entry point for spatial query planning."""
 
 from __future__ import annotations
 
@@ -137,7 +137,11 @@ class SpatialFrame:
         return sf
 
     def lazy(self) -> SpatialLazyFrame:
-        """Return a SpatialLazyFrame for declarative plan construction."""
+        """Start a declarative spatial query plan over this frame.
+
+        Returns:
+            A SpatialLazyFrame for declarative plan construction.
+        """
         return SpatialLazyFrame(self, [])
 
     # Geometry aggregations and transforms (polygon datasets). These produce new
@@ -145,7 +149,11 @@ class SpatialFrame:
     # rather than the lazy plan.
 
     def polygon_areas(self) -> pl.DataFrame:
-        """Return this frame's DataFrame with an appended unsigned 'area' column (polygon datasets)."""
+        """Append an unsigned 'area' column to this frame's DataFrame (polygon datasets).
+
+        Returns:
+            The frame's DataFrame with an appended unsigned 'area' column.
+        """
         areas = self._engine.polygon_areas()
         return self._df.with_columns(pl.Series("area", areas))
 
@@ -204,21 +212,49 @@ class SpatialFrame:
 
     @staticmethod
     def convex_hull_area(xs, ys) -> float:
-        """Return the area of the convex hull of a standalone point set."""
+        """Compute the area of the convex hull of a standalone point set.
+
+        Args:
+            xs: Sequence of x coordinates.
+            ys: Sequence of y coordinates.
+
+        Returns:
+            The area of the convex hull of the point set.
+        """
         return Engine.convex_hull_area(xs, ys)
 
     @property
     def df(self) -> pl.DataFrame:
+        """Expose the materialized DataFrame backing this frame.
+
+        Returns:
+            The underlying Polars DataFrame.
+        """
         return self._df
 
     @property
     def engine(self) -> Engine:
+        """Expose the spatial index engine backing this frame.
+
+        Returns:
+            The underlying Engine.
+        """
         return self._engine
 
     @property
     def x_col(self) -> str:
+        """Expose the x-coordinate column name.
+
+        Returns:
+            The name of the x-coordinate column.
+        """
         return self._x_col
 
     @property
     def y_col(self) -> str:
+        """Expose the y-coordinate column name.
+
+        Returns:
+            The name of the y-coordinate column.
+        """
         return self._y_col

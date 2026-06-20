@@ -8,26 +8,26 @@
 
 use rayon::prelude::*;
 
-/// Edges per band: the one tuning knob, trading probe speed against band memory.
+/// Edges per band: the one tuning knob, trading probe speed against band memory
 const EDGES_PER_BAND: usize = 8;
-/// Safety cap on bands per polygon, bounding memory for pathological rings.
+/// Safety cap on bands per polygon, bounding memory for pathological rings
 const MAX_BANDS: usize = 1024;
-/// Floats per stored edge: [x0, y0, x1, y1].
+/// Floats per stored edge: [x0, y0, x1, y1]
 const STRIDE: usize = 4;
 
-/// Prepared point-in-polygon accelerator over a flat polygon dataset.
+/// Prepared point-in-polygon accelerator over a flat polygon dataset
 pub struct PreparedPolygons {
     min_y: Vec<f64>,
     inv_band_h: Vec<f64>,
-    /// `band_base[p]..band_base[p + 1]` are polygon p's band slots in `band_ptr`.
+    /// `band_base[p]..band_base[p + 1]` are polygon p's band slots in `band_ptr`
     band_base: Vec<usize>,
-    /// CSR into `band_coords` in edge units (length total_bands + 1).
+    /// CSR into `band_coords` in edge units (length total_bands + 1)
     band_ptr: Vec<u32>,
-    /// Band edges, interleaved [x0, y0, x1, y1] and grouped by band.
+    /// Band edges, interleaved [x0, y0, x1, y1] and grouped by band
     band_coords: Vec<f64>,
 }
 
-/// One polygon's prepared bands, produced in parallel then concatenated.
+/// One polygon's prepared bands, produced in parallel then concatenated
 struct PolyPrep {
     min_y: f64,
     inv_band_h: f64,
@@ -35,7 +35,7 @@ struct PolyPrep {
 }
 
 impl PreparedPolygons {
-    /// Build from two-level ring arrays (the Engine's flat polygon layout).
+    /// Build from two-level ring arrays (the Engine's flat polygon layout)
     pub fn build(xs: &[f64], ys: &[f64], ring_offsets: &[i64], poly_offsets: &[i64]) -> Self {
         let n_polys = poly_offsets.len().saturating_sub(1);
         let preps: Vec<PolyPrep> = (0..n_polys)
@@ -69,7 +69,7 @@ impl PreparedPolygons {
         }
     }
 
-    /// True when polygon `p` contains the point. Matches `pip_raw` for valid polygons.
+    /// True when polygon `p` contains the point. Matches `pip_raw` for valid polygons
     #[inline]
     pub fn contains(&self, p: usize, qx: f64, qy: f64) -> bool {
         let bstart = self.band_base[p];
@@ -91,7 +91,7 @@ impl PreparedPolygons {
     }
 }
 
-/// Prepare one polygon: collect its ring edges and bucket them into y-bands.
+/// Prepare one polygon: collect its ring edges and bucket them into y-bands
 fn prepare_one(
     xs: &[f64],
     ys: &[f64],
@@ -129,7 +129,7 @@ fn prepare_one(
     };
     let min_y = if pmin_y.is_finite() { pmin_y } else { 0.0 };
 
-    // Append each edge to every band its y-span overlaps.
+    // Append each edge to every band its y-span overlaps
     let mut bands: Vec<Vec<f64>> = vec![Vec::new(); nbands];
     for e in &edges {
         let b_lo = band_of(e[1].min(e[3]), min_y, inv, nbands);
@@ -146,7 +146,7 @@ fn prepare_one(
     }
 }
 
-/// Band index for `y`, clamped so out-of-extent points land in end bands (no straddle).
+/// Band index for `y`, clamped so out-of-extent points land in end bands (no straddle)
 #[inline]
 fn band_of(y: f64, min_y: f64, inv_band_h: f64, nbands: usize) -> usize {
     if inv_band_h == 0.0 {

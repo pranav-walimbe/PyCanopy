@@ -1,6 +1,6 @@
 use crate::index::SpatialIndex;
 
-/// Range query against a point dataset. The index performs the exact coordinate check.
+/// Range query against a point dataset. The index performs the exact coordinate check
 pub fn query_range_points<I: SpatialIndex>(
     index: &I,
     min_x: f64,
@@ -12,7 +12,7 @@ pub fn query_range_points<I: SpatialIndex>(
 }
 
 /// Range query against a polygon dataset.
-/// The index returns MBR candidates; exact intersection is verified per candidate.
+/// The index returns MBR candidates, exact intersection is verified per candidate.
 #[allow(clippy::too_many_arguments)]
 pub fn query_range_polygons<I: SpatialIndex>(
     index: &I,
@@ -45,7 +45,7 @@ pub fn query_range_polygons<I: SpatialIndex>(
 }
 
 /// Point-in-polygon query against a polygon dataset.
-/// The index returns MBR candidates; exact containment is verified per candidate.
+/// The index returns MBR candidates, exact containment is verified per candidate.
 pub fn query_contains_polygons<I: SpatialIndex>(
     index: &I,
     xs: &[f64],
@@ -62,7 +62,7 @@ pub fn query_contains_polygons<I: SpatialIndex>(
         .collect()
 }
 
-/// Ray-casting point-in-ring test. Zero allocation, operates directly on coordinate slices.
+/// Ray-casting point-in-ring test. Zero allocation, operates directly on coordinate slices
 fn ring_contains(qx: f64, qy: f64, xs: &[f64], ys: &[f64]) -> bool {
     let n = xs.len();
     if n < 3 {
@@ -85,7 +85,7 @@ fn ring_contains(qx: f64, qy: f64, xs: &[f64], ys: &[f64]) -> bool {
 ///
 /// A point is inside the polygon if it is inside the exterior ring and outside
 /// all interior rings (holes). Operates directly on the flat coordinate arrays
-/// via ring_offsets and poly_offsets — no heap allocation per call.
+/// via ring_offsets and poly_offsets, with no heap allocation per call.
 pub fn pip_raw(
     qx: f64,
     qy: f64,
@@ -115,7 +115,7 @@ pub fn pip_raw(
     true
 }
 
-/// Segment intersection test using cross products. Returns false for parallel segments.
+/// Segment intersection test using cross products. Returns false for parallel segments
 #[allow(clippy::too_many_arguments)]
 fn segments_intersect(
     ax1: f64,
@@ -147,7 +147,7 @@ fn segments_intersect(
 ///   2. Any bbox corner inside the polygon exterior ring.
 ///   3. Any polygon edge crosses any bbox edge.
 ///
-/// Only the exterior ring is tested; holes cannot contribute to intersection.
+/// Only the exterior ring is tested, holes cannot contribute to intersection.
 #[allow(clippy::too_many_arguments)]
 pub fn polygon_intersects_bbox_raw(
     xs: &[f64],
