@@ -48,23 +48,25 @@ result = sf.lazy().filter(pl.col("population") > 100_000).range_query(-10.0, 35.
 
 ## Why PyCanopy
 
-Polars has no native spatial support. The standard alternatives each require a tradeoff:
+Every spatial option for a Polars user asks you to give something up:
 
-- **GeoPandas** applies linear scans by default. Its STRtree needs an explicit `.sindex` opt-in and is the only index available.
-- **DuckDB spatial** has a mature R-tree and good performance, but requires leaving Polars for SQL and creating the index by hand.
+- **GeoPandas** is eager and pandas-based. Its one index (STRtree) is opt-in, and a join larger than memory simply fails.
+- **DuckDB spatial** is fast and out-of-core, but you leave Polars for SQL and create the R-tree index by hand.
+- **SedonaDB** is a capable spatial engine, but it is a separate SQL engine rather than a Polars-native API.
 
-PyCanopy stays native to Polars and adds a query optimizer on top. The optimizer decides execution order, decides whether an index is worth building (and which kind) from a cost model, and fuses consecutive spatial predicates where possible.
+PyCanopy's principle is to stay inside Polars and add a real query planner. You declare spatial ops in any order. It reorders them, fuses adjacent predicates, pushes projections into joins, and uses a cost model to decide per query whether to build an index at all (and which kind). kNN and within-distance joins are first-class, and results larger than RAM stream and spill to disk.
 
-|                              | PyCanopy      | GeoPandas        | GeoPolars          | DuckDB spatial      |
-|:-----------------------------|:-------------:|:----------------:|:------------------:|:-------------------:|
-| Works natively in Polars     | ✓             | ✗                | ✓                  | ✗ (SQL + convert)   |
-| Lazy / declarative API       | ✓             | ✗                | via Polars         | SQL only            |
-| Auto index selection         | ✓             | ✗ (STR only)     | ✗ (R-tree, manual) | ✗ (R-tree, opt-in)  |
-| Cost-based index vs scan     | ✓             | ✗                | ✗                  | ✗                   |
-| KNN join built-in            | ✓             | ✗                | ✗                  | ✗ (O(N) scan)       |
-| Spatial operation ordering   | ✓             | ✗                | ✗                  | ✗                   |
-| Spatial predicate fusion     | ✓             | ✗                | ✗                  | ✗                   |
-| Live point ingestion         | ✓             | ✗                | ✗                  | ✗                   |
+How the options compare:
+
+|                                          | PyCanopy | GeoPandas   | DuckDB spatial | SedonaDB | GeoPolars |
+|:-----------------------------------------|:--------:|:-----------:|:--------------:|:--------:|:---------:|
+| Runs inside Polars (no SQL, no convert)  | ✓        | ✗           | ✗ (SQL)        | ✗ (SQL)  | ✓         |
+| Lazy, declarative API                    | ✓        | ✗ (eager)   | SQL            | SQL      | ✓         |
+| Automatic index, no manual setup         | ✓        | ✗ (manual)  | ✗ (manual)     | ✓        | ✗         |
+| Cost-based index vs scan, per query      | ✓        | ✗           | ✗              | ✗        | ✗         |
+| kNN join built in                        | ✓        | ✓ (nearest) | ✗              | ✓        | ✗         |
+| Within-distance / point-in-polygon join  | ✓        | ✓           | ✓              | ✓        | ✗         |
+| Larger-than-RAM joins                     | ✓        | ✗           | ✓              | ✓        | ✗         |
 
 ---
 
@@ -92,6 +94,16 @@ PyCanopy stays native to Polars and adds a query optimizer on top. The optimizer
 | Intersects self-join          | `.intersects_pairs()`                                       | Intersecting polygon pairs with overlap area and IoU    |
 | Area                          | `.polygon_areas()`                                          | Area of each polygon                                    |
 | Points near a polygon         | `.points_within_distance_of_polygon(polygon, distance)`     | Points within `distance` of a single polygon            |
+
+**Reductions and streaming** (compose with any join)
+
+| Operation              | Call                                                       | Returns                                                       |
+|:-----------------------|:-----------------------------------------------------------|:-------------------------------------------------------------|
+| Aggregate-join         | `.group_by(keys).agg(pc.agg.count/sum/mean/min/max(...))`  | One row per group, reduced over the join with no pair frame   |
+| Projection pushdown    | `.select(cols)`                                            | Narrows both join sides before the gather                     |
+| Stream in batches      | `.collect_batched()`                                       | An iterator of result morsels, bounded memory                |
+| Stream to Parquet      | `.sink_parquet(path)`                                      | Writes the result to disk in bounded memory                  |
+| Out-of-core pipeline   | `.lazy_source()`                                           | A Polars source that fuses join + sort + sink, spilling to disk |
 
 ---
 
@@ -139,6 +151,41 @@ print(lf.explain())
 ```
 
 The optimizer flipped the declaration order. The scalar filter runs first on all rows, then the spatial query runs on the smaller survivor set. Plans follow Polars' FROM-chain convention, so the bottom runs first and the top is the final result.
+
+### Aggregate over a join
+
+```python
+import pycanopy as pc
+
+# Count trips per zone and average their fare, reduced over a streamed
+# point-in-polygon join. The full pair frame is never materialised: each
+# morsel reduces to per-group partials that combine into the final result.
+stats = (
+    zones.lazy()
+    .within_join(trips, x_col="lon", y_col="lat")
+    .group_by(["zone_id", "zone_name"])
+    .agg(trip_count=pc.agg.count(), avg_fare=pc.agg.mean("fare"))
+)
+```
+
+### Out-of-core joins (larger than RAM)
+
+```python
+# A join whose result exceeds memory: stream it straight to Parquet,
+# bounded to one morsel at a time.
+sf.lazy().polygon_knn_join(trips, "lon", "lat", k=5).sink_parquet("nearest.parquet")
+
+# Or fuse the join with a sort and sink into a single spilling Polars
+# pipeline, so even an ordered result larger than RAM never materialises.
+(
+    sf.lazy()
+    .polygon_knn_join(trips, "lon", "lat", k=5)
+    .select(["trip_id", "building_id", "distance_to_polygon"])
+    .lazy_source()
+    .sort("distance_to_polygon")
+    .sink_parquet("nearest_sorted.parquet")
+)
+```
 
 <details>
 <summary>More examples: point and polygon joins, aggregations, branching, delta buffer, index modes</summary>
@@ -298,9 +345,23 @@ sf.engine.flush()
 
 ## Benchmarks
 
-### Apache SpatialBench (SF1)
+### Apache SpatialBench
 
-The [chart above](#state-of-the-art-on-apache-spatialbench) runs PyCanopy on [Apache SpatialBench](https://sedona.apache.org/spatialbench/single-node-benchmarks/) at scale factor 1 (~6M trips, 156k zones) on a single `m7i.2xlarge` (8 vCPU, 32 GB) — the same instance the published SedonaDB / DuckDB / GeoPandas numbers use, so it is matched-hardware rather than transcribed. PyCanopy beats SedonaDB on 11 of 12 queries, wins the heavy cross-zone joins (q10/q11/q12) by 2–4×, and completes q11/q12 where DuckDB times out or errors.
+Run on a single `m7i.2xlarge` (8 vCPU, 32 GB), the same instance as the published [SedonaDB / DuckDB / GeoPandas numbers](https://sedona.apache.org/spatialbench/single-node-benchmarks/).
+
+**SF1** (~6M trips). PyCanopy beats SedonaDB on 11 of 12 queries and wins the heavy cross-zone joins q10/q11/q12 by 2 to 4x.
+
+<p align="center">
+  <img src="assets/spatialbench_sf1_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1" width="100%"/>
+</p>
+<p align="center"><sub>Apache SpatialBench SF1 · log scale, lower is better · missing bars are TIMEOUT / ERROR</sub></p>
+
+**SF10** (~60M trips). PyCanopy wins 8 of 12. q12 returns a result larger than the 32 GB box, so it streams the join and spills the sort to disk, completing where DuckDB errors and GeoPandas times out.
+
+<p align="center">
+  <img src="assets/spatialbench_sf10_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF10" width="100%"/>
+</p>
+<p align="center"><sub>Apache SpatialBench SF10 · log scale, lower is better · missing bars are TIMEOUT / ERROR</sub></p>
 
 ### Per-operation vs GeoPandas
 
@@ -356,6 +417,7 @@ Decisions about the whole chain, made before any data is touched:
 - **Predicate pushdown:** scalar filters run before spatial ops, cheapest first (cost estimated from the Polars expression tree). They shrink the row count for little cost.
 - **Fusion:** consecutive spatial predicates merge into one index build and one pass.
 - **Join side:** symmetric joins (`within_join`, `within_distance_join`) index the smaller side. `knn_join` always indexes the engine side.
+- **Projection pushdown:** a terminal `.select()` is pushed into the join, so only the requested columns are gathered from each side instead of the full width.
 - **Execution path:** very selective filters slice the prebuilt index directly (IO path). Otherwise filters run first and a small index is built on the survivors (EXPR path).
 
 ### Cost model: index or scan?
@@ -388,6 +450,15 @@ Indexes build lazily, never at load time. Dataset stats (extent, distribution, a
 | Polygons, any query                           | R-tree       |
 
 All index types share the same coordinate arrays with no duplication.
+
+### Streaming and out-of-core
+
+A join never has to fit in memory. The probe side is sliced into fixed-size morsels run one at a time, so the join intermediate stays bounded:
+
+- `collect()` auto-streams a large probe, bounding the transient.
+- `collect_batched()` and `sink_parquet()` bound the full output (to an iterator, or straight to a Parquet file).
+- `lazy_source()` exposes the streamed join as a native Polars source, fusing it with a downstream `sort` and `sink_parquet` into one pipeline that spills to disk, so an ordered result larger than RAM still completes.
+- `group_by(keys).agg(...)` reduces each morsel to associative partials that combine into the per-group result, so the join is never materialised at all.
 
 ### Why Rust
 
