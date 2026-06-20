@@ -17,7 +17,7 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --features pyo3/abi3-py39
+          args: --release --out dist --features pyo3/abi3-py310
           manylinux: auto
       - uses: actions/upload-artifact@v4
         with:
@@ -35,7 +35,7 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --features pyo3/abi3-py39
+          args: --release --out dist --features pyo3/abi3-py310
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-macos-${{ matrix.target }}
@@ -48,7 +48,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: PyO3/maturin-action@v1
         with:
-          args: --release --out dist --features pyo3/abi3-py39
+          args: --release --out dist --features pyo3/abi3-py310
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-windows-x86_64
