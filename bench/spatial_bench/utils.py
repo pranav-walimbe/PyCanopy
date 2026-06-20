@@ -370,6 +370,9 @@ def write_chart(results: dict, out_path: Path) -> None:
         return baseline.get(q, {}).get(label)
 
     fig, ax = plt.subplots(figsize=(max(10.0, 1.3 * len(qids)), 5.5))
+    ax.set_axisbelow(True)  # gridlines sit behind the bars
+    ax.grid(axis="y", which="major", linestyle="-", linewidth=0.5, alpha=0.35)
+    ax.grid(axis="y", which="minor", linestyle=":", linewidth=0.4, alpha=0.2)
     bar_w = 0.8 / len(series)
     for li, label in enumerate(series):
         xs, heights = [], []
@@ -384,16 +387,24 @@ def write_chart(results: dict, out_path: Path) -> None:
         bars = ax.bar(xs, heights, width=bar_w, label=label, color=colors[label])
         ax.bar_label(bars, fmt="%.2f", padding=2, fontsize=6, rotation=90)
 
+    has_mismatch = any(qs[q].get("match") == "MISMATCH" for q in qids)
     labels = [q + (" *" if qs[q].get("match") == "MISMATCH" else "") for q in qids]
     ax.set_xticks([i + bar_w * (len(series) - 1) / 2 for i in range(len(qids))])
     ax.set_xticklabels(labels)
     ax.set_ylabel("seconds (log scale)")
     ax.set_yscale("log")
+    ax.margins(x=0.01)
+    for spine in ("top", "right"):
+        ax.spines[spine].set_visible(False)
+
+    subtitle = f"index mode: {mode}    PyCanopy measured, others from the published baseline"
+    if has_mismatch:
+        subtitle += "    * = output mismatch vs SedonaDB"
     ax.set_title(
-        f"SpatialBench SF{sf} ({mode}): PyCanopy measured vs published "
-        f"SedonaDB/DuckDB/GeoPandas   (* = output mismatch)"
+        f"Apache SpatialBench SF{sf}: PyCanopy vs SedonaDB / DuckDB / GeoPandas\n{subtitle}",
+        fontsize=11,
     )
-    ax.legend()
+    ax.legend(frameon=False, ncol=len(series), loc="upper left")
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=120)
