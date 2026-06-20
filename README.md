@@ -15,7 +15,7 @@
 
 ## State of the art on Apache SpatialBench
 
-PyCanopy reaches state of the art on [Apache SpatialBench](https://sedona.apache.org/spatialbench/single-node-benchmarks/), the standard single-node spatial-analytics benchmark whose 12 queries span range filters, distance and kNN joins, and point-in-polygon aggregation over millions of trips and zones. On matched hardware it beats the best open-source engines like Apache SedonaDB and DuckDB on most queries, without leaving Polars.
+PyCanopy reaches state of the art on [Apache SpatialBench](https://sedona.apache.org/spatialbench/single-node-benchmarks/), the standard single-node spatial-analytics benchmark. On matched hardware it beats the best open-source engines like Apache SedonaDB and DuckDB on most queries, without leaving Polars-like syntax at all.
 
 <p align="center">
   <img src="assets/spatialbench_sf1_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1" width="100%"/>
@@ -54,7 +54,7 @@ Every spatial option for a Polars user asks you to give something up:
 - **DuckDB spatial** is fast and out-of-core, but you leave Polars for SQL and create the R-tree index by hand.
 - **SedonaDB** is a capable spatial engine, but it is a separate SQL engine rather than a Polars-native API.
 
-PyCanopy's principle is to stay inside Polars and add a real query planner. You declare spatial ops in any order. It reorders them, fuses adjacent predicates, pushes projections into joins, and uses a cost model to decide per query whether to build an index at all (and which kind). kNN and within-distance joins are first-class, and results larger than RAM stream and spill to disk.
+PyCanopy's principle is to stay inside Polars and add a real query planner. You declare spatial ops in any order. It reorders them, fuses adjacent predicates, pushes projections into joins, and uses a cost model to decide per query whether to build an index at all (and which kind). 
 
 How the options compare:
 

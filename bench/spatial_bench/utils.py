@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ import matplotlib.pyplot as plt
 import polars as pl
 import sedonadb
 import shapely
+from matplotlib.patches import Patch
 
 from bench.spatial_bench.sedona_sql import SEDONA_SQL
 from pycanopy import SpatialFrame
@@ -342,11 +344,34 @@ def measure_query(query, data_dir: str, index_mode: str = "eager", verify: bool 
     return out
 
 
-def write_chart(results: dict, out_path: Path) -> None:
-    """Render a grouped bar chart: live PyCanopy vs published SedonaDB/DuckDB/GeoPandas.
+def _nice_cap(v: float) -> float:
+    # Round a value up to a clean axis bound (1/1.5/2/2.5/3/4/5/6/8 times a power of ten)
+    if v <= 0:
+        return 1.0
+    mag = 10 ** math.floor(math.log10(v))
+    for m in (1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10):
+        if m * mag >= v:
+            return m * mag
+    return 10 * mag
 
-    Bars carry their value in seconds, and a published TIMEOUT/ERROR draws no bar and is
-    annotated. A query whose output did not match SedonaDB is flagged with a ``*`` label.
+
+def _pct(values: list[float], p: float) -> float:
+    # Linear-interpolated percentile, used to cap the x axis just past the bulk of the bars
+    s = sorted(values)
+    if not s:
+        return 1.0
+    k = (len(s) - 1) * p
+    lo, hi = math.floor(k), math.ceil(k)
+    if lo == hi:
+        return s[lo]
+    return s[lo] + (s[hi] - s[lo]) * (k - lo)
+
+
+def write_chart(results: dict, out_path: Path) -> None:
+    """Render a horizontal grouped bar chart: live PyCanopy vs published SedonaDB/DuckDB/GeoPandas.
+
+    Queries run down the y axis against a linear x axis capped just past the bulk, so outliers
+    truncate to a value label, tiny bars print their value, and a TIMEOUT/ERROR annotates instead.
 
     Args:
         results: Measured results dict (scale_factor, index_mode, per-query timings).
@@ -359,55 +384,112 @@ def write_chart(results: dict, out_path: Path) -> None:
     baseline = PUBLISHED.get(sf, {})
 
     colors = {
-        "PyCanopy": "#4C72B0",
+        "PyCanopy": "#2C7FB8",
         "SedonaDB": "#DD8452",
-        "DuckDB": "#55A868",
-        "GeoPandas": "#C44E52",
+        "DuckDB": "#8C8C8C",
+        "GeoPandas": "#C9BBA8",
     }
     series = ["PyCanopy", *PUBLISHED_ENGINES]
+    n_s, n_q = len(series), len(qids)
 
     def value(label: str, q: str):
         if label == "PyCanopy":
-            return qs[q].get("pycanopy_seconds")
+            s = qs[q].get("pycanopy_seconds")
+            if s is not None:
+                return s
+            return "ERROR" if qs[q].get("status") == "error" else None
         return baseline.get(q, {}).get(label)
 
-    fig, ax = plt.subplots(figsize=(max(10.0, 1.3 * len(qids)), 5.5))
-    ax.set_axisbelow(True)  # gridlines sit behind the bars
-    ax.grid(axis="y", which="major", linestyle="-", linewidth=0.5, alpha=0.35)
-    bar_w = 0.8 / len(series)
-    for li, label in enumerate(series):
-        xs, heights = [], []
-        for qi, q in enumerate(qids):
-            v = value(label, q)
-            x = qi + li * bar_w
-            if isinstance(v, (int, float)):
-                xs.append(x)
-                heights.append(v)
-            elif isinstance(v, str):  # TIMEOUT / ERROR
-                ax.text(x, 1.0, v, rotation=90, ha="center", va="bottom", fontsize=6, color="grey")
-        bars = ax.bar(xs, heights, width=bar_w, label=label, color=colors[label])
-        ax.bar_label(bars, fmt="%.2f", padding=2, fontsize=6, rotation=90)
+    finite = [v for q in qids for s in series if isinstance(v := value(s, q), (int, float))]
+    cap = _nice_cap(_pct(finite, 0.90)) if finite else 1.0
+    truncated = any(v > cap for v in finite)
 
-    has_mismatch = any(qs[q].get("match") == "MISMATCH" for q in qids)
-    labels = [q + (" *" if qs[q].get("match") == "MISMATCH" else "") for q in qids]
-    ax.set_xticks([i + bar_w * (len(series) - 1) / 2 for i in range(len(qids))])
-    ax.set_xticklabels(labels)
-    ax.set_ylabel("seconds")
-    ax.margins(x=0.01)
+    fig, ax = plt.subplots(figsize=(8.2, 1.2 + 0.62 * n_q))
+    ax.set_axisbelow(True)
+
+    band = 0.82
+    bar_h = band / n_s
+    for qi in range(n_q):
+        if qi % 2:  # tint alternating query rows
+            ax.axhspan(qi - 0.5, qi + 0.5, color="#F4F7FA", zorder=0)
+    for qi in range(1, n_q):
+        ax.axhline(qi - 0.5, color="#DBDBDB", lw=0.6, ls=(0, (1, 2)), zorder=1)
+
+    for si, label in enumerate(series):
+        color = colors[label]
+        for qi, q in enumerate(qids):
+            y = qi + (si - (n_s - 1) / 2) * bar_h
+            v = value(label, q)
+            if isinstance(v, str):  # TIMEOUT / ERROR
+                ax.text(
+                    cap * 0.012,
+                    y,
+                    v.lower(),
+                    ha="left",
+                    va="center",
+                    fontsize=6.5,
+                    color="#3C7FA6",
+                    fontstyle="italic",
+                )
+            elif v is not None:
+                ax.barh(y, min(v, cap), height=bar_h * 0.9, color=color, zorder=2)
+                if v > cap:
+                    ax.text(
+                        cap * 1.015,
+                        y,
+                        f"... {v:.1f}",
+                        ha="left",
+                        va="center",
+                        fontsize=6.5,
+                        color=color,
+                    )
+                elif v < cap * 0.03:
+                    txt = f"{v:.2f}" if v < 1 else f"{v:.1f}"
+                    ax.text(
+                        v + cap * 0.008,
+                        y,
+                        txt,
+                        ha="left",
+                        va="center",
+                        fontsize=6.5,
+                        color="#555555",
+                    )
+
+    step = _nice_cap(cap / 6)
+    ticks, t = [], 0.0
+    while t <= cap + 1e-9:
+        ticks.append(round(t, 6))
+        t += step
+    ax.set_xticks(ticks)
+    ax.set_xlim(0, cap * 1.16)
+    ax.set_ylim(-0.5, n_q - 0.5)
+    ax.invert_yaxis()  # q1 at the top
+    ax.set_yticks(range(n_q))
+    ax.set_yticklabels([q + (" *" if qs[q].get("match") == "MISMATCH" else "") for q in qids])
+    ax.set_xlabel("run time (seconds)")
+    ax.grid(axis="x", which="major", color="#E6E6E6", lw=0.6, zorder=0)
+    ax.tick_params(length=0)
     for spine in ("top", "right"):
         ax.spines[spine].set_visible(False)
 
-    subtitle = f"index mode: {mode}    PyCanopy measured, others from the published baseline"
-    if has_mismatch:
-        subtitle += "    * = output mismatch vs SedonaDB"
+    subtitle = f"index mode: {mode}    PyCanopy measured, baselines from published SpatialBench"
+    if truncated:
+        subtitle += f"    bars past {cap:g}s truncated"
+    if any(qs[q].get("match") == "MISMATCH" for q in qids):
+        subtitle += "    * output mismatch"
     ax.set_title(
         f"Apache SpatialBench SF{sf}: PyCanopy vs SedonaDB / DuckDB / GeoPandas\n{subtitle}",
-        fontsize=11,
+        fontsize=10,
     )
-    ax.legend(frameon=False, ncol=len(series), loc="upper left")
+    ax.legend(
+        handles=[Patch(facecolor=colors[s], label=s) for s in series],
+        loc="upper right",
+        frameon=False,
+        fontsize=8,
+    )
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=120)
+    fig.savefig(out_path, dpi=140)
     plt.close(fig)
 
 

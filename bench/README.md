@@ -39,7 +39,6 @@ launcher polls S3, streams progress, downloads the PNG, and terminates the box.
 | `--scale {1,10}` | Scale factor to benchmark (required) |
 | `--index-eager` (default) | Build an index whenever a kind is selected |
 | `--index-auto` | Build an index only when the cost model beats a scan |
-| `--index-none` | Brute-force every query |
 | `--no-verify` | Skip the live SedonaDB output check |
 
 The scale factor, index mode, and verification are CLI flags. The fixed infrastructure

@@ -238,13 +238,6 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="index_mode",
         help="Cost-based: build an index only when it beats a scan. Writes sf{N}_auto.png.",
     )
-    group.add_argument(
-        "--index-none",
-        action="store_const",
-        const="none",
-        dest="index_mode",
-        help="Brute-force every query. Writes sf{N}_none.png.",
-    )
     parser.set_defaults(index_mode="eager")
     parser.add_argument(
         "--no-verify",
