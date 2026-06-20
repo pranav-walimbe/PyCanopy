@@ -153,10 +153,6 @@ def test_knn_at_exact_point_returns_that_point(engine):
     assert engine.knn(1.0, 0.0, 1) == [1]
 
 
-def test_knn_approximate_flag_accepted(engine):
-    assert len(engine.knn(1.2, 0.1, 2, approximate=True)) == 2
-
-
 # range_query (points)
 
 

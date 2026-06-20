@@ -398,7 +398,7 @@ class SpatialExecutor:
             # Scalars ran first. M survivors arrive via _ROW_IDX. A linear scan over those
             # M rows finds the k nearest without a global index query.
             return lf.filter(_knn_plugin_expr(node.qx, node.qy, node.k, sf.engine))
-        indices = sf.engine.knn(node.qx, node.qy, node.k, node.approximate)
+        indices = sf.engine.knn(node.qx, node.qy, node.k)
         return self._filter_by_indices(lf, indices)
 
     def _emit_fused(
@@ -463,7 +463,7 @@ class SpatialExecutor:
         n_queries = len(node.query_df)
 
         # batch_knn_join returns a flat (n_queries * k,) array, each query row repeats k times
-        match_indices = sf.engine.batch_knn_join(query_xs, query_ys, node.k, node.approximate)
+        match_indices = sf.engine.batch_knn_join(query_xs, query_ys, node.k)
         q_idx = pl.Series("", np.repeat(np.arange(n_queries, dtype=np.uint32), node.k))
         t_idx = pl.Series("", match_indices.astype(np.uint32))
         return self._assemble_join(node, sf, q_idx, t_idx).lazy()

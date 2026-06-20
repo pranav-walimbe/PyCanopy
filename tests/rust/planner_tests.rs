@@ -75,7 +75,6 @@ fn point_knn_routes_to_kdtree() {
     let q = Query::Knn {
         point: Point::new(50.0, 50.0),
         k: 5,
-        approximate: false,
     };
     assert_eq!(select_index(&s, &q), IndexKind::KdTree);
 }
@@ -113,7 +112,6 @@ fn polygon_knn_routes_to_rtree() {
     let q = Query::Knn {
         point: Point::new(50.0, 50.0),
         k: 5,
-        approximate: false,
     };
     assert_eq!(select_index(&s, &q), IndexKind::RTree);
 }
@@ -125,7 +123,6 @@ fn knn_with_large_k_fraction_falls_back_to_brute() {
     let q = Query::Knn {
         point: Point::new(0.0, 0.0),
         k: 200,
-        approximate: false,
     };
     assert_eq!(select_index(&s, &q), IndexKind::BruteForce);
 }

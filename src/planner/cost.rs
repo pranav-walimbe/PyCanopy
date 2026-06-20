@@ -135,7 +135,6 @@ mod tests {
         let q = Query::Knn {
             point: Point::new(0.0, 0.0),
             k: 10,
-            approximate: false,
         };
         assert!((selectivity(&stats, &q) - 0.01).abs() < 1e-12);
     }

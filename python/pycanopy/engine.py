@@ -366,19 +366,18 @@ class Engine:
         """
         return self._core.set_index_mode(mode)
 
-    def knn(self, x: float, y: float, k: int, approximate: bool = False) -> list[int]:
+    def knn(self, x: float, y: float, k: int) -> list[int]:
         """Return indices of the k nearest points to (x, y).
 
         Args:
             x: X coordinate of the query point.
             y: Y coordinate of the query point.
             k: Number of neighbours to return.
-            approximate: Skip exact geometric refinement for speed.
 
         Returns:
             Indices into the original dataset, sorted nearest-first.
         """
-        return self._core.knn(x, y, k, approximate)
+        return self._core.knn(x, y, k)
 
     def knn_from_candidates(
         self,
@@ -545,7 +544,6 @@ class Engine:
         query_xs: np.ndarray,
         query_ys: np.ndarray,
         k: int,
-        approximate: bool = False,
     ) -> np.ndarray:
         """For each query point, return the k nearest neighbours in the dataset.
 
@@ -553,7 +551,6 @@ class Engine:
             query_xs: Contiguous float64 array of query x coordinates, shape (N,).
             query_ys: Contiguous float64 array of query y coordinates, shape (N,).
             k: Number of neighbours per query point.
-            approximate: Skip exact geometric refinement for speed.
 
         Returns:
             uint64 array of shape (N * k,). Block i holds k result indices for query i.
@@ -562,7 +559,6 @@ class Engine:
             np.ascontiguousarray(query_xs, dtype=np.float64),
             np.ascontiguousarray(query_ys, dtype=np.float64),
             k,
-            approximate,
         )
 
     def batch_within_distance(

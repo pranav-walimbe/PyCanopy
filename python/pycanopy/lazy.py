@@ -51,8 +51,7 @@ def _fmt_node(node) -> str:
     if isinstance(node, ContainsNode):
         return f"CONTAINS [({node.qx:.4g}, {node.qy:.4g})]"
     if isinstance(node, KnnNode):
-        approx = ", approximate" if node.approximate else ""
-        return f"KNN [k={node.k}, ({node.qx:.4g}, {node.qy:.4g}){approx}]"
+        return f"KNN [k={node.k}, ({node.qx:.4g}, {node.qy:.4g})]"
     if isinstance(node, FusedSpatialNode):
         count = len(node.predicates)
         pred_strs = []
@@ -65,8 +64,7 @@ def _fmt_node(node) -> str:
                 pred_strs.append(f"  ({pred.qx:.4g}, {pred.qy:.4g})")
         return "\n".join([f"FUSED_SPATIAL [x{count}]", *pred_strs])
     if isinstance(node, KnnJoinNode):
-        approx = ", approximate" if node.approximate else ""
-        return f"KNN_JOIN [k={node.k}, query_rows={len(node.query_df):,}, barrier{approx}]"
+        return f"KNN_JOIN [k={node.k}, query_rows={len(node.query_df):,}, barrier]"
     if isinstance(node, WithinJoinNode):
         flip = ", flip" if node.flip else ""
         return f"WITHIN_JOIN [query_rows={len(node.query_df):,}, barrier{flip}]"
@@ -211,7 +209,6 @@ class SpatialLazyFrame:
         x: float,
         y: float,
         k: int,
-        approximate: bool = False,
     ) -> SpatialLazyFrame:
         """Add a k-nearest-neighbour lookup.
 
@@ -219,14 +216,13 @@ class SpatialLazyFrame:
             x: X coordinate of the query point.
             y: Y coordinate of the query point.
             k: Number of neighbours to return.
-            approximate: Skip exact geometric refinement for speed.
 
         Returns:
             New SpatialLazyFrame with the knn node appended.
         """
         return SpatialLazyFrame(
             self._sf,
-            [*self._plan, KnnNode(x, y, k, approximate)],
+            [*self._plan, KnnNode(x, y, k)],
         )
 
     def knn_join(
@@ -235,7 +231,6 @@ class SpatialLazyFrame:
         x_col: str,
         y_col: str,
         k: int,
-        approximate: bool = False,
     ) -> SpatialLazyFrame:
         """Spatial join: for each row in query_df find its k nearest in this Engine's dataset.
 
@@ -247,14 +242,13 @@ class SpatialLazyFrame:
             x_col: Column in query_df holding x coordinates.
             y_col: Column in query_df holding y coordinates.
             k: Number of neighbours per query row.
-            approximate: Skip exact geometric refinement for speed.
 
         Returns:
             New SpatialLazyFrame with the knn join node appended.
         """
         return SpatialLazyFrame(
             self._sf,
-            [*self._plan, KnnJoinNode(query_df, x_col, y_col, k, approximate)],
+            [*self._plan, KnnJoinNode(query_df, x_col, y_col, k)],
         )
 
     def within_distance_join(

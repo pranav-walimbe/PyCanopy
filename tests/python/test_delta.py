@@ -36,7 +36,7 @@ def test_range_query_sees_delta_point(engine):
 
 def test_knn_returns_delta_point_as_nearest(engine):
     engine.append_delta(np.array([2000.0], dtype=np.float64), np.array([2000.0], dtype=np.float64))
-    result = engine.knn(2000.0, 2000.0, 1, False)
+    result = engine.knn(2000.0, 2000.0, 1)
     # nearest point to (2000, 2000) must be our delta point — grid ends at (24, 24)
     assert len(result) == 1
     assert engine.range_query(1999.5, 1999.5, 2000.5, 2000.5)
@@ -52,7 +52,7 @@ def test_batch_knn_returns_delta_point_as_nearest(engine):
     engine.append_delta(np.array([4000.0], dtype=np.float64), np.array([4000.0], dtype=np.float64))
     qxs = np.array([4000.0], dtype=np.float64)
     qys = np.array([4000.0], dtype=np.float64)
-    engine.batch_knn_join(qxs, qys, 1, False)
+    engine.batch_knn_join(qxs, qys, 1)
     # verify the returned index points back into our region
     assert engine.range_query(3999.5, 3999.5, 4000.5, 4000.5)
 

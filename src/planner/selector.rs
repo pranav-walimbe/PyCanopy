@@ -145,7 +145,6 @@ mod tests {
         let q = Query::Knn {
             point: Point::new(0.0, 0.0),
             k: 5,
-            approximate: false,
         };
         assert_eq!(select_index(&s, &q), IndexKind::BruteForce);
     }
@@ -162,7 +161,6 @@ mod tests {
         let q = Query::Knn {
             point: Point::new(0.0, 0.0),
             k: 5,
-            approximate: false,
         };
         assert_eq!(select_index(&s, &q), IndexKind::KdTree);
     }
@@ -192,7 +190,6 @@ mod tests {
         let q = Query::Knn {
             point: Point::new(0.0, 0.0),
             k: 200,
-            approximate: false,
         };
         assert_eq!(select_index(&s, &q), IndexKind::BruteForce);
     }
@@ -201,7 +198,6 @@ mod tests {
         Query::Knn {
             point: Point::new(0.0, 0.0),
             k: 5,
-            approximate: false,
         }
     }
 

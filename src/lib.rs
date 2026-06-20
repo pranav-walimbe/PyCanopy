@@ -521,23 +521,20 @@ impl Engine {
     }
 
     /// k-nearest-neighbour query
-    fn knn(&mut self, x: f64, y: f64, k: usize, approximate: bool) -> PyResult<Vec<usize>> {
+    fn knn(&mut self, x: f64, y: f64, k: usize) -> PyResult<Vec<usize>> {
         let kind = self.plan_index(
             &Query::Knn {
                 point: Point::new(x, y),
                 k,
-                approximate,
             },
             1,
         );
         self.build_index_if_needed(kind);
         let mut result = match kind {
-            IndexKind::BruteForce => {
-                query_nearest(self.brute.as_ref().unwrap(), x, y, k, approximate)
-            }
-            IndexKind::RTree => query_nearest(self.rtree.as_ref().unwrap(), x, y, k, approximate),
-            IndexKind::KdTree => query_nearest(self.kdtree.as_ref().unwrap(), x, y, k, approximate),
-            IndexKind::Grid => query_nearest(self.grid.as_ref().unwrap(), x, y, k, approximate),
+            IndexKind::BruteForce => query_nearest(self.brute.as_ref().unwrap(), x, y, k),
+            IndexKind::RTree => query_nearest(self.rtree.as_ref().unwrap(), x, y, k),
+            IndexKind::KdTree => query_nearest(self.kdtree.as_ref().unwrap(), x, y, k),
+            IndexKind::Grid => query_nearest(self.grid.as_ref().unwrap(), x, y, k),
         };
         if !self.delta_xs.is_empty() {
             result = self.merge_knn_with_delta(result, x, y, k);
@@ -908,7 +905,6 @@ impl Engine {
         query_xs: PyReadonlyArray1<f64>,
         query_ys: PyReadonlyArray1<f64>,
         k: usize,
-        approximate: bool,
     ) -> PyResult<Bound<'py, PyArray1<u64>>> {
         let qxs = query_xs
             .as_slice()
@@ -926,7 +922,6 @@ impl Engine {
             &Query::Knn {
                 point: Point::new(0.0, 0.0),
                 k,
-                approximate,
             },
             qxs.len(),
         );
@@ -1253,7 +1248,6 @@ impl Engine {
             &Query::Knn {
                 point: Point::new(0.0, 0.0),
                 k,
-                approximate: false,
             },
             qxs.len(),
             IndexKind::RTree,

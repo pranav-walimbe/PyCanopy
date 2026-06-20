@@ -53,7 +53,6 @@ class KnnNode:
     qx: float
     qy: float
     k: int
-    approximate: bool = False
     selectivity: float = 1.0
 
 
@@ -94,7 +93,6 @@ class KnnJoinNode:
     x_col: str
     y_col: str
     k: int
-    approximate: bool = False
     keep_columns: tuple[str, ...] | None = None
 
 
