@@ -50,85 +50,54 @@ def _range_plugin_expr(
     max_y: float,
     engine,
 ) -> pl.Expr:
-    # Boolean mask for a bounding-box filter via map_batches. is_elementwise=False is a
-    # barrier, so the closure sees only post-scalar-filter rows queried against the global index.
-    n_total = engine.n
-
+    # Bounding-box filter via map_batches. is_elementwise=False is a barrier, so the closure
+    # sees only post-scalar-filter rows, masked against the global index in Rust.
     def _apply(s: pl.Series) -> pl.Series:
         orig_idx = s.to_numpy()
         if len(orig_idx) == 0:
             return pl.Series("", [], dtype=pl.Boolean)
-        hits = engine.range_query(min_x, min_y, max_x, max_y)
-        hit_bitmap = np.zeros(n_total, dtype=bool)
-        if hits:
-            hit_bitmap[hits] = True
-        return pl.Series("", hit_bitmap[orig_idx], dtype=pl.Boolean)
+        return pl.Series("", engine.range_mask(min_x, min_y, max_x, max_y, orig_idx))
 
     return pl.col(_ROW_IDX).map_batches(_apply, return_dtype=pl.Boolean, is_elementwise=False)
 
 
 def _contains_plugin_expr(qx: float, qy: float, engine) -> pl.Expr:
-    # Boolean mask for a point exact-match filter via map_batches. It intersects the global
-    # Engine hits with the surviving _ROW_IDX values from upstream scalar filters via a bitmap.
-    n_total = engine.n
-
+    # Point-in-polygon filter masking the surviving _ROW_IDX values against the global index in Rust
     def _apply(s: pl.Series) -> pl.Series:
         orig_idx = s.to_numpy()
         if len(orig_idx) == 0:
             return pl.Series("", [], dtype=pl.Boolean)
-        hits = engine.contains(qx, qy)
-        hit_bitmap = np.zeros(n_total, dtype=bool)
-        if hits:
-            hit_bitmap[hits] = True
-        return pl.Series("", hit_bitmap[orig_idx], dtype=pl.Boolean)
+        return pl.Series("", engine.contains_mask(qx, qy, orig_idx))
 
     return pl.col(_ROW_IDX).map_batches(_apply, return_dtype=pl.Boolean, is_elementwise=False)
 
 
 def _fused_plugin_expr(predicates: list[RangeNode | ContainsNode], engine) -> pl.Expr:
-    # Boolean mask applying all fused predicates via sorted merge in Rust
-    n_total = engine.n
+    # Mask applying all fused predicates, queried and intersected by sorted merge in Rust
     range_queries = [
         (pred.min_x, pred.min_y, pred.max_x, pred.max_y)
         for pred in predicates
         if isinstance(pred, RangeNode)
     ]
-    contains_preds = [pred for pred in predicates if isinstance(pred, ContainsNode)]
+    contains_points = [(pred.qx, pred.qy) for pred in predicates if isinstance(pred, ContainsNode)]
 
     def _apply(s: pl.Series) -> pl.Series:
         orig_idx = s.to_numpy()
         if len(orig_idx) == 0:
             return pl.Series("", [], dtype=pl.Boolean)
-        hit_lists: list[list[int]] = []
-        if range_queries:
-            hit_lists.append(engine.intersect_ranges(range_queries))
-        for pred in contains_preds:
-            hit_lists.append(engine.contains(pred.qx, pred.qy))
-        hits = engine.intersect_hits(hit_lists) if hit_lists else None
-        if hits is not None and len(hits) == 0:
-            return pl.Series("", np.zeros(len(orig_idx), dtype=bool), dtype=pl.Boolean)
-        hit_bitmap = np.zeros(n_total, dtype=bool)
-        if hits:
-            hit_bitmap[hits] = True
-        return pl.Series("", hit_bitmap[orig_idx], dtype=pl.Boolean)
+        return pl.Series("", engine.fused_mask(range_queries, contains_points, orig_idx))
 
     return pl.col(_ROW_IDX).map_batches(_apply, return_dtype=pl.Boolean, is_elementwise=False)
 
 
 def _knn_plugin_expr(qx: float, qy: float, k: int, engine) -> pl.Expr:
-    # Boolean mask for kNN over the M survivors from upstream scalar filters. Delegates to
-    # knn_from_candidates, an exact O(M + k log k) linear scan with no global index query.
-    n_total = engine.n
-
+    # kNN over the M survivors from upstream scalar filters, masked in Rust by an exact
+    # O(M + k log k) linear scan with no global index query.
     def _apply(s: pl.Series) -> pl.Series:
         orig_idx = s.to_numpy()  # uint32, _ROW_IDX is always UInt32 from with_row_index
         if len(orig_idx) == 0:
             return pl.Series("", [], dtype=pl.Boolean)
-        hits = engine.knn_from_candidates(qx, qy, k, orig_idx)
-        hit_bitmap = np.zeros(n_total, dtype=bool)
-        if hits:
-            hit_bitmap[hits] = True
-        return pl.Series("", hit_bitmap[orig_idx], dtype=pl.Boolean)
+        return pl.Series("", engine.knn_mask_from_candidates(qx, qy, k, orig_idx))
 
     return pl.col(_ROW_IDX).map_batches(_apply, return_dtype=pl.Boolean, is_elementwise=False)
 
@@ -138,17 +107,13 @@ class SpatialExecutor:
 
     Two execution paths are available, chosen by the optimizer via PluginPath:
 
-    EXPR path (default): spatial nodes emit map_batches(is_elementwise=False)
-        expressions. Polars runs scalar filters first (barrier semantics), then the
-        spatial closure receives the M surviving _ROW_IDX values, queries the global
-        Engine, and intersects hits with a boolean bitmap indexed by original row
-        position. No local index is built regardless of how many rows scalar filters
-        retain. A persistent _ROW_IDX column tracks original positions throughout.
+    EXPR path (default): scalar filters run first (map_batches barrier), then the spatial
+        closure passes the M surviving _ROW_IDX values to the Engine, which returns a Rust
+        boolean mask over them. No local index is built. Best when filters retain many rows.
 
-    IO path: the pre-built Engine (on N rows) is queried directly to get K candidate
-        indices. sf.df is sliced to those K rows. Scalar filters run on the K-row
-        slice. No _ROW_IDX column needed. Best when spatial selectivity is tight
-        (K << N) and re-building a fresh index on M rows would be wasteful.
+    IO path: the pre-built Engine is queried directly for the K candidate indices and sf.df
+        is sliced to them, with scalar filters run on that slice. Best when spatial
+        selectivity is tight (K << N), where rebuilding an index on M rows would be wasteful.
     """
 
     def execute(
@@ -451,12 +416,12 @@ class SpatialExecutor:
     ) -> pl.LazyFrame:
         # Keep points within node.distance of the query polygon. The polygon is queried
         # against all points, so indices resolve once and the lf filters by original row.
-        indices = sf.engine.points_within_distance_of_polygon(node.polygon, node.distance).tolist()
+        indices = sf.engine.points_within_distance_of_polygon(node.polygon, node.distance)
         return self._filter_by_indices(lf, indices)
 
-    def _filter_by_indices(self, lf: pl.LazyFrame, indices: list[int]) -> pl.LazyFrame:
-        # Filter the lf to the given original row indices, or to nothing when empty
-        if not indices:
+    def _filter_by_indices(self, lf: pl.LazyFrame, indices) -> pl.LazyFrame:
+        # Filter the lf to the given original row positions (list or numpy array), empty to nothing
+        if len(indices) == 0:
             return lf.filter(pl.lit(False))
         return lf.filter(pl.col(_ROW_IDX).is_in(indices))
 

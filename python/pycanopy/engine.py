@@ -192,41 +192,25 @@ def _extract_polygon_rings(
     # two-level GeoArrow-compatible offsets, with part_poly mapping parts to logical polygons.
     geoms = np.asarray(geometries)
     type_ids = shapely.get_type_id(geoms)
+    invalid = (type_ids != _SHAPELY_POLYGON_TYPE_ID) & (type_ids != _SHAPELY_MULTIPOLYGON_TYPE_ID)
+    if invalid.any():
+        idx = int(np.argmax(invalid))
+        raise TypeError(
+            f"Geometry at index {idx} is not a Polygon or MultiPolygon "
+            f"(got {type(geoms[idx]).__name__!r}). Engine.from_polygons requires polygonal input."
+        )
 
-    parts = []
-    part_poly = []
-    for idx, (geom, tid) in enumerate(zip(geoms, type_ids)):
-        if tid == _SHAPELY_POLYGON_TYPE_ID:
-            members = (geom,)
-        elif tid == _SHAPELY_MULTIPOLYGON_TYPE_ID:
-            members = shapely.get_parts(geom)
-        else:
-            raise TypeError(
-                f"Geometry at index {idx} is not a Polygon or MultiPolygon "
-                f"(got {type(geom).__name__!r}). Engine.from_polygons requires polygonal input."
-            )
-        for poly in members:
-            parts.append(poly)
-            part_poly.append(idx)
+    # Flatten MultiPolygons into parts (part_poly maps each part to its source geometry), then
+    # the rings of each part, exterior first then holes, with the count of rings per part.
+    parts_arr, part_poly = shapely.get_parts(geoms, return_index=True)
+    all_rings, ring_part = shapely.get_rings(parts_arr, return_index=True)
+    rings_per_part = np.bincount(ring_part, minlength=len(parts_arr))
 
-    parts_arr = np.asarray(parts)
-    n_interior = shapely.get_num_interior_rings(parts_arr)
-    exterior_rings = shapely.get_exterior_ring(parts_arr)
-
-    ring_objects = []
-    rings_per_part = []
-    for i in range(len(parts_arr)):
-        ring_objects.append(exterior_rings[i])
-        for j in range(int(n_interior[i])):
-            ring_objects.append(shapely.get_interior_ring(parts_arr[i], j))
-        rings_per_part.append(1 + int(n_interior[i]))
-
-    all_rings = np.asarray(ring_objects)
     coords = shapely.get_coordinates(all_rings)
     ring_coord_counts = shapely.get_num_coordinates(all_rings)
 
     ring_offsets = np.concatenate([[0], np.cumsum(ring_coord_counts)])
-    poly_offsets = np.concatenate([[0], np.cumsum(np.array(rings_per_part, dtype=np.int64))])
+    poly_offsets = np.concatenate([[0], np.cumsum(rings_per_part)])
 
     # None when no geometry expanded into multiple parts: every part is its own polygon
     part_poly_arr = None
@@ -450,6 +434,87 @@ class Engine:
             Indices of matching polygons in no guaranteed order.
         """
         return self._core.contains_query(x, y)
+
+    def range_mask(
+        self,
+        min_x: float,
+        min_y: float,
+        max_x: float,
+        max_y: float,
+        candidates: np.ndarray,
+    ) -> np.ndarray:
+        """Return a boolean mask over candidates of which points lie in the bounding box.
+
+        The bbox query and the candidate intersection both run in Rust, so the hit set
+        never crosses the boundary as a Python list and no per-call bitmap is built here.
+
+        Args:
+            min_x: Minimum x coordinate of the bounding box.
+            min_y: Minimum y coordinate of the bounding box.
+            max_x: Maximum x coordinate of the bounding box.
+            max_y: Maximum y coordinate of the bounding box.
+            candidates: Contiguous uint32 array of dataset row positions to test.
+
+        Returns:
+            Boolean array aligned to candidates, True where the row matches.
+        """
+        return self._core.range_mask(
+            min_x, min_y, max_x, max_y, np.ascontiguousarray(candidates, dtype=np.uint32)
+        )
+
+    def contains_mask(self, x: float, y: float, candidates: np.ndarray) -> np.ndarray:
+        """Return a boolean mask over candidates of which polygons contain the point (x, y).
+
+        Args:
+            x: X coordinate of the query point.
+            y: Y coordinate of the query point.
+            candidates: Contiguous uint32 array of dataset row positions to test.
+
+        Returns:
+            Boolean array aligned to candidates, True where the polygon matches.
+        """
+        return self._core.contains_mask(x, y, np.ascontiguousarray(candidates, dtype=np.uint32))
+
+    def fused_mask(
+        self,
+        range_queries: list[tuple[float, float, float, float]],
+        contains_points: list[tuple[float, float]],
+        candidates: np.ndarray,
+    ) -> np.ndarray:
+        """Return a boolean mask over candidates for fused range and contains predicates.
+
+        The per-predicate queries and their sorted-merge intersection run in Rust, so the
+        intermediate hit lists never cross the boundary.
+
+        Args:
+            range_queries: List of (min_x, min_y, max_x, max_y) bounding boxes, AND-ed.
+            contains_points: List of (x, y) points, each an AND-ed contains predicate.
+            candidates: Contiguous uint32 array of dataset row positions to test.
+
+        Returns:
+            Boolean array aligned to candidates, True where every predicate matches.
+        """
+        return self._core.fused_mask(
+            range_queries, contains_points, np.ascontiguousarray(candidates, dtype=np.uint32)
+        )
+
+    def knn_mask_from_candidates(
+        self, x: float, y: float, k: int, candidates: np.ndarray
+    ) -> np.ndarray:
+        """Return a boolean mask over candidates marking the k nearest of them to (x, y).
+
+        Args:
+            x: X coordinate of the query point.
+            y: Y coordinate of the query point.
+            k: Number of neighbours to mark.
+            candidates: Contiguous uint32 array of dataset row positions to search.
+
+        Returns:
+            Boolean array aligned to candidates, True for the k nearest.
+        """
+        return self._core.knn_mask_from_candidates(
+            x, y, k, np.ascontiguousarray(candidates, dtype=np.uint32)
+        )
 
     def intersect_ranges(self, queries: list[tuple[float, float, float, float]]) -> list[int]:
         """Return the sorted intersection of multiple bounding-box queries.

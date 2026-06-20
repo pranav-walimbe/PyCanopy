@@ -221,6 +221,47 @@ impl Engine {
         result
     }
 
+    /// Boolean mask over `candidates` marking which dataset row positions appear in `hits`
+    fn hits_to_mask(&self, hits: &[usize], candidates: &[u32]) -> Vec<bool> {
+        let n_total = self.stats.n;
+        let mut bitmap = vec![false; n_total];
+        for &h in hits {
+            if h < n_total {
+                bitmap[h] = true;
+            }
+        }
+        candidates
+            .iter()
+            .map(|&c| {
+                let c = c as usize;
+                c < n_total && bitmap[c]
+            })
+            .collect()
+    }
+
+    /// The k nearest dataset indices among a candidate subset, exact and index-free
+    fn knn_indices_from_candidates(&self, x: f64, y: f64, k: usize, indices: &[u32]) -> Vec<usize> {
+        if indices.is_empty() || k == 0 {
+            return Vec::new();
+        }
+        let k_actual = k.min(indices.len());
+        let mut dist_idx: Vec<(f64, usize)> = indices
+            .iter()
+            .map(|&i| {
+                let i = i as usize;
+                let dx = self.xs[i] - x;
+                let dy = self.ys[i] - y;
+                (dx * dx + dy * dy, i)
+            })
+            .collect();
+        dist_idx.select_nth_unstable_by(k_actual - 1, |a, b| {
+            a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        dist_idx[..k_actual]
+            .sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        dist_idx[..k_actual].iter().map(|&(_, i)| i).collect()
+    }
+
     /// Plan the index kind for `query` over `q_count` probes, via the mode + cost gate
     fn plan_index(&self, query: &Query, q_count: usize) -> IndexKind {
         plan_access(
@@ -647,29 +688,7 @@ impl Engine {
         let indices = survivor_indices.as_slice().map_err(|_| {
             PyValueError::new_err("survivor_indices must be a contiguous uint32 array")
         })?;
-        if indices.is_empty() || k == 0 {
-            return Ok(vec![]);
-        }
-        let k_actual = k.min(indices.len());
-
-        let mut dist_idx: Vec<(f64, usize)> = indices
-            .iter()
-            .map(|&i| {
-                let i = i as usize;
-                let dx = self.xs[i] - x;
-                let dy = self.ys[i] - y;
-                (dx * dx + dy * dy, i)
-            })
-            .collect();
-
-        // Partial sort: O(M) to place the k_actual-th element, O(k log k) to sort the top slice
-        dist_idx.select_nth_unstable_by(k_actual - 1, |a, b| {
-            a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
-        });
-        dist_idx[..k_actual]
-            .sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-
-        Ok(dist_idx[..k_actual].iter().map(|&(_, i)| i).collect())
+        Ok(self.knn_indices_from_candidates(x, y, k, indices))
     }
 
     /// Point-in-polygon contains query
@@ -764,6 +783,80 @@ impl Engine {
             result = dedup_indices(result, pp);
         }
         Ok(result)
+    }
+
+    /// Boolean mask over `candidates` for a bounding-box filter, computed entirely in Rust
+    fn range_mask<'py>(
+        &mut self,
+        py: Python<'py>,
+        min_x: f64,
+        min_y: f64,
+        max_x: f64,
+        max_y: f64,
+        candidates: PyReadonlyArray1<u32>,
+    ) -> PyResult<Bound<'py, PyArray1<bool>>> {
+        let cand = candidates
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("candidates must be a contiguous uint32 array"))?;
+        let hits = self.range_query(min_x, min_y, max_x, max_y)?;
+        Ok(PyArray1::from_vec(py, self.hits_to_mask(&hits, cand)))
+    }
+
+    /// Boolean mask over `candidates` for a point-in-polygon filter, computed entirely in Rust
+    fn contains_mask<'py>(
+        &mut self,
+        py: Python<'py>,
+        x: f64,
+        y: f64,
+        candidates: PyReadonlyArray1<u32>,
+    ) -> PyResult<Bound<'py, PyArray1<bool>>> {
+        let cand = candidates
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("candidates must be a contiguous uint32 array"))?;
+        let hits = self.contains_query(x, y)?;
+        Ok(PyArray1::from_vec(py, self.hits_to_mask(&hits, cand)))
+    }
+
+    /// Boolean mask over `candidates` for fused range and contains predicates, intersected in Rust
+    fn fused_mask<'py>(
+        &mut self,
+        py: Python<'py>,
+        range_queries: Vec<(f64, f64, f64, f64)>,
+        contains_points: Vec<(f64, f64)>,
+        candidates: PyReadonlyArray1<u32>,
+    ) -> PyResult<Bound<'py, PyArray1<bool>>> {
+        let cand = candidates
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("candidates must be a contiguous uint32 array"))?;
+        let mut hit_lists: Vec<Vec<usize>> = Vec::new();
+        if !range_queries.is_empty() {
+            hit_lists.push(self.intersect_ranges(range_queries)?);
+        }
+        for (x, y) in contains_points {
+            hit_lists.push(self.contains_query(x, y)?);
+        }
+        let hits = if hit_lists.is_empty() {
+            Vec::new()
+        } else {
+            self.intersect_hits(hit_lists)?
+        };
+        Ok(PyArray1::from_vec(py, self.hits_to_mask(&hits, cand)))
+    }
+
+    /// Boolean mask over `candidates` for the k nearest among them, computed entirely in Rust
+    fn knn_mask_from_candidates<'py>(
+        &self,
+        py: Python<'py>,
+        x: f64,
+        y: f64,
+        k: usize,
+        candidates: PyReadonlyArray1<u32>,
+    ) -> PyResult<Bound<'py, PyArray1<bool>>> {
+        let cand = candidates
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("candidates must be a contiguous uint32 array"))?;
+        let nearest = self.knn_indices_from_candidates(x, y, k, cand);
+        Ok(PyArray1::from_vec(py, self.hits_to_mask(&nearest, cand)))
     }
 
     /// Append new points to the delta buffer (point datasets only). Queries reflect them
