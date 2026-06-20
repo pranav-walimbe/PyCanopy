@@ -43,22 +43,25 @@ trap cleanup EXIT
 
 set -e
 log "installing packages"
-dnf install -y gcc git python3.11 python3.11-pip python3.11-devel >/dev/null
+dnf install -y gcc git >/dev/null
 
 log "installing rust"
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
 source "$HOME/.cargo/env"
+
+log "installing uv"
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source "$HOME/.local/bin/env"
 
 log "cloning ${REPO_URL} @ ${REPO_BRANCH}"
 git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" /opt/pycanopy
 cd /opt/pycanopy
 
 log "building PyCanopy (release)"
-python3.11 -m venv /opt/venv
-source /opt/venv/bin/activate
-pip install -q --upgrade pip maturin
-maturin develop --release
-pip install -q --group bench  # benchmark deps, single list in pyproject.toml
+# uv provisions Python and installs the bench group from the committed uv.lock.
+# --no-install-project skips an editable build during sync since maturin develop does it next.
+uv sync --no-install-project --group bench
+uv run maturin develop --release
 
 mkdir -p /data /opt/pycanopy/assets
 
@@ -74,7 +77,7 @@ aws s3 sync "$SRC" "/data/sf${SCALE_FACTOR}" --region "$REGION" \
   || aws s3 sync --no-sign-request "$SRC" "/data/sf${SCALE_FACTOR}" --region "$REGION"
 OUT="/opt/pycanopy/assets/spatialbench_sf${SCALE_FACTOR}${OUT_SUFFIX}.png"
 log "measuring sf${SCALE_FACTOR}${OUT_SUFFIX}"
-python -m bench.spatial_bench.utils --data-dir "/data/sf${SCALE_FACTOR}" --scale-factor "$SCALE_FACTOR" --output "$OUT" $MEASURE_ARGS
+uv run python -m bench.spatial_bench.utils --data-dir "/data/sf${SCALE_FACTOR}" --scale-factor "$SCALE_FACTOR" --output "$OUT" $MEASURE_ARGS
 aws s3 cp "$OUT" "${S3_BASE}/$(basename "$OUT")" --region "$REGION"
 
 log "done"
