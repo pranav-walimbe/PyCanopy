@@ -23,7 +23,7 @@ The heavy run happens on an ephemeral EC2 box, matched to the published `m7i.2xl
 hardware. The only thing that comes back is a comparison chart PNG in `assets/`.
 
 ```bash
-pip install --group bench                     # boto3, geopandas, etc.
+uv sync --group bench                         # boto3, geopandas, etc.
 # edit spatial_bench/config.yaml: set result_bucket and instance_profile
 python -m bench.spatial_bench.aws_run
 ```
@@ -48,10 +48,10 @@ Scale factor and data location live in `config.yaml`.
 No AWS needed. Same flags, plus `--queries q1 q4 ...` for a subset.
 
 ```bash
-python -m bench.spatial_bench.utils --data-dir <local|s3://...> --scale-factor 1
+python -m bench.spatial_bench --data-dir <local|s3://...> --scale-factor 1
 ```
 
-Writes `assets/spatialbench_sf1.png`. This is the exact module the EC2 box runs, so
+Writes `assets/spatialbench_sf1.png`. This is the exact entry point the EC2 box runs, so
 local and cloud runs render identically.
 
 ### AWS setup
