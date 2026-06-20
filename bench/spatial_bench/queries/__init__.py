@@ -6,7 +6,8 @@ Each query module exposes:
   pycanopy(tables) -> pl.DataFrame the PyCanopy + Polars implementation
   compare: dict                    keys/values to check against SedonaDB (utils.verify_outputs)
 
-The SedonaDB oracle (utils.run_oracle) runs the same query for verification and timing.
+The SedonaDB oracle (utils.oracle_summary) reduces the same query to a row count and
+column sums in SQL, returning one row, so verification adds no per-query memory load.
 """
 
 from __future__ import annotations

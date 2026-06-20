@@ -224,24 +224,65 @@ class SpatialBenchTables:
 _ORACLE_TABLES = ("trip", "zone", "building", "customer")
 
 
-def run_oracle(query_id: str, data_dir: str) -> pl.DataFrame:
-    """Run query_id through SedonaDB and return its result as a polars DataFrame.
+def _strip_outer_order_by(sql: str) -> str:
+    # Drop the final top-level ORDER BY so the aggregate wrapper never sorts the full
+    # result. The scan skips string literals and -- comments and tracks paren depth, so an
+    # ORDER BY inside a subquery (q4's top-tips LIMIT) or the words inside a comment
+    # (q5's "ST_Collect_Agg (with _Agg suffix)") are left untouched.
+    lowered = sql.lower()
+    depth, i, n, cut = 0, 0, len(sql), None
+    while i < n:
+        c = sql[i]
+        if c == "'":
+            i += 1
+            while i < n and sql[i] != "'":
+                i += 1
+        elif c == "-" and i + 1 < n and sql[i + 1] == "-":
+            while i < n and sql[i] != "\n":
+                i += 1
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        elif depth == 0 and lowered.startswith("order by", i):
+            cut = i
+            i += 8
+            continue
+        i += 1
+    return sql[:cut] if cut is not None else sql
 
-    The result comes back over Arrow (zero-copy into polars), avoiding a numpy or
-    geopandas copy of what can be a tens-of-millions-row result.
+
+def _aggregate_sql(inner: str, value_cols: list[str]) -> str:
+    # Wrap a query so SedonaDB returns one row: COUNT(*) plus each value column's sum.
+    # Pushing the reduction into the engine means the full result never materialises, and
+    # since COUNT and SUM are order-independent the outer ORDER BY is stripped first.
+    body = _strip_outer_order_by(inner)
+    sums = "".join(f", SUM(CAST({c} AS DOUBLE)) AS {c}" for c in value_cols)
+    return f"SELECT COUNT(*) AS __h__{sums}\nFROM (\n{body}\n) __agg__"
+
+
+def oracle_summary(query_id: str, data_dir: str, value_cols: list[str]) -> tuple[int, dict]:
+    """Reduce query_id through SedonaDB to (row count, per-column float sums).
+
+    The COUNT and SUMs are pushed into the SedonaDB SQL, so the oracle returns a single
+    row, the full result never leaves the engine, and verification adds no per-query
+    memory load. The check needs only the count and sums, both of which are order-independent.
 
     Args:
         query_id: Query id (e.g. "q1") indexing SEDONA_SQL.
         data_dir: Local directory or ``s3://`` URI of the parquet tables.
+        value_cols: SedonaDB result columns to sum (empty checks the row count only).
 
     Returns:
-        The SedonaDB result as a Polars DataFrame.
+        A (row count, {column: sum}) tuple summarizing the SedonaDB result.
     """
     sd = sedonadb.connect()
     for table in _ORACLE_TABLES:
         # SedonaDB reads the bare directory or file directly, with ST_GeomFromWKB in SQL
         sd.read_parquet(_resolve_table(data_dir, table)[0]).to_view(table)
-    return pl.from_arrow(sd.sql(SEDONA_SQL[query_id]).to_arrow_table())
+    sql = _aggregate_sql(SEDONA_SQL[query_id], value_cols)
+    row = pl.from_arrow(sd.sql(sql).to_arrow_table())
+    return int(row["__h__"][0]), {c: row[c][0] for c in value_cols}
 
 
 # Output verification (PyCanopy result vs SedonaDB result)
@@ -268,16 +309,24 @@ def _height_and_sums(df, value_cols) -> tuple[int, dict[str, float]]:
 
 
 def verify_outputs(
-    pc_df, sedona_df, keys=(), values=(), rel_tol: float = 1e-2, abs_tol: float = 1e-2
+    pc_df,
+    query_id: str,
+    data_dir: str,
+    keys=(),
+    values=(),
+    rel_tol: float = 1e-2,
+    abs_tol: float = 1e-2,
 ) -> tuple[bool, str]:
-    """Sanity-check a PyCanopy result against a SedonaDB result.
+    """Sanity-check a PyCanopy result against the SedonaDB oracle.
 
-    Compares row count then each value column's float sum within tolerance. Both checks
-    are order-independent and run in one streaming pass, so the result never leaves polars.
+    Compares row count then each value column's float sum within tolerance. The oracle
+    reduces to the count and sums in SQL (one row back), and the PyCanopy side streams the
+    same aggregates, so neither full result ever materialises. Both checks are order-independent.
 
     Args:
         pc_df: PyCanopy result (polars LazyFrame, polars DataFrame, or pandas DataFrame).
-        sedona_df: SedonaDB result in any of the same accepted forms.
+        query_id: Query id (e.g. "q1") indexing the SedonaDB oracle.
+        data_dir: Local directory or ``s3://`` URI of the parquet tables.
         keys: Key columns from the compare spec (accepted but not used in the check).
         values: Column specs to sum-compare, each a name or (pc_col, sedona_col) pair.
         rel_tol: Relative tolerance on each column sum.
@@ -288,7 +337,7 @@ def verify_outputs(
     """
     pairs = _pairs(values)
     pc_h, pc_sums = _height_and_sums(pc_df, [a for a, _ in pairs])
-    sed_h, sed_sums = _height_and_sums(sedona_df, [b for _, b in pairs])
+    sed_h, sed_sums = oracle_summary(query_id, data_dir, [b for _, b in pairs])
     if pc_h != sed_h:
         return False, f"row count pycanopy={pc_h} sedona={sed_h}"
 
@@ -331,8 +380,7 @@ def measure_query(query, data_dir: str, index_mode: str = "eager", verify: bool 
     out = {"status": "ok", "pycanopy_seconds": round(pc_s, 4)}
     if verify:
         try:
-            sed_df = run_oracle(query.id, data_dir)
-            ok, detail = verify_outputs(pc_df, sed_df, **query.compare)
+            ok, detail = verify_outputs(pc_df, query.id, data_dir, **query.compare)
             out["match"] = "match" if ok else "MISMATCH"
             out["match_detail"] = detail
             if not ok:

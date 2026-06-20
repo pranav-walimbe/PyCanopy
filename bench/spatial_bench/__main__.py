@@ -242,7 +242,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-verify",
         action="store_true",
-        help="Skip the SedonaDB oracle. Avoids the per-query verification memory load.",
+        help="Skip the SedonaDB oracle to save its per-query run time.",
     )
     parser.add_argument("--on-box", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--data-dir", help=argparse.SUPPRESS)
