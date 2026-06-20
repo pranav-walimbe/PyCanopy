@@ -72,14 +72,16 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = [
-    "E",   # pycodestyle errors
-    "F",   # pyflakes
-    "I",   # isort
-    "UP",  # pyupgrade
-    "RUF", # ruff-specific
+    "E",       # pycodestyle errors
+    "F",       # pyflakes
+    "I",       # isort
+    "UP",      # pyupgrade
+    "RUF",     # ruff-specific
+    "D400",    # docstring summary line ends with a period
+    "PLC0415", # import-outside-top-level, keeps all imports at module level
 ]
 ignore = [
-    "E501", # line too long — handled by formatter
+    "E501", # line too long, handled by formatter
 ]
 
 [tool.ruff.lint.isort]

@@ -253,6 +253,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Launch the benchmark on EC2 (or measure on the box) and return an exit code.
+
+    Args:
+        argv: Command-line arguments, or None to read from sys.argv.
+
+    Returns:
+        The process exit code, 0 on success and 1 when the run fails.
+    """
     parser = _build_parser()
     args = parser.parse_args(argv)
 

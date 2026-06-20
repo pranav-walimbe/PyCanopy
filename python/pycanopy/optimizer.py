@@ -6,7 +6,7 @@ Passes (in order):
   3. _fusion_pass: merge consecutive fusable spatial nodes
   4. _join_side_pass: set flip=True on symmetric joins where query side is larger
   5. _detect_fanout: find the longest shared plan prefix across branches
-     (used by collect_all to insert a Polars .cache() barrier)
+     (used by collect_all to insert a Polars .cache() barrier).
 """
 
 from __future__ import annotations

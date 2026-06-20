@@ -1,5 +1,6 @@
 use geo::Rect;
 
+/// Per-axis cell count of the spatial histogram, giving a 32x32 grid
 pub const HISTOGRAM_RESOLUTION: usize = 32;
 
 /// Fixed 32x32 spatial histogram of geometry counts built at load time
@@ -114,6 +115,7 @@ pub enum Distribution {
 }
 
 impl DatasetStats {
+    /// Return the area of the dataset extent rectangle, or 0.0 when no extent is known
     pub fn extent_area(&self) -> f64 {
         self.extent
             .map(|r| {

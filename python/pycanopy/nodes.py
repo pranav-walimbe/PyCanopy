@@ -180,7 +180,7 @@ class PolygonKnnJoinNode:
     keep_columns: tuple[str, ...] | None = None
 
 
-# Type alias for a complete plan.
+# Type alias for a complete plan
 Plan = list[
     ScalarNode
     | RangeNode

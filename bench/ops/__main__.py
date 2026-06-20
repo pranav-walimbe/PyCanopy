@@ -41,7 +41,7 @@ from bench.ops.utils import (
 _ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
 
 # Per-tier dataset sizes, set by what the naive GeoPandas competitor costs: a single
-# query scans N once (cheap), but a join loops over all N query points (O(N^2))
+# query scans N once (cheap), but a join loops over all N query points (O(N^2)).
 N_SINGLE = 100_000  # single-query ops: range, kNN, contains, range (polygons)
 N_JOIN = 10_000  # point joins: knn_join, within_distance_join
 N_POLY = 5_000  # polygon joins + self-join (point-to-polygon distance is heavier)
@@ -222,6 +222,14 @@ def run() -> BenchmarkReport:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Parse arguments and run the operation benchmark suite.
+
+    Args:
+        argv: Command-line arguments, or None to read from sys.argv.
+
+    Returns:
+        The process exit code, always 0 on success.
+    """
     parser = argparse.ArgumentParser(
         description="Run PyCanopy operation benchmarks on uniform data."
     )
