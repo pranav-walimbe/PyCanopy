@@ -67,7 +67,11 @@ class MockDataset:
             )
 
     def as_engine(self) -> Engine:
-        """Return a PyCanopy Engine (eager indexing) loaded with this dataset."""
+        """Return a PyCanopy Engine (eager indexing) loaded with this dataset.
+
+        Returns:
+            An eager-indexed Engine over the dataset geometries.
+        """
         engine = (
             Engine(self._data)
             if self.geometry_type == "points"
@@ -77,32 +81,52 @@ class MockDataset:
         return engine
 
     def as_shapely_list(self) -> list:
-        """Return polygon geometries as a list of shapely objects (polygons only)."""
+        """Return polygon geometries as a list of shapely objects (polygons only).
+
+        Returns:
+            The polygons as a list of shapely objects.
+        """
         if self.geometry_type != "polygons":
             raise TypeError("as_shapely_list is only supported for polygon datasets.")
         return self._data.tolist()
 
     def as_polars_df(self) -> pl.DataFrame:
-        """Return point data as a Polars DataFrame with x and y columns (points only)."""
+        """Return point data as a Polars DataFrame with x and y columns (points only).
+
+        Returns:
+            A DataFrame with "x" and "y" columns.
+        """
         if self.geometry_type != "points":
             raise TypeError("as_polars_df is only supported for point datasets.")
         return pl.DataFrame({"x": self._data[:, 0], "y": self._data[:, 1]})
 
     def as_spatial_frame(self) -> SpatialFrame:
-        """Return point data as a PyCanopy SpatialFrame (points only)."""
+        """Return point data as a PyCanopy SpatialFrame (points only).
+
+        Returns:
+            An eager-indexed point SpatialFrame.
+        """
         if self.geometry_type != "points":
             raise TypeError("as_spatial_frame is only supported for point datasets.")
         return SpatialFrame(self.as_polars_df(), "x", "y", index_mode="eager")
 
     def as_polygon_spatial_frame(self) -> SpatialFrame:
-        """Return polygon data as a PyCanopy SpatialFrame (polygons only)."""
+        """Return polygon data as a PyCanopy SpatialFrame (polygons only).
+
+        Returns:
+            An eager-indexed polygon SpatialFrame.
+        """
         if self.geometry_type != "polygons":
             raise TypeError("as_polygon_spatial_frame is only supported for polygon datasets.")
         df = pl.DataFrame({"geom": self._data.tolist()})
         return SpatialFrame.from_polygons(df, geometry_col="geom", index_mode="eager")
 
     def as_coords(self) -> np.ndarray:
-        """Return the raw (N, 2) coordinate array (points only)."""
+        """Return the raw (N, 2) coordinate array (points only).
+
+        Returns:
+            The (N, 2) float64 coordinate array.
+        """
         if self.geometry_type != "points":
             raise TypeError("as_coords is only supported for point datasets.")
         return self._data
@@ -146,13 +170,14 @@ def _generate_polygons(
     n_clusters: int,
     cluster_std: float,
 ) -> np.ndarray:
+    # Generate N axis-aligned box polygons of the given size, anchored on generated points
     min_x, min_y, max_x, max_y = bounds
     pw = polygon_size * (max_x - min_x)
     ph = polygon_size * (max_y - min_y)
     anchors = generate_points(
         n, distribution, seed, (min_x, min_y, max_x - pw, max_y - ph), n_clusters, cluster_std
     )
-    # shapely.box is fully vectorized, no Python loop over N geometries.
+    # shapely.box is fully vectorized, no Python loop over N geometries
     return shapely.box(anchors[:, 0], anchors[:, 1], anchors[:, 0] + pw, anchors[:, 1] + ph)
 
 
@@ -161,6 +186,7 @@ def _uniform(
     n: int,
     bounds: tuple[float, float, float, float],
 ) -> np.ndarray:
+    # Draw N points uniformly across the bounds
     min_x, min_y, max_x, max_y = bounds
     return np.column_stack([rng.uniform(min_x, max_x, n), rng.uniform(min_y, max_y, n)])
 
@@ -172,6 +198,7 @@ def _clustered(
     n_clusters: int,
     cluster_std: float,
 ) -> np.ndarray:
+    # Draw N points from n_clusters Gaussian blobs, clipped to the bounds
     min_x, min_y, max_x, max_y = bounds
     span_x, span_y = max_x - min_x, max_y - min_y
 
@@ -188,7 +215,14 @@ def _clustered(
 
 
 def time_one(fn: Callable) -> tuple[float, object]:
-    """Run fn exactly once. Returns (elapsed_ms, result)."""
+    """Run fn exactly once and time it.
+
+    Args:
+        fn: A zero-argument callable to run.
+
+    Returns:
+        An (elapsed_ms, result) tuple.
+    """
     t0 = time.perf_counter()
     result = fn()
     return (time.perf_counter() - t0) * 1_000, result
@@ -237,7 +271,11 @@ class BenchmarkReport:
     _ops: list[OperationResult] = field(default_factory=list)
 
     def add(self, op: OperationResult) -> None:
-        """Append an operation result and print its one-line summary."""
+        """Append an operation result and print its one-line summary.
+
+        Args:
+            op: The operation result to record.
+        """
         self._ops.append(op)
         comp = op.competitors[0] if op.competitors else None
         speedup = ""
@@ -253,6 +291,9 @@ class BenchmarkReport:
 
         Keeps the pretty box-drawing layout (one row per op: n, cold/warm ms, the
         GeoPandas baseline, and the speedup) rather than a raw CSV.
+
+        Args:
+            path: Destination text file path.
         """
         rows = []
         for op in self._ops:
@@ -340,7 +381,7 @@ def measure_sf(
 def _run_competitors(
     competitors: list[tuple[str, Callable | None]] | None,
 ) -> list[CompetitorResult]:
-    """Time each competitor callable, marking None callables as skipped."""
+    # Time each competitor callable, marking None callables as skipped
     results = []
     for label, fn in competitors or []:
         if fn is None:
@@ -355,7 +396,14 @@ def _run_competitors(
 
 
 def geopandas_range_naive(gs) -> Callable:
-    """Bounding-box filter via gs.intersects — O(N) shapely scan."""
+    """Build a naive bounding-box range filter via gs.intersects (O(N) shapely scan).
+
+    Args:
+        gs: A GeoSeries of the dataset geometries.
+
+    Returns:
+        A function taking a (min_x, min_y, max_x, max_y) box and returning matching rows.
+    """
 
     def fn(q):
         return gs[gs.intersects(shapely_box(*q))]
@@ -364,7 +412,15 @@ def geopandas_range_naive(gs) -> Callable:
 
 
 def geopandas_knn_naive(gs, k: int) -> Callable:
-    """kNN via gs.distance sort — O(N) shapely scan."""
+    """Build a naive kNN query via a gs.distance sort (O(N) shapely scan).
+
+    Args:
+        gs: A GeoSeries of the dataset geometries.
+        k: Number of nearest neighbours to return.
+
+    Returns:
+        A function taking an (x, y) query point and returning the k nearest rows.
+    """
 
     def fn(q):
         return gs.distance(Point(q[0], q[1])).nsmallest(k)
@@ -373,7 +429,14 @@ def geopandas_knn_naive(gs, k: int) -> Callable:
 
 
 def geopandas_contains_naive(gs) -> Callable:
-    """Point-in-polygon via gs.contains — O(N) shapely scan."""
+    """Build a naive point-in-polygon query via gs.contains (O(N) shapely scan).
+
+    Args:
+        gs: A GeoSeries of the dataset polygons.
+
+    Returns:
+        A function taking an (x, y) query point and returning the containing polygons.
+    """
 
     def fn(q):
         return gs[gs.contains(Point(q[0], q[1]))]
@@ -382,7 +445,14 @@ def geopandas_contains_naive(gs) -> Callable:
 
 
 def geopandas_intersects_naive(gs) -> Callable:
-    """Polygon range via gs.intersects — O(N) shapely scan."""
+    """Build a naive polygon range query via gs.intersects (O(N) shapely scan).
+
+    Args:
+        gs: A GeoSeries of the dataset polygons.
+
+    Returns:
+        A function taking a (min_x, min_y, max_x, max_y) box and returning matching rows.
+    """
 
     def fn(q):
         return gs[gs.intersects(shapely_box(*q))]
@@ -391,7 +461,15 @@ def geopandas_intersects_naive(gs) -> Callable:
 
 
 def geopandas_knn_join_naive(gs, k: int) -> Callable:
-    """Batch kNN join via Python loop + gs.distance scan — O(Q * N)."""
+    """Build a naive batch kNN join via a Python loop over gs.distance (O(Q * N)).
+
+    Args:
+        gs: A GeoSeries of the dataset geometries.
+        k: Number of nearest neighbours per query point.
+
+    Returns:
+        A function taking the query DataFrame and returning each point's k nearest indices.
+    """
 
     def fn(query_df):
         results = []
@@ -404,9 +482,14 @@ def geopandas_knn_join_naive(gs, k: int) -> Callable:
 
 
 def geopandas_within_distance_naive(gs, distance: float) -> Callable:
-    """Batch within-distance join via Python loop + gs.distance scan — O(Q * N).
+    """Build a naive batch within-distance join via a Python loop over gs.distance (O(Q * N)).
 
-    Works for point or polygon geometries (gs.distance handles either).
+    Args:
+        gs: A GeoSeries of point or polygon geometries (gs.distance handles either).
+        distance: Distance threshold for a match.
+
+    Returns:
+        A function taking the query DataFrame and returning each point's within-distance indices.
     """
 
     def fn(query_df):
@@ -420,7 +503,14 @@ def geopandas_within_distance_naive(gs, distance: float) -> Callable:
 
 
 def geopandas_batch_contains_naive(gs) -> Callable:
-    """Batch contains via Python loop + gs.contains scan — O(Q * N)."""
+    """Build a naive batch contains join via a Python loop over gs.contains (O(Q * N)).
+
+    Args:
+        gs: A GeoSeries of the dataset polygons.
+
+    Returns:
+        A function taking the query DataFrame and returning each point's containing indices.
+    """
 
     def fn(query_df):
         results = []
@@ -433,7 +523,14 @@ def geopandas_batch_contains_naive(gs) -> Callable:
 
 
 def geopandas_intersects_self_join_naive(gs) -> Callable:
-    """All-pairs polygon intersects self-join — O(N^2) shapely scan."""
+    """Build a naive all-pairs polygon intersects self-join (O(N^2) shapely scan).
+
+    Args:
+        gs: A GeoSeries of the dataset polygons.
+
+    Returns:
+        A zero-argument function returning the intersecting (i, j) index pairs with i < j.
+    """
 
     def fn():
         pairs = []

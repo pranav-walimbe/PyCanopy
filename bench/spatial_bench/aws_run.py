@@ -34,7 +34,11 @@ _POLL_SECONDS = 30
 
 
 def load_config() -> dict:
-    """Read config.yaml and fail fast if a required field is unset."""
+    """Read config.yaml and fail fast if a required field is unset.
+
+    Returns:
+        The parsed config dict.
+    """
     cfg = yaml.safe_load((_DIR / "config.yaml").read_text())
     for key in ("result_bucket", "instance_profile"):
         if not cfg.get(key) or str(cfg[key]).startswith("your-"):
@@ -43,7 +47,7 @@ def load_config() -> dict:
 
 
 def _user_data(cfg: dict, run_id: str, index_mode: str, no_verify: bool = False) -> str:
-    """Fill the @@NAME@@ placeholders in bootstrap.sh for this run."""
+    # Fill the @@NAME@@ placeholders in bootstrap.sh for this run
     script = (_DIR / "bootstrap.sh").read_text()
     # Non-eager modes pass a measure flag and a filename suffix so the chart does
     # not overwrite the eager sf{N}.png.
@@ -70,7 +74,19 @@ def _user_data(cfg: dict, run_id: str, index_mode: str, no_verify: bool = False)
 
 
 def launch(ec2, ssm, cfg: dict, run_id: str, index_mode: str, no_verify: bool = False) -> str:
-    """Launch the benchmark instance and return its id."""
+    """Launch the benchmark instance and return its id.
+
+    Args:
+        ec2: A boto3 EC2 client.
+        ssm: A boto3 SSM client (resolves the latest AL2023 AMI).
+        cfg: The parsed config dict.
+        run_id: Unique id tagged on the instance and used in the S3 prefix.
+        index_mode: Index build policy passed to the box ("eager" / "auto" / "none").
+        no_verify: Skip the SedonaDB oracle on the box when True.
+
+    Returns:
+        The launched instance id.
+    """
     ami = ssm.get_parameter(Name=_SSM_AL2023)["Parameter"]["Value"]
     resp = ec2.run_instances(
         ImageId=ami,
@@ -109,11 +125,8 @@ def launch(ec2, ssm, cfg: dict, run_id: str, index_mode: str, no_verify: bool = 
 
 
 def _alive(ec2, instance_id: str) -> bool:
-    """Return True while the instance is still pending or running.
-
-    describe_instances is eventually consistent right after launch, so a transient
-    InvalidInstanceID.NotFound is treated as still-pending rather than as a dead box.
-    """
+    # True while the instance is pending or running. describe_instances is eventually
+    # consistent right after launch, so a transient NotFound counts as still-pending.
     try:
         inst = ec2.describe_instances(InstanceIds=[instance_id])
     except ClientError as exc:
@@ -125,12 +138,8 @@ def _alive(ec2, instance_id: str) -> bool:
 
 
 def _emit_progress(s3, cfg: dict, run_id: str, seen: int) -> int:
-    """Print the box's [testcase] / [verification] lines published since the last poll.
-
-    The box streams its log to progress.log every few seconds. We surface only the
-    measure lines, dropping build, data-copy, and byte-counter noise, and print the
-    ones not shown yet.
-    """
+    # Print the box's [testcase]/[verification] lines published since the last poll,
+    # dropping the build, data-copy, and byte-counter noise from the streamed progress.log.
     key = f"{_RESULT_PREFIX}/{run_id}/progress.log"
     try:
         text = s3.get_object(Bucket=cfg["result_bucket"], Key=key)["Body"].read()
@@ -147,7 +156,18 @@ def _emit_progress(s3, cfg: dict, run_id: str, seen: int) -> int:
 
 
 def wait_for_success(s3, ec2, cfg: dict, run_id: str, instance_id: str) -> bool:
-    """Poll S3 for the _SUCCESS marker until it appears or the box dies/times out."""
+    """Poll S3 for the _SUCCESS marker until it appears or the box dies/times out.
+
+    Args:
+        s3: A boto3 S3 client.
+        ec2: A boto3 EC2 client.
+        cfg: The parsed config dict.
+        run_id: This run's unique id.
+        instance_id: The instance to watch for early death.
+
+    Returns:
+        True if _SUCCESS appeared, False if the box died or the deadline passed.
+    """
     key = f"{_RESULT_PREFIX}/{run_id}/_SUCCESS"
     deadline = time.monotonic() + (cfg["max_runtime_min"] + 15) * 60
     seen = 0
@@ -168,7 +188,13 @@ def wait_for_success(s3, ec2, cfg: dict, run_id: str, instance_id: str) -> bool:
 def download(s3, cfg: dict, run_id: str) -> list[Path]:
     """Download this run's artifacts: the chart PNG into assets/, the log to tmp.
 
-    Returns the downloaded local paths.
+    Args:
+        s3: A boto3 S3 client.
+        cfg: The parsed config dict.
+        run_id: This run's unique id.
+
+    Returns:
+        The downloaded local paths.
     """
     prefix = f"{_RESULT_PREFIX}/{run_id}/"
     objs = s3.list_objects_v2(Bucket=cfg["result_bucket"], Prefix=prefix).get("Contents", [])

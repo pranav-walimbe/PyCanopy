@@ -2,8 +2,8 @@
 
 Runs each operation on a fresh engine (cold, index build included) and again warm
 (index cached) against a naive GeoPandas baseline (no spatial index). Single-query
-ops run large; the joins run smaller because the naive competitor loops over every
-query point. Prints one line per op and writes the summary table to a file in assets/.
+ops run large, while the joins run smaller because the naive competitor loops over
+every query point. Prints one line per op and writes the summary table to assets/.
 
 Usage:
     python -m bench.ops.run
@@ -40,7 +40,7 @@ from bench.ops.utils import (
 _ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
 
 # Per-tier dataset sizes, set by what the naive GeoPandas competitor costs: a single
-# query scans N once (cheap), but a join loops over all N query points (O(N^2)).
+# query scans N once (cheap), but a join loops over all N query points (O(N^2))
 N_SINGLE = 100_000  # single-query ops: range, kNN, contains, range (polygons)
 N_JOIN = 10_000  # point joins: knn_join, within_distance_join
 N_POLY = 5_000  # polygon joins + self-join (point-to-polygon distance is heavier)
@@ -53,12 +53,13 @@ POLYGON_SIZE = 0.005
 
 
 def _query_points(n: int) -> pl.DataFrame:
-    """Return n random query points as a (qx, qy) DataFrame."""
+    # Return n random query points as a (qx, qy) DataFrame
     pts = np.random.default_rng(7).uniform(0.0, 1.0, (n, 2))
     return pl.DataFrame({"qx": pts[:, 0], "qy": pts[:, 1]})
 
 
 def _point_query_ops(report: BenchmarkReport, distribution: str) -> None:
+    # Range query and kNN on a point dataset, each vs the naive GeoPandas scan
     ds = MockDataset("points", n=N_SINGLE, distribution=distribution, seed=42)
     coords = ds.as_coords()
     gs = gpd.GeoSeries(shapely.points(coords[:, 0], coords[:, 1]))
@@ -84,6 +85,7 @@ def _point_query_ops(report: BenchmarkReport, distribution: str) -> None:
 
 
 def _polygon_query_ops(report: BenchmarkReport, distribution: str) -> None:
+    # Point-in-polygon contains and MBR range on a polygon dataset, vs the naive scan
     ds = MockDataset(
         "polygons", n=N_SINGLE, distribution=distribution, seed=42, polygon_size=POLYGON_SIZE
     )
@@ -111,6 +113,7 @@ def _polygon_query_ops(report: BenchmarkReport, distribution: str) -> None:
 
 
 def _point_join_ops(report: BenchmarkReport, distribution: str) -> None:
+    # kNN join and within-distance join on points, each vs the naive O(Q*N) GeoPandas loop
     ds = MockDataset("points", n=N_JOIN, distribution=distribution, seed=42)
     query_df = _query_points(N_JOIN)
     coords = ds.as_coords()
@@ -139,6 +142,7 @@ def _point_join_ops(report: BenchmarkReport, distribution: str) -> None:
 
 
 def _polygon_join_ops(report: BenchmarkReport, distribution: str) -> None:
+    # Polygon joins (within, kNN, within-distance) and the intersects self-join, vs naive
     ds = MockDataset(
         "polygons", n=N_POLY, distribution=distribution, seed=42, polygon_size=POLYGON_SIZE
     )
@@ -186,7 +190,7 @@ def _polygon_join_ops(report: BenchmarkReport, distribution: str) -> None:
 
 
 def _warm_polars_jit() -> None:
-    """Fire Polars' JIT before any timed collect() calls."""
+    # Fire Polars' JIT before any timed collect() calls
     pl.DataFrame({"x": [0.0], "y": [0.0]}).lazy().filter(pl.col("x") > 0.0).collect()
     (
         pl.DataFrame({"x": [0.0]})
@@ -204,7 +208,14 @@ def _warm_polars_jit() -> None:
 
 
 def run(distribution: str = "uniform") -> BenchmarkReport:
-    """Run every operation and write the CSV summary to assets/."""
+    """Run every operation and write the summary table to assets/.
+
+    Args:
+        distribution: Spatial distribution ("uniform" or "clustered").
+
+    Returns:
+        The populated BenchmarkReport.
+    """
     report = BenchmarkReport()
     _point_query_ops(report, distribution)
     _polygon_query_ops(report, distribution)

@@ -4,9 +4,9 @@ Each query module exposes:
   id: str                          query identifier, e.g. "q1"
   title: str                       short description
   pycanopy(tables) -> pl.DataFrame the PyCanopy + Polars implementation
-  compare: dict                    keys/values to check against SedonaDB (see check.verify)
+  compare: dict                    keys/values to check against SedonaDB (utils.verify_outputs)
 
-The SedonaDB oracle (oracle.py) runs the same query for verification and timing.
+The SedonaDB oracle (utils.run_oracle) runs the same query for verification and timing.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from bench.spatial_bench.queries import (
     q12,
 )
 
-# Ordered list of all implemented query modules.
+# Ordered list of all implemented query modules
 ALL = [q01, q02, q03, q04, q05, q06, q07, q08, q09, q10, q11, q12]
 
 _BY_ID = {q.id: q for q in ALL}

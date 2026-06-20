@@ -77,7 +77,7 @@ aws s3 sync "$SRC" "/data/sf${SCALE_FACTOR}" --region "$REGION" \
   || aws s3 sync --no-sign-request "$SRC" "/data/sf${SCALE_FACTOR}" --region "$REGION"
 OUT="/opt/pycanopy/assets/spatialbench_sf${SCALE_FACTOR}${OUT_SUFFIX}.png"
 log "measuring sf${SCALE_FACTOR}${OUT_SUFFIX}"
-uv run python -m bench.spatial_bench.utils --data-dir "/data/sf${SCALE_FACTOR}" --scale-factor "$SCALE_FACTOR" --output "$OUT" $MEASURE_ARGS
+uv run python -m bench.spatial_bench --data-dir "/data/sf${SCALE_FACTOR}" --scale-factor "$SCALE_FACTOR" --output "$OUT" $MEASURE_ARGS
 aws s3 cp "$OUT" "${S3_BASE}/$(basename "$OUT")" --region "$REGION"
 
 log "done"

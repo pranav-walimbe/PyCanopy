@@ -1,23 +1,14 @@
-"""Shared machinery for the SpatialBench suite: data, oracle, verify, measure, chart.
-
-The flow, run on the box via ``python -m bench.spatial_bench.utils``: for each query
-warm the dataset into the page cache, time the PyCanopy pipeline, then run the same
-query through SedonaDB only to check the two results agree, and render one PNG of
-PyCanopy (measured) vs the published SedonaDB/DuckDB/GeoPandas numbers per query with
-output mismatches flagged.
-
-A query module (queries/qNN.py) only provides id, title, pycanopy(tables), and a
-``compare`` spec; the SedonaDB SQL lives in sedona_sql.py; everything else lives here.
-"""
+"""Shared machinery for the SpatialBench suite: data, oracle, verify, measure, chart."""
 
 from __future__ import annotations
 
-import argparse
 import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import matplotlib
+import matplotlib.pyplot as plt
 import polars as pl
 import sedonadb
 import shapely
@@ -25,7 +16,7 @@ import shapely
 from bench.spatial_bench.sedona_sql import SEDONA_SQL
 from pycanopy import SpatialFrame
 
-_ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
+matplotlib.use("Agg")  # headless backend, set before any figure is created
 
 
 # Published Apache SpatialBench baseline (chart reference)
@@ -72,12 +63,8 @@ PUBLISHED: dict[int, dict[str, dict[str, float | str]]] = {
 
 
 def _resolve_table(data_dir: str, table: str) -> tuple[str, bool]:
-    """Locate ``table`` under ``data_dir``, returning (path, is_directory).
-
-    Handles the single-file layout (``trip.parquet``) and the directory-of-files
-    layout (``trip/``) of the public S3 datasets. ``s3://`` URIs are assumed to be
-    directories. Shared by the polars (glob) and SedonaDB (directory) readers.
-    """
+    # Locate table under data_dir as (path, is_directory), handling the single-file and
+    # directory-of-files layouts of the public datasets. s3:// URIs are directories.
     base = data_dir.rstrip("/")
     if base.startswith("s3://"):
         return f"{base}/{table}", True
@@ -90,7 +77,16 @@ def _resolve_table(data_dir: str, table: str) -> tuple[str, bool]:
 
 
 def read_table(data_dir: str, table: str, columns: list[str] | None = None) -> pl.DataFrame:
-    """Read one SpatialBench table as a Polars DataFrame (geometry stays WKB)."""
+    """Read one SpatialBench table as a Polars DataFrame (geometry stays WKB).
+
+    Args:
+        data_dir: Local directory or ``s3://`` URI of the parquet tables.
+        table: Table name (e.g. "trip").
+        columns: Optional subset of columns to read.
+
+    Returns:
+        The table as a Polars DataFrame.
+    """
     path, is_dir = _resolve_table(data_dir, table)
     return pl.read_parquet(f"{path}/**/*.parquet" if is_dir else path, columns=columns)
 
@@ -98,11 +94,16 @@ def read_table(data_dir: str, table: str, columns: list[str] | None = None) -> p
 def scan_table(data_dir: str, table: str, columns: list[str] | None = None) -> pl.LazyFrame:
     """Lazily scan one SpatialBench table as a LazyFrame (geometry stays WKB).
 
-    Lazy sibling of read_table: nothing is read until collected, so Polars can push
-    projection and row limits below the column reads. Use this for late materialization,
-    where a query narrows rows on cheap columns before it needs geometry and so never
-    decodes the wide WKB column for discarded rows. When every row's geometry is needed
-    (the common case) read_table is the right tool.
+    Lazy sibling of read_table, for late materialization. A query that narrows rows on
+    cheap columns never decodes the wide WKB column for the rows it later discards.
+
+    Args:
+        data_dir: Local directory or ``s3://`` URI of the parquet tables.
+        table: Table name (e.g. "trip").
+        columns: Optional subset of columns to project.
+
+    Returns:
+        A LazyFrame over the table's parquet.
     """
     path, is_dir = _resolve_table(data_dir, table)
     lf = pl.scan_parquet(f"{path}/**/*.parquet" if is_dir else path)
@@ -113,8 +114,11 @@ def warm_tables(data_dir: str, tables: tuple[str, ...]) -> None:
     """Read each table's raw parquet bytes into the OS page cache (untimed).
 
     Run before a measurement so the timed PyCanopy load reads from RAM, matching the
-    resident-data condition of the published baseline regardless of prior eviction.
-    No-op for s3:// inputs, which cannot be warmed locally.
+    resident-data condition of the published baseline. No-op for s3:// inputs.
+
+    Args:
+        data_dir: Local directory or ``s3://`` URI of the parquet tables.
+        tables: Table names to warm.
     """
     if data_dir.rstrip("/").startswith("s3://"):
         return
@@ -130,8 +134,11 @@ def warm_tables(data_dir: str, tables: tuple[str, ...]) -> None:
 def wkb_to_polygons(series: pl.Series) -> list:
     """Decode a WKB polygon column to shapely Polygons / MultiPolygons.
 
-    MultiPolygons are kept whole: the engine treats each as one logical polygon spanning
-    all its parts, so a point in any part matches the zone (as ST_Within does).
+    Args:
+        series: A Polars Series of WKB-encoded polygon geometries.
+
+    Returns:
+        A list of shapely Polygon / MultiPolygon objects (each MultiPolygon kept whole).
     """
     return list(shapely.from_wkb(series.to_numpy()))
 
@@ -150,7 +157,15 @@ class SpatialBenchTables:
     _cache: dict[str, pl.DataFrame] | None = None
 
     def table(self, name: str, columns: list[str] | None = None) -> pl.DataFrame:
-        """Return table ``name``, reading and caching it on first access."""
+        """Return table ``name``, reading and caching it on first access.
+
+        Args:
+            name: Table name.
+            columns: Optional subset of columns to read.
+
+        Returns:
+            The cached table as a Polars DataFrame.
+        """
         if self._cache is None:
             self._cache = {}
         key = name if columns is None else f"{name}:{','.join(columns)}"
@@ -159,26 +174,49 @@ class SpatialBenchTables:
         return self._cache[key]
 
     def scan(self, name: str, columns: list[str] | None = None) -> pl.LazyFrame:
-        """Lazily scan table ``name`` (uncached; for late-materialization access).
+        """Lazily scan table ``name`` (uncached, for late-materialization access).
 
-        Returns a LazyFrame rather than a cached DataFrame because the point of a
-        lazy scan is to defer reads until the collected plan decides what to read.
+        Returns a LazyFrame rather than a cached DataFrame because the point of a lazy
+        scan is to defer reads until the collected plan decides what to read.
+
+        Args:
+            name: Table name.
+            columns: Optional subset of columns to project.
+
+        Returns:
+            An uncached LazyFrame over the table.
         """
         return scan_table(self.data_dir, name, columns)
 
     def point_frame(self, df: pl.DataFrame, wkb_col: str) -> SpatialFrame:
-        """Build a point SpatialFrame from a WKB point column of ``df``."""
+        """Build a point SpatialFrame from a WKB point column of ``df``.
+
+        Args:
+            df: DataFrame holding the WKB point column.
+            wkb_col: Name of the WKB point column.
+
+        Returns:
+            A point SpatialFrame over ``df``.
+        """
         return SpatialFrame.from_wkb_points(df, wkb_col, index_mode=self.index_mode)
 
     def polygon_frame(self, df: pl.DataFrame, wkb_col: str) -> SpatialFrame:
-        """Build a polygon SpatialFrame straight from the WKB column (decoded in Rust)."""
+        """Build a polygon SpatialFrame straight from the WKB column (decoded in Rust).
+
+        Args:
+            df: DataFrame holding the WKB polygon column.
+            wkb_col: Name of the WKB polygon column.
+
+        Returns:
+            A polygon SpatialFrame over ``df``.
+        """
         return SpatialFrame.from_wkb_polygons(df, wkb_col, index_mode=self.index_mode)
 
 
 # SedonaDB oracle (output verification only)
 
 
-# Base tables the SedonaDB queries reference, registered as views over the parquet.
+# Base tables the SedonaDB queries reference, registered as views over the parquet
 _ORACLE_TABLES = ("trip", "zone", "building", "customer")
 
 
@@ -187,10 +225,17 @@ def run_oracle(query_id: str, data_dir: str) -> pl.DataFrame:
 
     The result comes back over Arrow (zero-copy into polars), avoiding a numpy or
     geopandas copy of what can be a tens-of-millions-row result.
+
+    Args:
+        query_id: Query id (e.g. "q1") indexing SEDONA_SQL.
+        data_dir: Local directory or ``s3://`` URI of the parquet tables.
+
+    Returns:
+        The SedonaDB result as a Polars DataFrame.
     """
     sd = sedonadb.connect()
     for table in _ORACLE_TABLES:
-        # SedonaDB reads the bare directory (or file) directly; ST_GeomFromWKB in SQL.
+        # SedonaDB reads the bare directory or file directly, with ST_GeomFromWKB in SQL
         sd.read_parquet(_resolve_table(data_dir, table)[0]).to_view(table)
     return pl.from_arrow(sd.sql(SEDONA_SQL[query_id]).to_arrow_table())
 
@@ -199,29 +244,18 @@ def run_oracle(query_id: str, data_dir: str) -> pl.DataFrame:
 
 
 def _pairs(spec) -> list[tuple[str, str]]:
-    """Normalise each spec entry to a (pycanopy_col, sedona_col) pair."""
+    # Normalise each spec entry to a (pycanopy_col, sedona_col) pair
     return [(c, c) if isinstance(c, str) else tuple(c) for c in spec]
 
 
 def _as_polars(df) -> pl.DataFrame:
-    """Represent a polars or pandas result as polars, zero-copy where the buffers allow."""
+    # Represent a polars or pandas result as polars, zero-copy where the buffers allow
     return df if isinstance(df, pl.DataFrame) else pl.from_pandas(df)
 
 
 def _height_and_sums(df, value_cols) -> tuple[int, dict[str, float]]:
-    """Return row count and Float64 column sums in one bounded pass.
-
-    A LazyFrame (an out-of-core sink result) is aggregated through the streaming engine,
-    so a result larger than RAM never materialises. Eager frames are wrapped in a lazy
-    scan for the same single-pass aggregation. Summing in Float64 avoids integer overflow.
-
-    Args:
-        df: A polars LazyFrame, polars DataFrame, or pandas DataFrame.
-        value_cols: Columns to sum in Float64.
-
-    Returns:
-        A (height, {column: sum}) tuple.
-    """
+    # Return (row count, Float64 column sums) in one bounded streaming pass, so a result
+    # larger than RAM (a LazyFrame over an out-of-core sink) never materialises in memory.
     exprs = [pl.len().alias("__h__")]
     exprs += [pl.col(c).cast(pl.Float64, strict=False).sum().alias(c) for c in value_cols]
     lf = df if isinstance(df, pl.LazyFrame) else _as_polars(df).lazy()
@@ -234,9 +268,19 @@ def verify_outputs(
 ) -> tuple[bool, str]:
     """Sanity-check a PyCanopy result against a SedonaDB result.
 
-    Compares row count, then the float sum of each value column within tolerance. Both
-    checks are order-independent and computed in a single streaming pass, so a result
-    larger than RAM (a LazyFrame over an out-of-core sink) never leaves polars.
+    Compares row count then each value column's float sum within tolerance. Both checks
+    are order-independent and run in one streaming pass, so the result never leaves polars.
+
+    Args:
+        pc_df: PyCanopy result (polars LazyFrame, polars DataFrame, or pandas DataFrame).
+        sedona_df: SedonaDB result in any of the same accepted forms.
+        keys: Key columns from the compare spec (accepted but not used in the check).
+        values: Column specs to sum-compare, each a name or (pc_col, sedona_col) pair.
+        rel_tol: Relative tolerance on each column sum.
+        abs_tol: Absolute tolerance on each column sum.
+
+    Returns:
+        A (passed, detail) tuple, where detail describes the match or the first mismatch.
     """
     pairs = _pairs(values)
     pc_h, pc_sums = _height_and_sums(pc_df, [a for a, _ in pairs])
@@ -257,10 +301,17 @@ def verify_outputs(
 def measure_query(query, data_dir: str, index_mode: str = "eager", verify: bool = True) -> dict:
     """Time PyCanopy on one query, then verify its output against SedonaDB.
 
-    The dataset is warmed into the page cache (untimed) and decoded fresh inside the
-    timed region, so the load is included but always reads from RAM. SedonaDB is run
-    only to check the result, not for timing (the chart baseline is the published
-    numbers). Returns: status, pycanopy_seconds, match.
+    The dataset is warmed into the page cache (untimed) and decoded fresh inside the timed
+    region, so the load is included but always reads from RAM. SedonaDB only checks output.
+
+    Args:
+        query: A query module exposing id, pycanopy(tables), and compare.
+        data_dir: Local directory or ``s3://`` URI of the parquet tables.
+        index_mode: PyCanopy index build policy ("eager" / "none" / "auto").
+        verify: Run the SedonaDB output check when True.
+
+    Returns:
+        A result dict with status, pycanopy_seconds, and (when verified) match fields.
     """
     warm_tables(data_dir, _ORACLE_TABLES)
     tables = SpatialBenchTables(data_dir=data_dir, index_mode=index_mode)
@@ -292,15 +343,13 @@ def measure_query(query, data_dir: str, index_mode: str = "eager", verify: bool 
 def write_chart(results: dict, out_path: Path) -> None:
     """Render a grouped bar chart: live PyCanopy vs published SedonaDB/DuckDB/GeoPandas.
 
-    Bars carry their value in seconds. A published TIMEOUT/ERROR draws no bar and is
-    annotated. A query whose output did not match SedonaDB is flagged with ``*`` on its
-    x label.
+    Bars carry their value in seconds, and a published TIMEOUT/ERROR draws no bar and is
+    annotated. A query whose output did not match SedonaDB is flagged with a ``*`` label.
+
+    Args:
+        results: Measured results dict (scale_factor, index_mode, per-query timings).
+        out_path: Destination PNG path.
     """
-    import matplotlib
-
-    matplotlib.use("Agg")  # headless: render straight to file
-    import matplotlib.pyplot as plt
-
     sf = int(results["scale_factor"])
     mode = results["index_mode"]
     qs = results["queries"]
@@ -349,59 +398,3 @@ def write_chart(results: dict, out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=120)
     plt.close(fig)
-
-
-def main(argv: list[str] | None = None) -> None:
-    from bench.spatial_bench import queries as query_registry
-
-    parser = argparse.ArgumentParser(description="Run SpatialBench (PyCanopy vs SedonaDB).")
-    parser.add_argument("--data-dir", required=True, help="Local directory or s3:// URI of tables.")
-    parser.add_argument(
-        "--scale-factor", type=float, required=True, help="Scale factor (chart label)."
-    )
-    parser.add_argument("--output", default=None, help="PNG path (default: assets/spatialbench_*).")
-    parser.add_argument(
-        "--queries", nargs="*", default=None, help="Subset of query ids (e.g. q1 q4)."
-    )
-    parser.add_argument("--no-verify", action="store_true", help="Skip the SedonaDB output check.")
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument(
-        "--index-eager",
-        action="store_const",
-        const="eager",
-        dest="index_mode",
-        help="Build an index whenever a kind is selected (default).",
-    )
-    mode.add_argument(
-        "--index-auto",
-        action="store_const",
-        const="auto",
-        dest="index_mode",
-        help="Build an index only when the cost model beats a brute-force scan.",
-    )
-    mode.add_argument(
-        "--index-none",
-        action="store_const",
-        const="none",
-        dest="index_mode",
-        help="Never index; every query scans brute-force.",
-    )
-    parser.set_defaults(index_mode="eager")
-    args = parser.parse_args(argv)
-
-    results = {"scale_factor": args.scale_factor, "index_mode": args.index_mode, "queries": {}}
-    for query in query_registry.select(args.queries):
-        results["queries"][query.id] = measure_query(
-            query, args.data_dir, args.index_mode, verify=not args.no_verify
-        )
-
-    sf = int(args.scale_factor)
-    suffix = "" if args.index_mode == "eager" else f"_{args.index_mode}"
-    out_path = (
-        Path(args.output) if args.output else _ASSETS_DIR / f"spatialbench_sf{sf}{suffix}.png"
-    )
-    write_chart(results, out_path)
-
-
-if __name__ == "__main__":
-    main()
