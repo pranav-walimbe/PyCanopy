@@ -26,39 +26,41 @@ _ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
 # Published Apache SpatialBench baseline (chart reference)
 
 
-# Source: https://sedona.apache.org/spatialbench/single-node-benchmarks/
-# m7i.2xlarge (8 vCPU, 32 GB), 1200 s timeout, SedonaDB 0.1.0 / DuckDB 1.4.0 / GeoPandas
-# 1.1.1. A value is seconds, or "TIMEOUT" / "ERROR" (no bar, annotated on the chart).
-PUBLISHED_ENGINES = ("SedonaDB", "DuckDB", "GeoPandas")
+# Source: apache/sedona-spatialbench Actions run #152 (2026-06-20)
+# m7i.2xlarge (8 vCPU, 32 GB), 600 s timeout, SedonaDB 0.3.0 / DuckDB 1.5.4 /
+# GeoPandas 1.1.3 / Spatial Polars 0.3.0. A value is seconds, "TIMEOUT", or "ERROR"
+# (no bar rendered, status annotated on the chart). Missing entries (no key) render
+# as no bar. DuckDB SF1 Q5-Q10 and GeoPandas SF1 Q5 were not reported in that run.
+PUBLISHED_ENGINES = ("SedonaDB", "DuckDB", "GeoPandas", "Spatial Polars")
 
 PUBLISHED: dict[int, dict[str, dict[str, float | str]]] = {
     1: {
-        "q1": {"SedonaDB": 0.66, "DuckDB": 0.96, "GeoPandas": 12.78},
-        "q2": {"SedonaDB": 8.07, "DuckDB": 9.95, "GeoPandas": 20.74},
-        "q3": {"SedonaDB": 0.80, "DuckDB": 1.17, "GeoPandas": 13.59},
-        "q4": {"SedonaDB": 8.41, "DuckDB": 9.83, "GeoPandas": 25.24},
-        "q5": {"SedonaDB": 5.10, "DuckDB": 1.80, "GeoPandas": 47.08},
-        "q6": {"SedonaDB": 8.59, "DuckDB": 9.36, "GeoPandas": 24.43},
-        "q7": {"SedonaDB": 1.66, "DuckDB": 1.82, "GeoPandas": 137.00},
-        "q8": {"SedonaDB": 1.10, "DuckDB": 1.08, "GeoPandas": 16.08},
-        "q9": {"SedonaDB": 0.23, "DuckDB": 50.15, "GeoPandas": 0.28},
-        "q10": {"SedonaDB": 18.79, "DuckDB": 207.84, "GeoPandas": 46.13},
-        "q11": {"SedonaDB": 32.98, "DuckDB": "TIMEOUT", "GeoPandas": 51.01},
-        "q12": {"SedonaDB": 14.55, "DuckDB": "ERROR", "GeoPandas": "TIMEOUT"},
+        "q1": {"SedonaDB": 0.72, "DuckDB": 0.21, "GeoPandas": 14.26, "Spatial Polars": 3.60},
+        "q2": {"SedonaDB": 0.93, "DuckDB": 0.33, "GeoPandas": 14.49, "Spatial Polars": 3.84},
+        "q3": {"SedonaDB": 1.19, "DuckDB": 0.36, "GeoPandas": 15.16, "Spatial Polars": 2.67},
+        "q4": {"SedonaDB": 0.99, "DuckDB": 0.47, "GeoPandas": 19.06, "Spatial Polars": 4.36},
+        "q5": {"SedonaDB": 7.53, "Spatial Polars": 16.77},
+        "q6": {"SedonaDB": 1.32, "GeoPandas": 20.03, "Spatial Polars": 8.07},
+        "q7": {"SedonaDB": 3.97, "GeoPandas": 203.21, "Spatial Polars": 7.41},
+        "q8": {"SedonaDB": 0.94, "GeoPandas": 16.61, "Spatial Polars": 6.41},
+        "q9": {"SedonaDB": 0.39, "GeoPandas": 0.12, "Spatial Polars": 0.06},
+        "q10": {"SedonaDB": 9.40, "GeoPandas": 41.45, "Spatial Polars": 19.17},
+        "q11": {"SedonaDB": 13.36, "DuckDB": "TIMEOUT", "GeoPandas": 62.91, "Spatial Polars": 29.01},
+        "q12": {"SedonaDB": 42.09, "DuckDB": "TIMEOUT", "GeoPandas": "TIMEOUT", "Spatial Polars": 67.45},
     },
     10: {
-        "q1": {"SedonaDB": 3.04, "DuckDB": 4.58, "GeoPandas": "ERROR"},
-        "q2": {"SedonaDB": 8.89, "DuckDB": 8.26, "GeoPandas": "ERROR"},
-        "q3": {"SedonaDB": 4.09, "DuckDB": 5.17, "GeoPandas": "TIMEOUT"},
-        "q4": {"SedonaDB": 7.52, "DuckDB": 8.51, "GeoPandas": "ERROR"},
-        "q5": {"SedonaDB": 50.81, "DuckDB": 14.40, "GeoPandas": "ERROR"},
-        "q6": {"SedonaDB": 9.11, "DuckDB": 10.67, "GeoPandas": "ERROR"},
-        "q7": {"SedonaDB": 14.44, "DuckDB": 14.03, "GeoPandas": "ERROR"},
-        "q8": {"SedonaDB": 7.24, "DuckDB": 7.57, "GeoPandas": "TIMEOUT"},
-        "q9": {"SedonaDB": 0.38, "DuckDB": 942.98, "GeoPandas": 0.49},
-        "q10": {"SedonaDB": 42.02, "DuckDB": "ERROR", "GeoPandas": "ERROR"},
-        "q11": {"SedonaDB": 97.52, "DuckDB": "ERROR", "GeoPandas": "ERROR"},
-        "q12": {"SedonaDB": 145.66, "DuckDB": "ERROR", "GeoPandas": "TIMEOUT"},
+        "q1": {"SedonaDB": 3.06, "DuckDB": 2.23, "GeoPandas": "ERROR", "Spatial Polars": 32.22},
+        "q2": {"SedonaDB": 3.84, "DuckDB": 3.24, "GeoPandas": "ERROR", "Spatial Polars": 31.21},
+        "q3": {"SedonaDB": 5.75, "DuckDB": 3.18, "GeoPandas": "ERROR", "Spatial Polars": 36.51},
+        "q4": {"SedonaDB": 1.78, "DuckDB": 1.20, "GeoPandas": "ERROR", "Spatial Polars": "ERROR"},
+        "q5": {"SedonaDB": 99.43, "DuckDB": 357.99, "GeoPandas": "ERROR", "Spatial Polars": 128.31},
+        "q6": {"SedonaDB": 4.93, "DuckDB": 4.62, "GeoPandas": "ERROR", "Spatial Polars": "ERROR"},
+        "q7": {"SedonaDB": 37.92, "DuckDB": "ERROR", "GeoPandas": "TIMEOUT", "Spatial Polars": 82.56},
+        "q8": {"SedonaDB": 9.56, "DuckDB": 10.35, "GeoPandas": "ERROR", "Spatial Polars": "ERROR"},
+        "q9": {"SedonaDB": 0.44, "DuckDB": 0.20, "GeoPandas": 0.30, "Spatial Polars": 0.34},
+        "q10": {"SedonaDB": 71.60, "DuckDB": "TIMEOUT", "GeoPandas": "ERROR", "Spatial Polars": "ERROR"},
+        "q11": {"SedonaDB": 103.21, "DuckDB": "ERROR", "GeoPandas": "ERROR", "Spatial Polars": "ERROR"},
+        "q12": {"SedonaDB": "ERROR", "DuckDB": "TIMEOUT", "GeoPandas": "ERROR", "Spatial Polars": "ERROR"},
     },
 }
 
@@ -436,6 +438,7 @@ def write_chart(results: dict, out_path: Path) -> None:
         "SedonaDB": "#DD8452",
         "DuckDB": "#8C8C8C",
         "GeoPandas": "#C9BBA8",
+        "Spatial Polars": "#59A96A",
     }
     series = ["PyCanopy", *PUBLISHED_ENGINES]
     n_s, n_q = len(series), len(qids)
@@ -452,7 +455,7 @@ def write_chart(results: dict, out_path: Path) -> None:
     cap = _nice_cap(_pct(finite, 0.90)) if finite else 1.0
     truncated = any(v > cap for v in finite)
 
-    fig, ax = plt.subplots(figsize=(8.2, 1.2 + 0.62 * n_q))
+    fig, ax = plt.subplots(figsize=(8.2, 1.2 + 0.70 * n_q))
     ax.set_axisbelow(True)
 
     band = 0.82
@@ -526,7 +529,7 @@ def write_chart(results: dict, out_path: Path) -> None:
     if any(qs[q].get("match") == "MISMATCH" for q in qids):
         subtitle += "    * output mismatch"
     ax.set_title(
-        f"Apache SpatialBench SF{sf}: PyCanopy vs SedonaDB / DuckDB / GeoPandas\n{subtitle}",
+        f"Apache SpatialBench SF{sf}: PyCanopy vs SedonaDB / DuckDB / GeoPandas / Spatial Polars\n{subtitle}",
         fontsize=10,
     )
     ax.legend(

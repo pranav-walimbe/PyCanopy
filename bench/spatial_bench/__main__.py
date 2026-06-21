@@ -5,8 +5,9 @@ The whole flow is one command:
     python -m bench.spatial_bench --scale 1 --index-auto
 
 It reads config.yaml, launches an instance whose user-data (bootstrap.sh) builds
-PyCanopy and measures it against the published baseline, then renders the chart and
-self-terminates while this process polls S3 and downloads the PNG into assets/.
+PyCanopy and measures it against the published SedonaDB / DuckDB / GeoPandas /
+Spatial Polars baseline, then renders the chart and self-terminates while this
+process polls S3 and downloads the PNG into assets/.
 
 Benchmarking only runs on the matched instance, never locally, so the numbers stay
 comparable to the baseline. The hidden --on-box flags let bootstrap.sh re-enter this
