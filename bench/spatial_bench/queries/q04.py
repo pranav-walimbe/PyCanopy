@@ -20,12 +20,10 @@ compare = {"keys": ["z_zonekey"], "values": ["trip_count"]}
 
 
 def pycanopy(tables) -> pl.DataFrame:
-    # Single scan: data_dir is s3://, so each scan() is a cold S3 read. Reading
-    # all needed columns together saves one round-trip and removes the redundant
-    # t_tripkey read that the old two-scan approach paid twice.
+
     top = (
         tables.scan("trip", ["t_tripkey", "t_tip", "t_pickuploc"])
-        .sort("t_tip", descending=True)
+        .sort(["t_tip", "t_tripkey"], descending=[True, False])
         .head(TOP_N)
         .collect()
     )
