@@ -14,14 +14,14 @@
 ---
 
 > [!NOTE]
-> **State of the art on [Apache SpatialBench](https://sedona.apache.org/spatialbench/single-node-benchmarks/):** the fastest engine on 10 of 12 queries at SF1 and 7 of 12 at SF10, ahead of Apache SedonaDB, DuckDB, and GeoPandas.
+> **State of the art on [Apache SpatialBench](https://github.com/apache/sedona-spatialbench):** fastest on 7 of 12 queries at both SF1 and SF10, beating SedonaDB, DuckDB, GeoPandas, and Spatial Polars on every heavy spatial join.
 
 Apache SpatialBench is the standard single-node spatial-analytics benchmark: 12 queries over millions of trips and zones. PyCanopy runs the whole suite in Polars-like syntax, never dropping to SQL or a separate engine.
 
 <p align="center">
   <img src="assets/spatialbench_sf1_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1" width="100%"/>
 </p>
-<p align="center"><sub>Apache SpatialBench SF1 · lower is better · linear axis, bars past the cap truncated with their value · TIMEOUT / ERROR annotated</sub></p>
+<p align="center"><sub>Apache SpatialBench SF1 · lower is better · bars past the cap truncated with their value · TIMEOUT / ERROR annotated</sub></p>
 
 ---
 
@@ -50,20 +50,21 @@ Every spatial option for a Polars user asks you to give something up:
 - **GeoPandas** is eager and pandas-based. Its one index (STRtree) is opt-in, and a join larger than memory simply fails.
 - **DuckDB spatial** is fast and out-of-core, but you leave Polars for SQL and create the R-tree index by hand.
 - **SedonaDB** is a capable spatial engine, but it is a separate SQL engine rather than a Polars-native API.
+- **Spatial Polars** provides polars-like syntax but lacks sophisticated optimizations + indexing.
 
 PyCanopy's principle is to stay inside Polars and add a real query planner. You declare spatial ops in any order. It reorders them, fuses adjacent predicates, pushes projections into joins, and uses a cost model to decide per query whether to build an index at all (and which kind).
 
 How the options compare:
 
-|                                          | PyCanopy | GeoPandas   | DuckDB spatial | SedonaDB | GeoPolars |
-|:-----------------------------------------|:--------:|:-----------:|:--------------:|:--------:|:---------:|
-| Runs inside Polars (no SQL, no convert)  | ✓        | ✗           | ✗ (SQL)        | ✗ (SQL)  | ✓         |
-| Lazy, declarative API                    | ✓        | ✗ (eager)   | SQL            | SQL      | ✓         |
-| Automatic index, no manual setup         | ✓        | ✗ (manual)  | ✗ (manual)     | ✓        | ✗         |
-| Cost-based index vs scan, per query      | ✓        | ✗           | ✗              | ✗        | ✗         |
-| kNN join built in                        | ✓        | ✓ (nearest) | ✗              | ✓        | ✗         |
-| Within-distance / point-in-polygon join  | ✓        | ✓           | ✓              | ✓        | ✗         |
-| Larger-than-RAM joins                     | ✓        | ✗           | ✓              | ✓        | ✗         |
+|                                                   | PyCanopy | GeoPandas      | DuckDB spatial | SedonaDB | Spatial Polars |
+|:--------------------------------------------------|:--------:|:--------------:|:--------------:|:--------:|:--------------:|
+| Polars-native, no SQL or conversion               | ✓        | ✗              | ✗ (SQL)        | ✗ (SQL)  | ✓              |
+| Spatial query planner (reorder, fuse, push)       | ✓        | ✗              | ✗              | ✓        | ✗              |
+| Cost-based index vs scan, per query               | ✓        | ✗              | ✗              | ✗        | ✗              |
+| Multi-index types, auto-selected per query        | ✓        | ✗ (STRtree)    | ✗ (R-tree)     | ✗ (R-tree) | ✗ (STRtree)  |
+| kNN join                                          | ✓        | ✓ (nearest)    | ✗              | ✓        | ✓ (centroid)   |
+| Aggregate-join without materialising pairs        | ✓        | ✗              | ✗              | ✗        | ✗              |
+| Larger-than-RAM joins                             | ✓        | ✗              | ✓              | ✓        | ✗              |
 
 ---
 
@@ -344,16 +345,16 @@ sf.engine.flush()
 
 ### Apache SpatialBench
 
-Run on a single `m7i.2xlarge` (8 vCPU, 32 GB), the same instance as the published [SedonaDB / DuckDB / GeoPandas numbers](https://sedona.apache.org/spatialbench/single-node-benchmarks/). PyCanopy is measured with `index_mode="auto"`; the other engines are the published baseline.
+Run on a single `m7i.2xlarge` (8 vCPU, 32 GB), the same hardware used by [Apache SpatialBench](https://github.com/apache/sedona-spatialbench). PyCanopy is measured live with `index_mode="auto"`; SedonaDB 0.3.0, DuckDB 1.5.4, GeoPandas 1.1.3, and Spatial Polars 0.3.0 are snapshot numbers from [run #152](https://github.com/apache/sedona-spatialbench/actions/runs/27864209643) (2026-06-20).
 
-**SF1** (~6M trips). PyCanopy is the fastest of the four engines on 10 of 12 queries, losing only q1 (to SedonaDB) and q5 (to DuckDB), and wins the heavy cross-zone joins q10-q12 by up to 4x over SedonaDB.
+**SF1** (~6M trips). PyCanopy wins 7 of 12, taking all heavy spatial joins (q5, q7–q12). DuckDB wins q1–q4; SedonaDB wins q6.
 
 <p align="center">
   <img src="assets/spatialbench_sf1_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1" width="100%"/>
 </p>
 <p align="center"><sub>Apache SpatialBench SF1 · lower is better · linear axis, bars past the cap truncated with their value · TIMEOUT / ERROR annotated</sub></p>
 
-**SF10** (~60M trips). PyCanopy is fastest on 7 of 12. q12 returns a result larger than the 32 GB box, so it streams the join and spills the sort to disk, completing where DuckDB errors and GeoPandas times out.
+**SF10** (~60M trips). PyCanopy wins 7 of 12 and is the only engine to finish all 12. SedonaDB errors on q12, DuckDB OOMs on q7/q11 and times out on q10/q12, GeoPandas and Spatial Polars OOM on most queries. q12 returns a result larger than 32 GB; PyCanopy streams the join and spills the sort to disk.
 
 <p align="center">
   <img src="assets/spatialbench_sf10_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF10" width="100%"/>
@@ -430,9 +431,9 @@ Building wins once `Q` passes roughly `log N`. A one-off lookup scans; a join wi
 
 `index_mode`, set per frame, picks how the estimate is used:
 
-- **`eager`** (default): always build the selected index
-- **`auto`**: build only when the estimate beats a scan for this `Q`
-- **`none`**: always scan
+- **`eager`** (default): always build the selected index.
+- **`auto`**: build only when the estimate beats a scan for this `Q`.
+- **`none`**: always scan.
 
 ### Index management
 
