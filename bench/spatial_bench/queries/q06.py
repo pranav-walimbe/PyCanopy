@@ -1,19 +1,17 @@
 """Q6: Zone statistics for trips whose pickup falls in zones intersecting a bbox.
 
-PyCanopy: a polygon range query selects zones whose MBR overlaps the bounding box,
-those candidates are refined to zones truly intersecting it (matching SedonaDB's
-ST_Intersects, which the MBR test only over-approximates), then a within aggregate-join
-counts and averages trip pickups per surviving zone without materialising the pair frame.
+PyCanopy: a polygon range query finds zones whose exterior boundary truly intersects the
+bounding box (the Engine performs exact ring intersection, not just an MBR overlap check),
+then a within aggregate-join counts and averages trip pickups per zone without materialising
+the pair frame.
 """
 
 from __future__ import annotations
 
 import numpy as np
 import polars as pl
-from shapely.geometry import box
 
 import pycanopy as pc
-from bench.spatial_bench.utils import wkb_to_polygons
 from pycanopy import wkb_points_to_xy
 
 id = "q6"
@@ -44,22 +42,6 @@ def pycanopy(tables) -> pl.DataFrame:
             }
         )
     cand = zone[pl.Series(np.asarray(cand_idx, dtype=np.uint32))]
-    # range_query is an MBR test, so refine to zones that truly intersect the bbox.
-    bbox = box(*BBOX)
-    keep = [
-        i for i, poly in enumerate(wkb_to_polygons(cand["z_boundary"])) if poly.intersects(bbox)
-    ]
-    if not keep:
-        return pl.DataFrame(
-            schema={
-                "z_zonekey": pl.Int64,
-                "z_name": pl.Utf8,
-                "total_pickups": pl.UInt32,
-                "avg_distance": pl.Float64,
-                "avg_duration": pl.Float64,
-            }
-        )
-    cand = cand[pl.Series(np.asarray(keep, dtype=np.uint32))]
     cand_sf = tables.polygon_frame(cand, "z_boundary")
 
     trip = tables.table("trip", _TRIP_COLS)

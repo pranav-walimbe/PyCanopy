@@ -45,8 +45,18 @@ PUBLISHED: dict[int, dict[str, dict[str, float | str]]] = {
         "q8": {"SedonaDB": 0.94, "GeoPandas": 16.61, "Spatial Polars": 6.41},
         "q9": {"SedonaDB": 0.39, "GeoPandas": 0.12, "Spatial Polars": 0.06},
         "q10": {"SedonaDB": 9.40, "GeoPandas": 41.45, "Spatial Polars": 19.17},
-        "q11": {"SedonaDB": 13.36, "DuckDB": "TIMEOUT", "GeoPandas": 62.91, "Spatial Polars": 29.01},
-        "q12": {"SedonaDB": 42.09, "DuckDB": "TIMEOUT", "GeoPandas": "TIMEOUT", "Spatial Polars": 67.45},
+        "q11": {
+            "SedonaDB": 13.36,
+            "DuckDB": "TIMEOUT",
+            "GeoPandas": 62.91,
+            "Spatial Polars": 29.01,
+        },
+        "q12": {
+            "SedonaDB": 42.09,
+            "DuckDB": "TIMEOUT",
+            "GeoPandas": "TIMEOUT",
+            "Spatial Polars": 67.45,
+        },
     },
     10: {
         "q1": {"SedonaDB": 3.06, "DuckDB": 2.23, "GeoPandas": "ERROR", "Spatial Polars": 32.22},
@@ -55,12 +65,32 @@ PUBLISHED: dict[int, dict[str, dict[str, float | str]]] = {
         "q4": {"SedonaDB": 1.78, "DuckDB": 1.20, "GeoPandas": "ERROR", "Spatial Polars": "ERROR"},
         "q5": {"SedonaDB": 99.43, "DuckDB": 357.99, "GeoPandas": "ERROR", "Spatial Polars": 128.31},
         "q6": {"SedonaDB": 4.93, "DuckDB": 4.62, "GeoPandas": "ERROR", "Spatial Polars": "ERROR"},
-        "q7": {"SedonaDB": 37.92, "DuckDB": "ERROR", "GeoPandas": "TIMEOUT", "Spatial Polars": 82.56},
+        "q7": {
+            "SedonaDB": 37.92,
+            "DuckDB": "ERROR",
+            "GeoPandas": "TIMEOUT",
+            "Spatial Polars": 82.56,
+        },
         "q8": {"SedonaDB": 9.56, "DuckDB": 10.35, "GeoPandas": "ERROR", "Spatial Polars": "ERROR"},
         "q9": {"SedonaDB": 0.44, "DuckDB": 0.20, "GeoPandas": 0.30, "Spatial Polars": 0.34},
-        "q10": {"SedonaDB": 71.60, "DuckDB": "TIMEOUT", "GeoPandas": "ERROR", "Spatial Polars": "ERROR"},
-        "q11": {"SedonaDB": 103.21, "DuckDB": "ERROR", "GeoPandas": "ERROR", "Spatial Polars": "ERROR"},
-        "q12": {"SedonaDB": "ERROR", "DuckDB": "TIMEOUT", "GeoPandas": "ERROR", "Spatial Polars": "ERROR"},
+        "q10": {
+            "SedonaDB": 71.60,
+            "DuckDB": "TIMEOUT",
+            "GeoPandas": "ERROR",
+            "Spatial Polars": "ERROR",
+        },
+        "q11": {
+            "SedonaDB": 103.21,
+            "DuckDB": "ERROR",
+            "GeoPandas": "ERROR",
+            "Spatial Polars": "ERROR",
+        },
+        "q12": {
+            "SedonaDB": "ERROR",
+            "DuckDB": "TIMEOUT",
+            "GeoPandas": "ERROR",
+            "Spatial Polars": "ERROR",
+        },
     },
 }
 

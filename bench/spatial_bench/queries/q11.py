@@ -43,8 +43,7 @@ def pycanopy(tables) -> pl.DataFrame:
     )
 
     count = (
-        pickup_zones
-        .join(dropoff_zones, on="t_tripkey", how="inner")
+        pickup_zones.join(dropoff_zones, on="t_tripkey", how="inner")
         .filter(pl.col("pickup_zone") != pl.col("dropoff_zone"))
         .height
     )

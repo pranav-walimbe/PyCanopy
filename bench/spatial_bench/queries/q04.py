@@ -20,11 +20,10 @@ compare = {"keys": ["z_zonekey"], "values": ["trip_count"]}
 
 
 def pycanopy(tables) -> pl.DataFrame:
-    # Late materialization: pick the top-N on the cheap (key, tip) columns alone, then
-    # read the WKB pickup geometry only for those TOP_N winners. Reading the 6M-row WKB
-    # column up front to sort it down to 1000 rows is the bulk of q4's cost, and the
-    # geometry is never needed for the rows the top-N discards.
-    keys = (
+    # Two scans: the first reads only (tripkey, tip) to find the top-N cheaply without
+    # touching the WKB column. The second reads WKB for just those N rows via the
+    # is_in predicate pushed into the parquet scan.
+    top_keys = (
         tables.scan("trip", ["t_tripkey", "t_tip"])
         .sort(["t_tip", "t_tripkey"], descending=[True, False])
         .head(TOP_N)
@@ -32,7 +31,7 @@ def pycanopy(tables) -> pl.DataFrame:
     )
     winners = (
         tables.scan("trip", ["t_tripkey", "t_pickuploc"])
-        .filter(pl.col("t_tripkey").is_in(keys.implode()))
+        .filter(pl.col("t_tripkey").is_in(top_keys))
         .collect()
     )
     qx, qy = wkb_points_to_xy(winners["t_pickuploc"])

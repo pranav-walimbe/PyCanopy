@@ -2,7 +2,7 @@
 
 sources = python/ tests/python/ bench/
 
-# Preserve colour in cargo output when running from a tty.
+# Preserve colour in cargo output when running from a tty
 export CARGO_TERM_COLOR=$(shell (test -t 0 && echo "always") || echo "auto")
 
 .PHONY: setup ## Create .venv and install dev dependencies from uv.lock
@@ -28,12 +28,12 @@ lint-rust:
 .PHONY: lint ## Lint Rust and Python source files
 lint: lint-python lint-rust
 
-.PHONY: build ## Debug build — fast compile, use for local iteration
+.PHONY: build ## Debug build
 build:
 	@rm -f python/pycanopy/*.so
 	uv run maturin develop
 
-.PHONY: build-prod ## Optimised build — use for benchmarks and profiling
+.PHONY: build-prod ## Optimised build
 build-prod:
 	@rm -f python/pycanopy/*.so
 	uv run maturin develop --release

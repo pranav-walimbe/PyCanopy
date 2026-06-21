@@ -119,6 +119,22 @@ pub fn par_within_distance<I: SpatialIndex + Sync>(
     distance: f64,
 ) -> Vec<u64> {
     let d2 = distance * distance;
+    // Single probe: parallelize the Euclidean refinement over candidates across threads.
+    // The multi-probe path parallelises over queries instead.
+    if qxs.len() == 1 {
+        let qx = qxs[0];
+        let qy = qys[0];
+        return index
+            .range(qx - distance, qy - distance, qx + distance, qy + distance)
+            .into_par_iter()
+            .filter(move |&ei| {
+                let dx = xs[ei] - qx;
+                let dy = ys[ei] - qy;
+                dx * dx + dy * dy <= d2
+            })
+            .flat_map_iter(|ei| [0u64, ei as u64])
+            .collect();
+    }
     qxs.par_iter()
         .zip(qys.par_iter())
         .enumerate()
