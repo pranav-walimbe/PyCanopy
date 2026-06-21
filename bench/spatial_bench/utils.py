@@ -30,32 +30,32 @@ _ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
 # m7i.2xlarge (8 vCPU, 32 GB), 600 s timeout, SedonaDB 0.3.0 / DuckDB 1.5.4 /
 # GeoPandas 1.1.3 / Spatial Polars 0.3.0. A value is seconds, "TIMEOUT", or "ERROR"
 # (no bar rendered, status annotated on the chart). Missing entries (no key) render
-# as no bar. DuckDB SF1 Q5-Q10 and GeoPandas SF1 Q5 were not reported in that run.
+# as no bar.
 PUBLISHED_ENGINES = ("SedonaDB", "DuckDB", "GeoPandas", "Spatial Polars")
 
 PUBLISHED: dict[int, dict[str, dict[str, float | str]]] = {
     1: {
-        "q1": {"SedonaDB": 0.72, "DuckDB": 0.21, "GeoPandas": 14.26, "Spatial Polars": 3.60},
-        "q2": {"SedonaDB": 0.93, "DuckDB": 0.33, "GeoPandas": 14.49, "Spatial Polars": 3.84},
-        "q3": {"SedonaDB": 1.19, "DuckDB": 0.36, "GeoPandas": 15.16, "Spatial Polars": 2.67},
-        "q4": {"SedonaDB": 0.99, "DuckDB": 0.47, "GeoPandas": 19.06, "Spatial Polars": 4.36},
-        "q5": {"SedonaDB": 7.53, "Spatial Polars": 16.77},
-        "q6": {"SedonaDB": 1.32, "GeoPandas": 20.03, "Spatial Polars": 8.07},
-        "q7": {"SedonaDB": 3.97, "GeoPandas": 203.21, "Spatial Polars": 7.41},
-        "q8": {"SedonaDB": 0.94, "GeoPandas": 16.61, "Spatial Polars": 6.41},
-        "q9": {"SedonaDB": 0.39, "GeoPandas": 0.12, "Spatial Polars": 0.06},
-        "q10": {"SedonaDB": 9.40, "GeoPandas": 41.45, "Spatial Polars": 19.17},
+        "q1": {"SedonaDB": 0.70, "DuckDB": 0.22, "GeoPandas": 14.12, "Spatial Polars": 3.34},
+        "q2": {"SedonaDB": 1.27, "DuckDB": 0.36, "GeoPandas": 14.79, "Spatial Polars": 3.91},
+        "q3": {"SedonaDB": 1.17, "DuckDB": 0.32, "GeoPandas": 15.15, "Spatial Polars": 2.80},
+        "q4": {"SedonaDB": 0.81, "DuckDB": 0.43, "GeoPandas": 18.75, "Spatial Polars": 4.65},
+        "q5": {"SedonaDB": 6.29, "DuckDB": 1.79, "GeoPandas": 56.74, "Spatial Polars": 17.27},
+        "q6": {"SedonaDB": 1.45, "DuckDB": 0.79, "GeoPandas": 20.90, "Spatial Polars": 7.96},
+        "q7": {"SedonaDB": 3.85, "DuckDB": 9.89, "GeoPandas": 176.15, "Spatial Polars": 8.23},
+        "q8": {"SedonaDB": 1.20, "DuckDB": 0.93, "GeoPandas": 15.63, "Spatial Polars": 6.30},
+        "q9": {"SedonaDB": 0.43, "DuckDB": 0.05, "GeoPandas": 0.12, "Spatial Polars": 0.07},
+        "q10": {"SedonaDB": 9.11, "DuckDB": 238.03, "GeoPandas": 42.17, "Spatial Polars": 17.05},
         "q11": {
-            "SedonaDB": 13.36,
+            "SedonaDB": 13.23,
             "DuckDB": "TIMEOUT",
-            "GeoPandas": 62.91,
-            "Spatial Polars": 29.01,
+            "GeoPandas": 67.20,
+            "Spatial Polars": 28.02,
         },
         "q12": {
-            "SedonaDB": 42.09,
+            "SedonaDB": 41.66,
             "DuckDB": "TIMEOUT",
             "GeoPandas": "TIMEOUT",
-            "Spatial Polars": 67.45,
+            "Spatial Polars": 65.71,
         },
     },
     10: {
