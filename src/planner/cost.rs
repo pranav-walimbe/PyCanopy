@@ -2,8 +2,8 @@ use crate::planner::calibration::CostFactors;
 use crate::query::types::Query;
 use crate::stats::types::DatasetStats;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Spatial index variant selected by the query planner
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexKind {
     BruteForce,
     RTree,
@@ -11,16 +11,14 @@ pub enum IndexKind {
     Grid,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// How aggressively the planner builds spatial indexes
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexMode {
     None,
     Eager,
     Auto,
 }
 
-/// Estimated nanoseconds to build `kind` over `n` items.
-/// Trees are O(n log2 n), the grid is O(n), brute force builds nothing.
 fn build_cost(kind: IndexKind, n: usize, factors: &CostFactors) -> f64 {
     let n = n as f64;
     match kind {
@@ -30,9 +28,6 @@ fn build_cost(kind: IndexKind, n: usize, factors: &CostFactors) -> f64 {
     }
 }
 
-/// Estimated nanoseconds to run `q_count` probes against `kind`.
-/// Brute force scans all n per probe, an index descends log2(n) and reports the
-/// expected results per probe at the kind's per-result factor.
 fn probe_cost(
     kind: IndexKind,
     stats: &DatasetStats,

@@ -22,7 +22,6 @@ pub struct BruteForce {
 }
 
 impl SpatialIndex for BruteForce {
-    /// Build from point coordinates. bbox arrays share the xs/ys Arcs (no copy)
     fn build(xs: Arc<[f64]>, ys: Arc<[f64]>) -> Self {
         BruteForce {
             bbox_min_x: Arc::clone(&xs),

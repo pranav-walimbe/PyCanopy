@@ -16,7 +16,6 @@ pub struct ParsedPolygons {
     pub part_poly: Option<Vec<u32>>,
 }
 
-/// Little cursor over one geometry's bytes with endian-aware reads
 struct Reader<'a> {
     bytes: &'a [u8],
     pos: usize,
@@ -62,7 +61,6 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Read one polygon body (its rings) into the coordinate arrays, recording ring bounds
 fn read_polygon_body(
     r: &mut Reader,
     le: bool,
@@ -82,7 +80,6 @@ fn read_polygon_body(
     Ok(())
 }
 
-/// Append part p as one ring group: poly_offsets tracks the cumulative ring count
 fn push_part(
     poly_offsets: &mut Vec<i64>,
     part_poly: &mut Vec<u32>,
@@ -93,7 +90,6 @@ fn push_part(
     part_poly.push(geom as u32);
 }
 
-/// Parse one top-level geometry, returning how many parts it contributed
 fn read_geometry(
     r: &mut Reader,
     geom: usize,

@@ -1,3 +1,5 @@
+//! Spatial index backends: KD-tree, R-tree, grid, and brute-force implementations.
+
 pub mod brute;
 pub mod grid;
 pub mod kdtree;
@@ -9,6 +11,7 @@ use std::sync::Arc;
 /// Coordinates are passed as Arc<[f64]> so indexes can share Engine's allocation
 /// without copying, since storing an Arc<[f64]> is an atomic refcount bump, not a memcpy.
 pub trait SpatialIndex: Send + Sync {
+    /// Build an index over the given coordinate arrays
     fn build(xs: Arc<[f64]>, ys: Arc<[f64]>) -> Self
     where
         Self: Sized;

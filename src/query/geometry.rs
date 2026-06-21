@@ -35,7 +35,6 @@ pub fn polygon_from_flat(
     Polygon::new(exterior, interiors)
 }
 
-/// Squared distance from point (px, py) to segment (ax, ay)-(bx, by). Zero allocation
 #[inline]
 fn point_segment_dist2(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
     let dx = bx - ax;
@@ -178,7 +177,7 @@ mod tests {
 
     #[test]
     fn two_overlapping_squares() {
-        // Square A: (0,0)-(2,2). Square B: (1,1)-(3,3). Overlap is the 1x1 square (1,1)-(2,2)
+        // Two overlapping squares with a 1x1 overlap at (1,1)-(2,2)
         let xs = vec![
             0.0, 2.0, 2.0, 0.0, 0.0, // A
             1.0, 3.0, 3.0, 1.0, 1.0, // B

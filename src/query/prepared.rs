@@ -8,11 +8,11 @@
 
 use rayon::prelude::*;
 
-/// Edges per band: the one tuning knob, trading probe speed against band memory
+// Edges per band: the one tuning knob, trading probe speed against band memory
 const EDGES_PER_BAND: usize = 8;
-/// Safety cap on bands per polygon, bounding memory for pathological rings
+// Safety cap on bands per polygon, bounding memory for pathological rings
 const MAX_BANDS: usize = 1024;
-/// Floats per stored edge: [x0, y0, x1, y1]
+// Floats per stored edge: [x0, y0, x1, y1]
 const STRIDE: usize = 4;
 
 /// Prepared point-in-polygon accelerator over a flat polygon dataset
@@ -27,7 +27,6 @@ pub struct PreparedPolygons {
     band_coords: Vec<f64>,
 }
 
-/// One polygon's prepared bands, produced in parallel then concatenated
 struct PolyPrep {
     min_y: f64,
     inv_band_h: f64,
@@ -91,7 +90,6 @@ impl PreparedPolygons {
     }
 }
 
-/// Prepare one polygon: collect its ring edges and bucket them into y-bands
 fn prepare_one(
     xs: &[f64],
     ys: &[f64],
@@ -146,7 +144,6 @@ fn prepare_one(
     }
 }
 
-/// Band index for `y`, clamped so out-of-extent points land in end bands (no straddle)
 #[inline]
 fn band_of(y: f64, min_y: f64, inv_band_h: f64, nbands: usize) -> usize {
     if inv_band_h == 0.0 {

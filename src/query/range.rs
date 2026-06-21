@@ -62,7 +62,6 @@ pub fn query_contains_polygons<I: SpatialIndex>(
         .collect()
 }
 
-/// Ray-casting point-in-ring test. Zero allocation, operates directly on coordinate slices
 fn ring_contains(qx: f64, qy: f64, xs: &[f64], ys: &[f64]) -> bool {
     let n = xs.len();
     if n < 3 {
@@ -115,7 +114,6 @@ pub fn pip_raw(
     true
 }
 
-/// Segment intersection test using cross products. Returns false for parallel segments
 #[allow(clippy::too_many_arguments)]
 fn segments_intersect(
     ax1: f64,

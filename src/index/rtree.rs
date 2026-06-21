@@ -16,14 +16,12 @@ pub struct PackedRTree {
 }
 
 impl SpatialIndex for PackedRTree {
-    /// Build from point coordinates. Each point becomes a degenerate bbox
     fn build(xs: Arc<[f64]>, ys: Arc<[f64]>) -> Self {
         let n = xs.len() as u32;
         let mut builder = RTreeBuilder::<f64>::new(n);
         for (&x, &y) in xs.iter().zip(ys.iter()) {
             builder.add(x, y, x, y);
         }
-        // xs and ys Arcs drop here, geo-index owns its internal copy
         PackedRTree {
             tree: builder.finish::<HilbertSort>(),
         }
