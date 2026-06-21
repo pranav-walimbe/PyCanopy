@@ -20,22 +20,17 @@ compare = {"keys": ["z_zonekey"], "values": ["trip_count"]}
 
 
 def pycanopy(tables) -> pl.DataFrame:
-    # Two scans: the first reads only (tripkey, tip) to find the top-N cheaply without
-    # touching the WKB column. The second reads WKB for just those N rows via the
-    # is_in predicate pushed into the parquet scan.
-    top_keys = (
-        tables.scan("trip", ["t_tripkey", "t_tip"])
-        .sort(["t_tip", "t_tripkey"], descending=[True, False])
+    # Single scan: data_dir is s3://, so each scan() is a cold S3 read. Reading
+    # all needed columns together saves one round-trip and removes the redundant
+    # t_tripkey read that the old two-scan approach paid twice.
+    top = (
+        tables.scan("trip", ["t_tripkey", "t_tip", "t_pickuploc"])
+        .sort("t_tip", descending=True)
         .head(TOP_N)
-        .collect()["t_tripkey"]
-    )
-    winners = (
-        tables.scan("trip", ["t_tripkey", "t_pickuploc"])
-        .filter(pl.col("t_tripkey").is_in(top_keys))
         .collect()
     )
-    qx, qy = wkb_points_to_xy(winners["t_pickuploc"])
-    query_df = winners.select("t_tripkey").with_columns(pl.Series("qx", qx), pl.Series("qy", qy))
+    qx, qy = wkb_points_to_xy(top["t_pickuploc"])
+    query_df = top.select("t_tripkey").with_columns(pl.Series("qx", qx), pl.Series("qy", qy))
 
     zone = tables.table("zone", ["z_zonekey", "z_name", "z_boundary"])
     sf = tables.polygon_frame(zone, "z_boundary")
