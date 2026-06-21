@@ -18,7 +18,7 @@ from pycanopy import wkb_points_to_xy
 id = "q10"
 title = "Per-zone trip stats (zones with zero trips retained)"
 
-_TRIP_COLS = ["t_tripkey", "t_pickuploc", "t_pickuptime", "t_dropofftime", "t_distance"]
+_TRIP_COLS = ["t_pickuploc", "t_pickuptime", "t_dropofftime", "t_distance"]
 
 # avg_duration is an interval in SedonaDB (Timedelta) vs float seconds here, so it is
 # left out of the value check; num_trips and avg_distance are compared.

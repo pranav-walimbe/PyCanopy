@@ -20,7 +20,7 @@ title = "Zone stats for trips intersecting a bounding box"
 # Axis-aligned bounding box (min_x, min_y, max_x, max_y).
 BBOX = (-112.2110, 34.4197, -111.3110, 35.3197)
 
-_TRIP_COLS = ["t_tripkey", "t_pickuploc", "t_totalamount", "t_pickuptime", "t_dropofftime"]
+_TRIP_COLS = ["t_pickuploc", "t_totalamount", "t_pickuptime", "t_dropofftime"]
 
 # avg_distance here is AVG(t_totalamount) on both sides; avg_duration (an interval in
 # SedonaDB) is left out of the value check.

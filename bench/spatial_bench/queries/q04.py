@@ -22,10 +22,9 @@ compare = {"keys": ["z_zonekey"], "values": ["trip_count"]}
 def pycanopy(tables) -> pl.DataFrame:
 
     top = (
-        tables.scan("trip", ["t_tripkey", "t_tip", "t_pickuploc"])
+        tables.table("trip", ["t_tripkey", "t_tip", "t_pickuploc"])
         .sort(["t_tip", "t_tripkey"], descending=[True, False])
         .head(TOP_N)
-        .collect()
     )
     qx, qy = wkb_points_to_xy(top["t_pickuploc"])
     query_df = top.select("t_tripkey").with_columns(pl.Series("qx", qx), pl.Series("qy", qy))

@@ -23,7 +23,7 @@ BASE_POLY = Polygon(
     ]
 )
 
-_COLS = ["t_tripkey", "t_pickuploc", "t_pickuptime", "t_dropofftime", "t_distance", "t_fare"]
+_COLS = ["t_pickuploc", "t_pickuptime", "t_dropofftime", "t_distance", "t_fare"]
 
 # avg_duration is an interval in SedonaDB (Timedelta) vs float seconds here, so it is
 # left out of the value check; the counts and other averages are compared.

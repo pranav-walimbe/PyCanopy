@@ -23,7 +23,7 @@ compare = {
 
 
 def pycanopy(tables) -> pl.DataFrame:
-    trip = tables.table("trip", ["t_tripkey", "t_custkey", "t_dropoffloc", "t_pickuptime"])
+    trip = tables.table("trip", ["t_custkey", "t_dropoffloc", "t_pickuptime"])
     cust = tables.table("customer", ["c_custkey", "c_name"])
 
     dx, dy = wkb_points_to_xy(trip["t_dropoffloc"])
