@@ -115,6 +115,7 @@ def read_table(data_dir: str, table: str, columns: list[str] | None = None) -> p
     return pl.read_parquet(
         f"{data_dir.rstrip('/')}/{table}/**/*.parquet",
         columns=columns,
+        storage_options={"skip_signature": "true"},
     )
 
 
@@ -134,6 +135,7 @@ def scan_table(data_dir: str, table: str, columns: list[str] | None = None) -> p
     """
     lf = pl.scan_parquet(
         f"{data_dir.rstrip('/')}/{table}/**/*.parquet",
+        storage_options={"skip_signature": "true"},
     )
     return lf.select(columns) if columns is not None else lf
 
