@@ -9,6 +9,8 @@ instance_profile: pycanopy-spatialbench
 
 # run
 region: us-west-2
+instance_type: m7i.2xlarge
+volume_gb: 32
 max_runtime_min: 30
 
 # source repo the box builds
