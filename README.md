@@ -16,7 +16,7 @@
 > [!NOTE]
 > **State of the art on [Apache SpatialBench](https://github.com/apache/sedona-spatialbench):** fastest on 6 of 12 queries at SF1 and 7 of 12 at SF10, winning every heavy spatial join at both scales.
 
-Apache SpatialBench is the standard single-node spatial-analytics benchmark: 12 queries over millions of trips and zones. PyCanopy runs the whole suite in Polars-like syntax, never dropping to SQL or a separate engine.
+Apache SpatialBench is the standard single-node spatial-analytics benchmark: 12 queries over millions of trips and zones. 
 
 <p align="center">
   <img src="assets/spatialbench_sf1_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1" width="100%"/>
@@ -45,14 +45,11 @@ result = sf.lazy().filter(pl.col("population") > 100_000).range_query(-10.0, 35.
 
 ## Why PyCanopy
 
-Every spatial option for a Polars user asks you to give something up:
+Every spatial ops engine available to Polars users have their benefits but also lack at least 1 of the following:
 
-- **GeoPandas** is eager and pandas-based. Its one index (STRtree) is opt-in, and a join larger than memory simply fails.
-- **DuckDB spatial** is fast and out-of-core, but you leave Polars for SQL and create the R-tree index by hand.
-- **SedonaDB** is a capable spatial engine, but it is a separate SQL engine rather than a Polars-native API.
-- **Spatial Polars** provides polars-like syntax but lacks sophisticated optimizations + indexing.
-
-PyCanopy's principle is to stay inside Polars and add a real query planner. You declare spatial ops in any order. It reorders them, fuses adjacent predicates, pushes projections into joins, and uses a cost model to decide per query whether to build an index at all (and which kind).
+- Polars-native API
+- Intelligent spatial indexing
+- A query planner that understands spatial operations
 
 How the options compare:
 
