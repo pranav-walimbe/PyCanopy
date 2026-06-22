@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import math
 import os
-import time
+import socket
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -98,33 +101,18 @@ PUBLISHED: dict[int, dict[str, dict[str, float | str]]] = {
 # Table loading
 
 
-def _resolve_table(data_dir: str, table: str) -> tuple[str, bool]:
-    # Locate table under data_dir as (path, is_directory), handling the single-file and
-    # directory-of-files layouts of the public datasets. s3:// URIs are directories.
-    base = data_dir.rstrip("/")
-    if base.startswith("s3://"):
-        return f"{base}/{table}", True
-    single = f"{base}/{table}.parquet"
-    if os.path.exists(single):
-        return single, False
-    if os.path.isdir(f"{base}/{table}"):
-        return f"{base}/{table}", True
-    return single, False
-
-
 def read_table(data_dir: str, table: str, columns: list[str] | None = None) -> pl.DataFrame:
     """Read one SpatialBench table as a Polars DataFrame (geometry stays WKB).
 
     Args:
-        data_dir: Local directory or ``s3://`` URI of the parquet tables.
+        data_dir: ``s3://`` URI of the SpatialBench dataset root.
         table: Table name (e.g. "trip").
         columns: Optional subset of columns to read.
 
     Returns:
         The table as a Polars DataFrame.
     """
-    path, is_dir = _resolve_table(data_dir, table)
-    return pl.read_parquet(f"{path}/**/*.parquet" if is_dir else path, columns=columns)
+    return pl.read_parquet(f"{data_dir.rstrip('/')}/{table}/**/*.parquet", columns=columns)
 
 
 def scan_table(data_dir: str, table: str, columns: list[str] | None = None) -> pl.LazyFrame:
@@ -134,37 +122,15 @@ def scan_table(data_dir: str, table: str, columns: list[str] | None = None) -> p
     cheap columns never decodes the wide WKB column for the rows it later discards.
 
     Args:
-        data_dir: Local directory or ``s3://`` URI of the parquet tables.
+        data_dir: ``s3://`` URI of the SpatialBench dataset root.
         table: Table name (e.g. "trip").
         columns: Optional subset of columns to project.
 
     Returns:
         A LazyFrame over the table's parquet.
     """
-    path, is_dir = _resolve_table(data_dir, table)
-    lf = pl.scan_parquet(f"{path}/**/*.parquet" if is_dir else path)
-    return lf.select(columns) if columns else lf
+    return pl.scan_parquet(f"{data_dir.rstrip('/')}/{table}/**/*.parquet", columns=columns)
 
-
-def warm_tables(data_dir: str, tables: tuple[str, ...]) -> None:
-    """Read each table's raw parquet bytes into the OS page cache (untimed).
-
-    Run before a measurement so the timed PyCanopy load reads from RAM, matching the
-    resident-data condition of the published baseline. No-op for s3:// inputs.
-
-    Args:
-        data_dir: Local directory or ``s3://`` URI of the parquet tables.
-        tables: Table names to warm.
-    """
-    if data_dir.rstrip("/").startswith("s3://"):
-        return
-    for table in tables:
-        path, is_dir = _resolve_table(data_dir, table)
-        files = Path(path).rglob("*.parquet") if is_dir else [Path(path)]
-        for f in files:
-            with open(f, "rb", buffering=0) as fh:
-                while fh.read(1 << 20):
-                    pass
 
 
 def wkb_to_polygons(series: pl.Series) -> list:
@@ -184,7 +150,7 @@ class SpatialBenchTables:
     """Lazily-built, cached handles to the SpatialBench tables for one run.
 
     Args:
-        data_dir: Local directory or ``s3://`` URI of the parquet tables.
+        data_dir: ``s3://`` URI of the SpatialBench dataset root.
         index_mode: PyCanopy index build policy ("eager" / "none" / "auto").
     """
 
@@ -296,13 +262,9 @@ def _aggregate_sql(inner: str, value_cols: list[str]) -> str:
 def oracle_summary(query_id: str, data_dir: str, value_cols: list[str]) -> tuple[int, dict]:
     """Reduce query_id through SedonaDB to (row count, per-column float sums).
 
-    The COUNT and SUMs are pushed into the SedonaDB SQL, so the oracle returns a single
-    row, the full result never leaves the engine, and verification adds no per-query
-    memory load. The check needs only the count and sums, both of which are order-independent.
-
     Args:
         query_id: Query id (e.g. "q1") indexing SEDONA_SQL.
-        data_dir: Local directory or ``s3://`` URI of the parquet tables.
+        data_dir: ``s3://`` URI of the SpatialBench dataset root.
         value_cols: SedonaDB result columns to sum (empty checks the row count only).
 
     Returns:
@@ -311,7 +273,7 @@ def oracle_summary(query_id: str, data_dir: str, value_cols: list[str]) -> tuple
     sd = sedonadb.connect()
     for table in _ORACLE_TABLES:
         # SedonaDB reads the bare directory or file directly, with ST_GeomFromWKB in SQL
-        sd.read_parquet(_resolve_table(data_dir, table)[0]).to_view(table)
+        sd.read_parquet(f"{data_dir.rstrip('/')}/{table}").to_view(table)
     sql = _aggregate_sql(SEDONA_SQL[query_id], value_cols)
     row = pl.from_arrow(sd.sql(sql).to_arrow_table())
     return int(row["__h__"][0]), {c: row[c][0] for c in value_cols}
@@ -331,8 +293,7 @@ def _as_polars(df) -> pl.DataFrame:
 
 
 def _height_and_sums(df, value_cols) -> tuple[int, dict[str, float]]:
-    # Return (row count, Float64 column sums) in one bounded streaming pass, so a result
-    # larger than RAM (a LazyFrame over an out-of-core sink) never materialises in memory.
+    # Return (row count, Float64 column sums) in one bounded streaming pass
     exprs = [pl.len().alias("__h__")]
     exprs += [pl.col(c).cast(pl.Float64, strict=False).sum().alias(c) for c in value_cols]
     lf = df if isinstance(df, pl.LazyFrame) else _as_polars(df).lazy()
@@ -358,7 +319,7 @@ def verify_outputs(
     Args:
         pc_df: PyCanopy result (polars LazyFrame, polars DataFrame, or pandas DataFrame).
         query_id: Query id (e.g. "q1") indexing the SedonaDB oracle.
-        data_dir: Local directory or ``s3://`` URI of the parquet tables.
+        data_dir: ``s3://`` URI of the SpatialBench dataset root.
         keys: Key columns from the compare spec (accepted but not used in the check).
         values: Column specs to sum-compare, each a name or (pc_col, sedona_col) pair.
         rel_tol: Relative tolerance on each column sum.
@@ -384,43 +345,71 @@ def verify_outputs(
 
 
 def measure_query(query, data_dir: str, index_mode: str = "eager", verify: bool = True) -> dict:
-    """Time PyCanopy on one query, then verify its output against SedonaDB.
+    """Spawn an isolated subprocess for one query and return its timing and match result.
 
-    The dataset is warmed into the page cache (untimed) and decoded fresh inside the timed
-    region, so the load is included but always reads from RAM. SedonaDB only checks output.
+    Each query runs in a fresh Python interpreter so no in-process state or page-cache warmth
+    from prior queries can affect the measurement. Verification runs after the timer stops.
 
     Args:
         query: A query module exposing id, pycanopy(tables), and compare.
-        data_dir: Local directory or ``s3://`` URI of the parquet tables.
+        data_dir: ``s3://`` URI of the SpatialBench dataset root.
         index_mode: PyCanopy index build policy ("eager" / "none" / "auto").
         verify: Run the SedonaDB output check when True.
 
     Returns:
         A result dict with status, pycanopy_seconds, and (when verified) match fields.
     """
-    warm_tables(data_dir, _ORACLE_TABLES)
-    tables = SpatialBenchTables(data_dir=data_dir, index_mode=index_mode)
+    cmd = [
+        sys.executable,
+        "-m",
+        "bench.spatial_bench._runner",
+        query.id,
+        data_dir,
+        index_mode,
+        *(["--verify"] if verify else []),
+    ]
     try:
-        t0 = time.perf_counter()
-        pc_df = query.pycanopy(tables)
-        pc_s = time.perf_counter() - t0
-        print(f"[testcase] completed {query.id} using pycanopy in {pc_s:.2f}s", flush=True)
-    except Exception as exc:
-        print(f"[testcase] failed {query.id}: {type(exc).__name__}: {exc}", flush=True)
-        return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1200)
+    except subprocess.TimeoutExpired:
+        print(f"[testcase] timeout {query.id}", flush=True)
+        return {"status": "timeout"}
 
-    out = {"status": "ok", "pycanopy_seconds": round(pc_s, 4)}
+    kv: dict[str, str] = {}
+    for line in proc.stdout.splitlines():
+        if line.startswith("PYCANOPY_") and "=" in line:
+            k, _, v = line.partition("=")
+            kv[k] = v
+
+    if "PYCANOPY_ERROR" in kv:
+        msg = kv["PYCANOPY_ERROR"]
+        print(f"[testcase] failed {query.id}: {msg}", flush=True)
+        return {"status": "error", "error": msg}
+
+    if "PYCANOPY_TIME" not in kv:
+        snippet = proc.stderr[:400] if proc.stderr else "(no stderr)"
+        print(f"[testcase] failed {query.id}: no output; stderr: {snippet}", flush=True)
+        return {"status": "error", "error": "runner produced no timing output"}
+
+    pc_s = float(kv["PYCANOPY_TIME"])
+    print(f"[testcase] completed {query.id} using pycanopy in {pc_s:.2f}s", flush=True)
+    out: dict = {"status": "ok", "pycanopy_seconds": round(pc_s, 4)}
+
     if verify:
-        try:
-            ok, detail = verify_outputs(pc_df, query.id, data_dir, **query.compare)
-            out["match"] = "match" if ok else "MISMATCH"
-            out["match_detail"] = detail
-            if not ok:
-                print(f"[verification] mismatch on testcase {query.id}: {detail}", flush=True)
-        except Exception as exc:
+        if "PYCANOPY_MATCH" in kv:
+            out["match"] = "match"
+            out["match_detail"] = kv["PYCANOPY_MATCH"]
+        elif "PYCANOPY_MISMATCH" in kv:
+            out["match"] = "MISMATCH"
+            out["match_detail"] = kv["PYCANOPY_MISMATCH"]
+            print(
+                f"[verification] mismatch on testcase {query.id}: {kv['PYCANOPY_MISMATCH']}",
+                flush=True,
+            )
+        elif "PYCANOPY_VERIFY_ERROR" in kv:
             out["match"] = "skipped"
-            out["match_detail"] = f"oracle error: {type(exc).__name__}: {exc}"
-            print(f"[verification] skipped {query.id}: {type(exc).__name__}: {exc}", flush=True)
+            out["match_detail"] = f"oracle error: {kv['PYCANOPY_VERIFY_ERROR']}"
+            print(f"[verification] skipped {query.id}: {kv['PYCANOPY_VERIFY_ERROR']}", flush=True)
+
     return out
 
 
@@ -574,6 +563,22 @@ def write_chart(results: dict, out_path: Path) -> None:
     plt.close(fig)
 
 
+def _preflight_dns(data_dir: str) -> None:
+    # Resolve S3 hostnames before the first query timer starts
+    parsed = urlparse(data_dir)
+    if parsed.scheme != "s3":
+        raise ValueError(f"data_dir must be an s3:// URI, got: {data_dir!r}")
+    region = os.environ.get("AWS_DEFAULT_REGION", "us-west-2")
+    for host in (
+        f"{parsed.netloc}.s3.{region}.amazonaws.com",
+        f"s3.{region}.amazonaws.com",
+    ):
+        try:
+            socket.getaddrinfo(host, 443)
+        except OSError:
+            pass
+
+
 def run_suite(
     query_modules: list,
     data_dir: str,
@@ -584,12 +589,12 @@ def run_suite(
 ) -> Path:
     """Measure each query module and render the comparison chart, returning its path.
 
-    This is the on-box driver bootstrap.sh re-enters through the package. It loops
-    measure_query over the modules then writes the chart for the scale and index mode.
+    Resolves S3 DNS before the first query timer starts, then loops measure_query over
+    each module and writes the comparison chart for the given scale and index mode.
 
     Args:
         query_modules: Query modules to run, each exposing id, pycanopy, and compare.
-        data_dir: Local directory or ``s3://`` URI of the parquet tables.
+        data_dir: ``s3://`` URI of the SpatialBench dataset root.
         scale_factor: Scale factor, used for the chart label and output filename.
         index_mode: PyCanopy index build policy ("eager" / "none" / "auto").
         output: Explicit PNG path, or None for assets/spatialbench_sf{N}[_mode].png.
@@ -598,6 +603,7 @@ def run_suite(
     Returns:
         The chart PNG path written.
     """
+    _preflight_dns(data_dir)
     results = {"scale_factor": scale_factor, "index_mode": index_mode, "queries": {}}
     for query in query_modules:
         results["queries"][query.id] = measure_query(query, data_dir, index_mode, verify=verify)

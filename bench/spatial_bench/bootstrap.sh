@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # User-data for an unattended PyCanopy SpatialBench run on Amazon Linux 2023.
-# Builds PyCanopy, copies the data locally, measures the scale factor, uploads the
+# Builds PyCanopy, reads data directly from S3, measures the scale factor, uploads the
 # chart, then writes _SUCCESS. The EXIT trap always ships the log and shuts the box
-# down, and the launch terminates on shutdown. @@NAME@@ placeholders are filled in by
-# __main__.py. No AWS keys are injected (instance role).
+# down, and the launch terminates on shutdown. @@NAME@@ placeholders are substituted
+# before deployment. No AWS keys are injected (instance role).
 
 set -uo pipefail
 
@@ -17,11 +17,8 @@ RESULT_BUCKET="@@RESULT_BUCKET@@"
 RESULT_PREFIX="@@RESULT_PREFIX@@"
 REPO_URL="@@REPO_URL@@"
 REPO_BRANCH="@@REPO_BRANCH@@"
-DATA_TEMPLATE="@@DATA_TEMPLATE@@"
 SCALE_FACTOR="@@SCALE_FACTOR@@"
 MAX_RUNTIME_MIN="@@MAX_RUNTIME_MIN@@"
-MEASURE_ARGS="@@MEASURE_ARGS@@"
-OUT_SUFFIX="@@OUT_SUFFIX@@"
 
 S3_BASE="s3://${RESULT_BUCKET}/${RESULT_PREFIX}/${RUN_ID}"
 LOG=/var/log/pycanopy-bootstrap.log
@@ -67,22 +64,19 @@ log "building PyCanopy (release)"
 uv sync --no-install-project --group bench
 uv run maturin develop --release
 
-mkdir -p /data /opt/pycanopy/assets
+mkdir -p /data/scratch /opt/pycanopy/assets
 
 # /tmp is tmpfs (RAM) on Amazon Linux 2023, so spill out-of-core scratch and Polars sort to the EBS data volume.
-mkdir -p /data/scratch
 export PYCANOPY_SCRATCH=/data/scratch
 export POLARS_TEMP_DIR=/data/scratch
 export TMPDIR=/data/scratch
 
-SRC="${DATA_TEMPLATE//\{sf\}/$SCALE_FACTOR}"
-log "copying data ${SRC} -> /data/sf${SCALE_FACTOR}"
-aws s3 sync "$SRC" "/data/sf${SCALE_FACTOR}" --region "$REGION" \
-  || aws s3 sync --no-sign-request "$SRC" "/data/sf${SCALE_FACTOR}" --region "$REGION"
-OUT="/opt/pycanopy/assets/spatialbench_sf${SCALE_FACTOR}${OUT_SUFFIX}.png"
-log "measuring sf${SCALE_FACTOR}${OUT_SUFFIX}"
-uv run python -m bench.spatial_bench --on-box --data-dir "/data/sf${SCALE_FACTOR}" --scale-factor "$SCALE_FACTOR" --output "$OUT" $MEASURE_ARGS
-aws s3 cp "$OUT" "${S3_BASE}/$(basename "$OUT")" --region "$REGION"
+# object_store picks up IMDS credentials automatically once the region is set
+export AWS_DEFAULT_REGION="$REGION"
+OUT="spatialbench_sf${SCALE_FACTOR}_auto.png"
+log "measuring sf${SCALE_FACTOR}"
+uv run python -m bench.spatial_bench --scale-factor "$SCALE_FACTOR"
+aws s3 cp "/opt/pycanopy/assets/$OUT" "${S3_BASE}/$OUT" --region "$REGION"
 
 log "done"
 echo ok | aws s3 cp - "${S3_BASE}/_SUCCESS" --region "$REGION"

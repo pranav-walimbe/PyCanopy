@@ -1,21 +1,15 @@
-# PyCanopy SpatialBench AWS run config.
-# Fill in result_bucket and instance_profile, then run:
-#   python -m bench.spatial_bench --scale 1
-# Scale factor, index mode, and verification are CLI flags, not config fields.
-# AWS credentials come from your normal AWS setup (AWS_PROFILE / ~/.aws / SSO).
+# PyCanopy SpatialBench bootstrap configuration.
+# These values are substituted into bootstrap.sh before deployment as @@NAME@@ placeholders.
 
-# required
+# required: S3 bucket to write charts and logs into
 result_bucket: pycanopy-bench-results
+
+# required: IAM instance profile the box assumes (read public S3 data + write result bucket)
 instance_profile: pycanopy-spatialbench
 
 # run
 region: us-west-2
-instance_type: m7i.2xlarge
-volume_gb: 60
-max_runtime_min: 30  # watchdog hard-terminates the box after this many minutes
-
-# data ({sf} is replaced by the CLI scale factor, default is the official public dataset)
-data_template: s3://wherobots-examples/data/spatialbench/SpatialBench_sf{sf}
+max_runtime_min: 30
 
 # source repo the box builds
 repo_url: https://github.com/pranav-walimbe/PyCanopy.git
