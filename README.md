@@ -14,9 +14,7 @@
 ---
 
 > [!NOTE]
-> **State of the art on [Apache SpatialBench](https://github.com/apache/sedona-spatialbench):** fastest on 6 of 12 queries at SF1 and 7 of 12 at SF10, winning every heavy spatial join at both scales.
-
-Apache SpatialBench is the standard single-node spatial-analytics benchmark: 12 queries over millions of trips and zones. 
+> State of the art on [Apache SpatialBench](https://github.com/apache/sedona-spatialbench) (single node spatial query benchmark): fastest on 6 of 12 queries at SF1 and 7 of 12 at SF10, winning every heavy spatial join at both scales.
 
 <p align="center">
   <img src="assets/spatialbench_sf1_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1" width="100%"/>
@@ -384,64 +382,58 @@ PyCanopy plans a query in two layers, then hands the result to Polars to run.
 ### Query flow
 
 ```
-  sf.lazy().filter(...).range_query(...).knn_join(...).collect()
-                            |
-            +---------------+----------------+
-            |   Logical plan (whole chain)   |
-            |   order ops, fuse predicates,  |
-            |   pick join side, EXPR vs IO   |
-            +---------------+----------------+
-                            |
-            +---------------+----------------+
-            |   Access path (per operation)  |
-            |   index or scan, and which     |
-            |   kind: a cost model decides   |
-            +---------------+----------------+
-                            |
-            +---------------+----------------+
-            |   Polars runs the emitted ops  |
-            +---------------+----------------+
-                            |
-                      pl.DataFrame
+sf.lazy().filter(...).range_query(...).knn_join(...).collect()
+         │
+         ▼  Logical plan — whole chain
+            order ops · fuse predicates · pick join side · EXPR vs IO
+         │
+         ▼  Access path — per operation
+            index or scan, and which kind: cost model decides
+         │
+         ▼  Polars execution
+            emitted ops run natively → pl.DataFrame
 ```
 
 ### Logical planning
 
-Decisions about the whole chain, made before any data is touched:
-
-- **Predicate pushdown:** scalar filters run first, cheapest first (cost from the Polars expression tree), shrinking the row count cheaply.
+- **Predicate pushdown:** scalar filters run first, cheapest first, shrinking the row count before any spatial work.
 - **Fusion:** consecutive spatial predicates merge into one index build and pass.
-- **Join side:** symmetric joins (`within_join`, `within_distance_join`) index the smaller side. `knn_join` indexes the engine side.
-- **Projection pushdown:** a terminal `.select()` pushes into the join, gathering only the requested columns, not the full width.
-- **Execution path:** very selective filters slice the prebuilt index directly (IO path). Otherwise filters run first and a small index builds on the survivors (EXPR path).
+- **Join side:** symmetric joins index the smaller side; `knn_join` always indexes the engine side.
+- **Projection pushdown:** a terminal `.select()` pushes into the join, gathering only the requested columns.
+- **Execution path:** very selective filters slice the prebuilt index directly (IO path); otherwise filters run first and a small index builds on survivors (EXPR path).
 
-### Cost model: index or scan?
+### Cost model
 
-Building an index costs about `N log N`, so it only pays off if queried enough times. For each operation the planner compares two estimates (`N` is the dataset size, `Q` the number of query points):
+For each operation, the planner picks the cheaper of two paths:
 
-```
-  scan   =  Q * N                          every row, for every query point
-  index  =  N log N  (build once)  +  Q * log N   (probe per query point)
-```
+| | Scan | Index |
+|:--|:--|:--|
+| Setup | none | build once: `N log N` |
+| Per probe | `N` (full scan) | `log N` |
+| **Total** | `Q × N` | `N log N + Q × log N` |
 
-Building wins once `Q` passes roughly `log N`. A one-off lookup scans; a join with many probes builds the index and reuses it. Selectivity refines this: if a predicate keeps most rows, the planner skips the index, since a tree that prunes nothing loses to a plain scan.
+`N` = indexed points. `Q` = probe points, derived from the left-frame row count after scalar filters run.
 
-`index_mode`, set per frame, picks how the estimate is used:
+The index pays off once `Q > log N`. For a single-point lookup (`Q = 1`) that bar is high; for a join where the left frame has millions of rows, it is cleared within the operation itself. Selectivity refines this further: a tree that prunes little of the data loses to a plain scan regardless.
 
-- **`eager`** (default): always build the selected index.
-- **`auto`**: build only when the estimate beats a scan for this `Q`.
-- **`none`**: always scan.
+`index_mode`, set per frame, controls how the estimate is applied:
 
-### Index management
+| Mode | Behaviour |
+|:-----|:----------|
+| `eager` (default) | always build the selected index |
+| `auto` | build only when the estimate beats a scan |
+| `none` | always scan |
 
-Indexes build lazily, never at load time. Dataset stats (extent, distribution, a 32x32 histogram) are computed once up front and drive the first query's choice, after which the index is cached for all later queries. When a non-brute index is built, its kind comes from:
+### Index selection
+
+Indexes build lazily and are cached after the first query. Stats (extent, distribution, a 32×32 density histogram) are computed once at load time to guide the choice:
 
 | Condition                                     | Index        |
 |:----------------------------------------------|:-------------|
 | N < 500, selectivity > 50%, or k/N > 10%     | Brute force  |
 | Point range, uniform distribution             | Uniform grid |
 | Point range, clustered distribution           | KD-tree      |
-| Point KNN or contains                         | KD-tree      |
+| Point kNN or contains                         | KD-tree      |
 | Polygons, any query                           | R-tree       |
 
 All index types share the same coordinate arrays with no duplication.
