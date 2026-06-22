@@ -74,7 +74,7 @@ export TMPDIR=/data/scratch
 # object_store picks up IMDS credentials automatically once the region is set
 export AWS_DEFAULT_REGION="$REGION"
 log "measuring sf${SCALE_FACTOR}"
-uv run python -m bench.spatial_bench._onbox --scale-factor "$SCALE_FACTOR" @@BENCH_FLAGS@@
+AWS_NO_SIGN_REQUEST=true uv run python -m bench.spatial_bench._onbox --scale-factor "$SCALE_FACTOR" @@BENCH_FLAGS@@
 OUT="spatialbench_sf${SCALE_FACTOR}@@OUT_SUFFIX@@.png"
 aws s3 cp "/opt/pycanopy/assets/$OUT" "${S3_BASE}/$OUT" --region "$REGION"
 
