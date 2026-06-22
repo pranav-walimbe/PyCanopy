@@ -112,7 +112,11 @@ def read_table(data_dir: str, table: str, columns: list[str] | None = None) -> p
     Returns:
         The table as a Polars DataFrame.
     """
-    return pl.read_parquet(f"{data_dir.rstrip('/')}/{table}/**/*.parquet", columns=columns)
+    return pl.read_parquet(
+        f"{data_dir.rstrip('/')}/{table}/**/*.parquet",
+        columns=columns,
+        storage_options={"anon": True},
+    )
 
 
 def scan_table(data_dir: str, table: str, columns: list[str] | None = None) -> pl.LazyFrame:
@@ -129,7 +133,11 @@ def scan_table(data_dir: str, table: str, columns: list[str] | None = None) -> p
     Returns:
         A LazyFrame over the table's parquet.
     """
-    return pl.scan_parquet(f"{data_dir.rstrip('/')}/{table}/**/*.parquet", columns=columns)
+    lf = pl.scan_parquet(
+        f"{data_dir.rstrip('/')}/{table}/**/*.parquet",
+        storage_options={"anon": True},
+    )
+    return lf.select(columns) if columns is not None else lf
 
 
 
