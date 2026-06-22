@@ -15,4 +15,4 @@ max_runtime_min: 30
 
 # source repo the box builds
 repo_url: https://github.com/pranav-walimbe/PyCanopy.git
-repo_branch: main
+repo_branch: bench/cold-s3-process-isolation
