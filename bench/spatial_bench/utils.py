@@ -29,71 +29,41 @@ _ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
 # Published Apache SpatialBench baseline (chart reference)
 
 
-# Source: apache/sedona-spatialbench Actions run #152 (2026-06-20)
-# m7i.2xlarge (8 vCPU, 32 GB), 600 s timeout, SedonaDB 0.3.0 / DuckDB 1.5.4 /
-# GeoPandas 1.1.3 / Spatial Polars 0.3.0. A value is seconds, "TIMEOUT", or "ERROR"
+# Source: apache/sedona-spatialbench docs/single-node-benchmarks.md, m7i.2xlarge
+# (8 vCPU, 32 GB), 1200 s timeout, cold start (DuckDB external file cache disabled),
+# runtimes include full data loading. A value is seconds, "TIMEOUT", or "ERROR"
 # (no bar rendered, status annotated on the chart). Missing entries (no key) render
-# as no bar.
-PUBLISHED_ENGINES = ("SedonaDB", "DuckDB", "GeoPandas", "Spatial Polars")
+# as no bar. Spatial Polars not included in the m7i published results.
+PUBLISHED_ENGINES = ("SedonaDB", "DuckDB", "GeoPandas")
 
 PUBLISHED: dict[int, dict[str, dict[str, float | str]]] = {
     1: {
-        "q1": {"SedonaDB": 0.70, "DuckDB": 0.22, "GeoPandas": 14.12, "Spatial Polars": 3.34},
-        "q2": {"SedonaDB": 1.27, "DuckDB": 0.36, "GeoPandas": 14.79, "Spatial Polars": 3.91},
-        "q3": {"SedonaDB": 1.17, "DuckDB": 0.32, "GeoPandas": 15.15, "Spatial Polars": 2.80},
-        "q4": {"SedonaDB": 0.81, "DuckDB": 0.43, "GeoPandas": 18.75, "Spatial Polars": 4.65},
-        "q5": {"SedonaDB": 6.29, "DuckDB": 1.79, "GeoPandas": 56.74, "Spatial Polars": 17.27},
-        "q6": {"SedonaDB": 1.45, "DuckDB": 0.79, "GeoPandas": 20.90, "Spatial Polars": 7.96},
-        "q7": {"SedonaDB": 3.85, "DuckDB": 9.89, "GeoPandas": 176.15, "Spatial Polars": 8.23},
-        "q8": {"SedonaDB": 1.20, "DuckDB": 0.93, "GeoPandas": 15.63, "Spatial Polars": 6.30},
-        "q9": {"SedonaDB": 0.43, "DuckDB": 0.05, "GeoPandas": 0.12, "Spatial Polars": 0.07},
-        "q10": {"SedonaDB": 9.11, "DuckDB": 238.03, "GeoPandas": 42.17, "Spatial Polars": 17.05},
-        "q11": {
-            "SedonaDB": 13.23,
-            "DuckDB": "TIMEOUT",
-            "GeoPandas": 67.20,
-            "Spatial Polars": 28.02,
-        },
-        "q12": {
-            "SedonaDB": 41.66,
-            "DuckDB": "TIMEOUT",
-            "GeoPandas": "TIMEOUT",
-            "Spatial Polars": 65.71,
-        },
+        "q1":  {"SedonaDB": 0.66,  "DuckDB": 0.96,   "GeoPandas": 12.78},
+        "q2":  {"SedonaDB": 8.07,  "DuckDB": 9.95,   "GeoPandas": 20.74},
+        "q3":  {"SedonaDB": 0.80,  "DuckDB": 1.17,   "GeoPandas": 13.59},
+        "q4":  {"SedonaDB": 8.41,  "DuckDB": 9.83,   "GeoPandas": 25.24},
+        "q5":  {"SedonaDB": 5.10,  "DuckDB": 1.80,   "GeoPandas": 47.08},
+        "q6":  {"SedonaDB": 8.59,  "DuckDB": 9.36,   "GeoPandas": 24.43},
+        "q7":  {"SedonaDB": 1.66,  "DuckDB": 1.82,   "GeoPandas": 137.00},
+        "q8":  {"SedonaDB": 1.10,  "DuckDB": 1.08,   "GeoPandas": 16.08},
+        "q9":  {"SedonaDB": 0.23,  "DuckDB": 50.15,  "GeoPandas": 0.28},
+        "q10": {"SedonaDB": 18.79, "DuckDB": 207.84, "GeoPandas": 46.13},
+        "q11": {"SedonaDB": 32.98, "DuckDB": "TIMEOUT", "GeoPandas": 51.01},
+        "q12": {"SedonaDB": 14.55, "DuckDB": "ERROR",   "GeoPandas": "TIMEOUT"},
     },
     10: {
-        "q1": {"SedonaDB": 3.06, "DuckDB": 2.23, "GeoPandas": "ERROR", "Spatial Polars": 32.22},
-        "q2": {"SedonaDB": 3.84, "DuckDB": 3.24, "GeoPandas": "ERROR", "Spatial Polars": 31.21},
-        "q3": {"SedonaDB": 5.75, "DuckDB": 3.18, "GeoPandas": "ERROR", "Spatial Polars": 36.51},
-        "q4": {"SedonaDB": 1.78, "DuckDB": 1.20, "GeoPandas": "ERROR", "Spatial Polars": "ERROR"},
-        "q5": {"SedonaDB": 99.43, "DuckDB": 357.99, "GeoPandas": "ERROR", "Spatial Polars": 128.31},
-        "q6": {"SedonaDB": 4.93, "DuckDB": 4.62, "GeoPandas": "ERROR", "Spatial Polars": "ERROR"},
-        "q7": {
-            "SedonaDB": 37.92,
-            "DuckDB": "ERROR",
-            "GeoPandas": "TIMEOUT",
-            "Spatial Polars": 82.56,
-        },
-        "q8": {"SedonaDB": 9.56, "DuckDB": 10.35, "GeoPandas": "ERROR", "Spatial Polars": "ERROR"},
-        "q9": {"SedonaDB": 0.44, "DuckDB": 0.20, "GeoPandas": 0.30, "Spatial Polars": 0.34},
-        "q10": {
-            "SedonaDB": 71.60,
-            "DuckDB": "TIMEOUT",
-            "GeoPandas": "ERROR",
-            "Spatial Polars": "ERROR",
-        },
-        "q11": {
-            "SedonaDB": 103.21,
-            "DuckDB": "ERROR",
-            "GeoPandas": "ERROR",
-            "Spatial Polars": "ERROR",
-        },
-        "q12": {
-            "SedonaDB": "ERROR",
-            "DuckDB": "TIMEOUT",
-            "GeoPandas": "ERROR",
-            "Spatial Polars": "ERROR",
-        },
+        "q1":  {"SedonaDB": 3.04,   "DuckDB": 4.58,   "GeoPandas": "ERROR"},
+        "q2":  {"SedonaDB": 8.89,   "DuckDB": 8.26,   "GeoPandas": "ERROR"},
+        "q3":  {"SedonaDB": 4.09,   "DuckDB": 5.17,   "GeoPandas": "TIMEOUT"},
+        "q4":  {"SedonaDB": 7.52,   "DuckDB": 8.51,   "GeoPandas": "ERROR"},
+        "q5":  {"SedonaDB": 50.81,  "DuckDB": 14.40,  "GeoPandas": "ERROR"},
+        "q6":  {"SedonaDB": 9.11,   "DuckDB": 10.67,  "GeoPandas": "ERROR"},
+        "q7":  {"SedonaDB": 14.44,  "DuckDB": 14.03,  "GeoPandas": "ERROR"},
+        "q8":  {"SedonaDB": 7.24,   "DuckDB": 7.57,   "GeoPandas": "TIMEOUT"},
+        "q9":  {"SedonaDB": 0.38,   "DuckDB": 942.98, "GeoPandas": 0.49},
+        "q10": {"SedonaDB": 42.02,  "DuckDB": "ERROR", "GeoPandas": "ERROR"},
+        "q11": {"SedonaDB": 97.52,  "DuckDB": "ERROR", "GeoPandas": "ERROR"},
+        "q12": {"SedonaDB": 145.66, "DuckDB": "ERROR", "GeoPandas": "TIMEOUT"},
     },
 }
 
@@ -351,21 +321,8 @@ def verify_outputs(
 # Measure + chart
 
 
-def measure_query(query, data_dir: str, index_mode: str = "eager", verify: bool = True) -> dict:
-    """Spawn an isolated subprocess for one query and return its timing and match result.
-
-    Each query runs in a fresh Python interpreter so no in-process state or page-cache warmth
-    from prior queries can affect the measurement. Verification runs after the timer stops.
-
-    Args:
-        query: A query module exposing id, pycanopy(tables), and compare.
-        data_dir: ``s3://`` URI of the SpatialBench dataset root.
-        index_mode: PyCanopy index build policy ("eager" / "none" / "auto").
-        verify: Run the SedonaDB output check when True.
-
-    Returns:
-        A result dict with status, pycanopy_seconds, and (when verified) match fields.
-    """
+def _run_once(query, data_dir: str, index_mode: str, verify: bool) -> dict:
+    # Spawn one subprocess for query and parse its structured stdout into a result dict
     cmd = [
         sys.executable,
         "-m",
@@ -378,7 +335,6 @@ def measure_query(query, data_dir: str, index_mode: str = "eager", verify: bool 
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1200)
     except subprocess.TimeoutExpired:
-        print(f"[testcase] timeout {query.id}", flush=True)
         return {"status": "timeout"}
 
     kv: dict[str, str] = {}
@@ -388,36 +344,81 @@ def measure_query(query, data_dir: str, index_mode: str = "eager", verify: bool 
             kv[k] = v
 
     if "PYCANOPY_ERROR" in kv:
-        msg = kv["PYCANOPY_ERROR"]
-        print(f"[testcase] failed {query.id}: {msg}", flush=True)
-        return {"status": "error", "error": msg}
+        return {"status": "error", "error": kv["PYCANOPY_ERROR"]}
 
     if "PYCANOPY_TIME" not in kv:
         snippet = proc.stderr[:400] if proc.stderr else "(no stderr)"
-        print(f"[testcase] failed {query.id}: no output; stderr: {snippet}", flush=True)
-        return {"status": "error", "error": "runner produced no timing output"}
+        return {"status": "error", "error": f"runner produced no timing output; stderr: {snippet}"}
 
-    pc_s = float(kv["PYCANOPY_TIME"])
-    print(f"[testcase] completed {query.id} using pycanopy in {pc_s:.2f}s", flush=True)
-    out: dict = {"status": "ok", "pycanopy_seconds": round(pc_s, 4)}
+    return {"status": "ok", "time": float(kv["PYCANOPY_TIME"]), "kv": kv if verify else {}}
 
-    if verify:
-        if "PYCANOPY_MATCH" in kv:
-            out["match"] = "match"
-            out["match_detail"] = kv["PYCANOPY_MATCH"]
-        elif "PYCANOPY_MISMATCH" in kv:
-            out["match"] = "MISMATCH"
-            out["match_detail"] = kv["PYCANOPY_MISMATCH"]
-            print(
-                f"[verification] mismatch on testcase {query.id}: {kv['PYCANOPY_MISMATCH']}",
-                flush=True,
-            )
-        elif "PYCANOPY_VERIFY_ERROR" in kv:
-            out["match"] = "skipped"
-            out["match_detail"] = f"oracle error: {kv['PYCANOPY_VERIFY_ERROR']}"
-            print(f"[verification] skipped {query.id}: {kv['PYCANOPY_VERIFY_ERROR']}", flush=True)
 
-    return out
+def measure_query(
+    query, data_dir: str, index_mode: str = "eager", verify: bool = True, runs: int = 3
+) -> dict:
+    """Spawn isolated subprocesses for one query and return the averaged timing.
+
+    Runs the query up to ``runs`` times in fresh subprocesses. Verification runs only on
+    the first attempt. Subsequent runs are skipped if the first fails or times out.
+
+    Args:
+        query: A query module exposing id, pycanopy(tables), and compare.
+        data_dir: ``s3://`` URI of the SpatialBench dataset root.
+        index_mode: PyCanopy index build policy ("eager" / "none" / "auto").
+        verify: Run the SedonaDB output check on the first run when True.
+        runs: Number of timed repetitions to average (default 3).
+
+    Returns:
+        A result dict with status, pycanopy_seconds (average), run_times, and match fields.
+    """
+    times: list[float] = []
+    out: dict = {}
+
+    for i in range(runs):
+        r = _run_once(query, data_dir, index_mode, verify=verify and i == 0)
+
+        if r["status"] == "timeout":
+            print(f"[testcase] timeout {query.id} (run {i + 1})", flush=True)
+            if not times:
+                return {"status": "timeout"}
+            break
+
+        if r["status"] == "error":
+            print(f"[testcase] failed {query.id} (run {i + 1}): {r['error']}", flush=True)
+            if not times:
+                return {"status": "error", "error": r["error"]}
+            break
+
+        times.append(r["time"])
+
+        if i == 0:
+            kv = r["kv"]
+            if verify:
+                if "PYCANOPY_MATCH" in kv:
+                    out["match"] = "match"
+                    out["match_detail"] = kv["PYCANOPY_MATCH"]
+                elif "PYCANOPY_MISMATCH" in kv:
+                    out["match"] = "MISMATCH"
+                    out["match_detail"] = kv["PYCANOPY_MISMATCH"]
+                    print(
+                        f"[verification] mismatch on testcase {query.id}: {kv['PYCANOPY_MISMATCH']}",
+                        flush=True,
+                    )
+                elif "PYCANOPY_VERIFY_ERROR" in kv:
+                    out["match"] = "skipped"
+                    out["match_detail"] = f"oracle error: {kv['PYCANOPY_VERIFY_ERROR']}"
+                    print(
+                        f"[verification] skipped {query.id}: {kv['PYCANOPY_VERIFY_ERROR']}",
+                        flush=True,
+                    )
+
+    avg = sum(times) / len(times)
+    print(
+        f"[testcase] completed {query.id} using pycanopy in {avg:.2f}s"
+        + (f" (avg of {len(times)} runs: {', '.join(f'{t:.2f}s' for t in times)})" if len(times) > 1 else ""),
+        flush=True,
+    )
+    return {"status": "ok", "pycanopy_seconds": round(avg, 4), "run_times": times, **out}
 
 
 def _nice_cap(v: float) -> float:
@@ -464,7 +465,6 @@ def write_chart(results: dict, out_path: Path) -> None:
         "SedonaDB": "#DD8452",
         "DuckDB": "#8C8C8C",
         "GeoPandas": "#C9BBA8",
-        "Spatial Polars": "#59A96A",
     }
     series = ["PyCanopy", *PUBLISHED_ENGINES]
     n_s, n_q = len(series), len(qids)
@@ -555,7 +555,7 @@ def write_chart(results: dict, out_path: Path) -> None:
     if any(qs[q].get("match") == "MISMATCH" for q in qids):
         subtitle += "    * output mismatch"
     ax.set_title(
-        f"Apache SpatialBench SF{sf}: PyCanopy vs SedonaDB / DuckDB / GeoPandas / Spatial Polars\n{subtitle}",
+        f"Apache SpatialBench SF{sf}: PyCanopy vs SedonaDB / DuckDB / GeoPandas\n{subtitle}",
         fontsize=10,
     )
     ax.legend(
