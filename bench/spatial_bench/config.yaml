@@ -11,7 +11,7 @@ instance_profile: pycanopy-spatialbench
 region: us-west-2
 instance_type: m7i.2xlarge
 volume_gb: 32
-max_runtime_min: 30
+max_runtime_min: 60
 
 # source repo the box builds
 repo_url: https://github.com/pranav-walimbe/PyCanopy.git
