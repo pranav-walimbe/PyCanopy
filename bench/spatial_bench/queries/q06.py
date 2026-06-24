@@ -22,12 +22,15 @@ BBOX = (-112.2110, 34.4197, -111.3110, 35.3197)
 
 _TRIP_COLS = ["t_pickuploc", "t_totalamount", "t_pickuptime", "t_dropofftime"]
 
+TABLES_NEEDED = {"zone": ["z_zonekey", "z_name", "z_boundary"], "trip": _TRIP_COLS}
+
 # avg_distance here is AVG(t_totalamount) on both sides; avg_duration (an interval in
 # SedonaDB) is left out of the value check.
 compare = {"keys": ["z_zonekey"], "values": ["total_pickups", "avg_distance"]}
 
 
 def pycanopy(tables) -> pl.DataFrame:
+    tables.parallel_fetch(TABLES_NEEDED)
     zone = tables.table("zone", ["z_zonekey", "z_name", "z_boundary"])
     zsf = tables.polygon_frame(zone, "z_boundary")
     cand_idx = zsf.engine.range_query(*BBOX)

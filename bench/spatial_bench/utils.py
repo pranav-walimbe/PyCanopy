@@ -32,36 +32,36 @@ _ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
 # Source: apache/sedona-spatialbench docs/single-node-benchmarks.md, m7i.2xlarge
 # (8 vCPU, 32 GB), 1200 s timeout, cold start (DuckDB external file cache disabled),
 # runtimes include full data loading. A value is seconds, "TIMEOUT", or "ERROR"
-# (no bar rendered, status annotated on the chart). 
+# (no bar rendered, status annotated on the chart).
 PUBLISHED_ENGINES = ("SedonaDB", "DuckDB", "GeoPandas")
 
 PUBLISHED: dict[int, dict[str, dict[str, float | str]]] = {
     1: {
-        "q1":  {"SedonaDB": 0.66,  "DuckDB": 0.96,   "GeoPandas": 12.78},
-        "q2":  {"SedonaDB": 8.07,  "DuckDB": 9.95,   "GeoPandas": 20.74},
-        "q3":  {"SedonaDB": 0.80,  "DuckDB": 1.17,   "GeoPandas": 13.59},
-        "q4":  {"SedonaDB": 8.41,  "DuckDB": 9.83,   "GeoPandas": 25.24},
-        "q5":  {"SedonaDB": 5.10,  "DuckDB": 1.80,   "GeoPandas": 47.08},
-        "q6":  {"SedonaDB": 8.59,  "DuckDB": 9.36,   "GeoPandas": 24.43},
-        "q7":  {"SedonaDB": 1.66,  "DuckDB": 1.82,   "GeoPandas": 137.00},
-        "q8":  {"SedonaDB": 1.10,  "DuckDB": 1.08,   "GeoPandas": 16.08},
-        "q9":  {"SedonaDB": 0.23,  "DuckDB": 50.15,  "GeoPandas": 0.28},
+        "q1": {"SedonaDB": 0.66, "DuckDB": 0.96, "GeoPandas": 12.78},
+        "q2": {"SedonaDB": 8.07, "DuckDB": 9.95, "GeoPandas": 20.74},
+        "q3": {"SedonaDB": 0.80, "DuckDB": 1.17, "GeoPandas": 13.59},
+        "q4": {"SedonaDB": 8.41, "DuckDB": 9.83, "GeoPandas": 25.24},
+        "q5": {"SedonaDB": 5.10, "DuckDB": 1.80, "GeoPandas": 47.08},
+        "q6": {"SedonaDB": 8.59, "DuckDB": 9.36, "GeoPandas": 24.43},
+        "q7": {"SedonaDB": 1.66, "DuckDB": 1.82, "GeoPandas": 137.00},
+        "q8": {"SedonaDB": 1.10, "DuckDB": 1.08, "GeoPandas": 16.08},
+        "q9": {"SedonaDB": 0.23, "DuckDB": 50.15, "GeoPandas": 0.28},
         "q10": {"SedonaDB": 18.79, "DuckDB": 207.84, "GeoPandas": 46.13},
         "q11": {"SedonaDB": 32.98, "DuckDB": "TIMEOUT", "GeoPandas": 51.01},
-        "q12": {"SedonaDB": 14.55, "DuckDB": "ERROR",   "GeoPandas": "TIMEOUT"},
+        "q12": {"SedonaDB": 14.55, "DuckDB": "ERROR", "GeoPandas": "TIMEOUT"},
     },
     10: {
-        "q1":  {"SedonaDB": 3.04,   "DuckDB": 4.58,   "GeoPandas": "ERROR"},
-        "q2":  {"SedonaDB": 8.89,   "DuckDB": 8.26,   "GeoPandas": "ERROR"},
-        "q3":  {"SedonaDB": 4.09,   "DuckDB": 5.17,   "GeoPandas": "TIMEOUT"},
-        "q4":  {"SedonaDB": 7.52,   "DuckDB": 8.51,   "GeoPandas": "ERROR"},
-        "q5":  {"SedonaDB": 50.81,  "DuckDB": 14.40,  "GeoPandas": "ERROR"},
-        "q6":  {"SedonaDB": 9.11,   "DuckDB": 10.67,  "GeoPandas": "ERROR"},
-        "q7":  {"SedonaDB": 14.44,  "DuckDB": 14.03,  "GeoPandas": "ERROR"},
-        "q8":  {"SedonaDB": 7.24,   "DuckDB": 7.57,   "GeoPandas": "TIMEOUT"},
-        "q9":  {"SedonaDB": 0.38,   "DuckDB": 942.98, "GeoPandas": 0.49},
-        "q10": {"SedonaDB": 42.02,  "DuckDB": "ERROR", "GeoPandas": "ERROR"},
-        "q11": {"SedonaDB": 97.52,  "DuckDB": "ERROR", "GeoPandas": "ERROR"},
+        "q1": {"SedonaDB": 3.04, "DuckDB": 4.58, "GeoPandas": "ERROR"},
+        "q2": {"SedonaDB": 8.89, "DuckDB": 8.26, "GeoPandas": "ERROR"},
+        "q3": {"SedonaDB": 4.09, "DuckDB": 5.17, "GeoPandas": "TIMEOUT"},
+        "q4": {"SedonaDB": 7.52, "DuckDB": 8.51, "GeoPandas": "ERROR"},
+        "q5": {"SedonaDB": 50.81, "DuckDB": 14.40, "GeoPandas": "ERROR"},
+        "q6": {"SedonaDB": 9.11, "DuckDB": 10.67, "GeoPandas": "ERROR"},
+        "q7": {"SedonaDB": 14.44, "DuckDB": 14.03, "GeoPandas": "ERROR"},
+        "q8": {"SedonaDB": 7.24, "DuckDB": 7.57, "GeoPandas": "TIMEOUT"},
+        "q9": {"SedonaDB": 0.38, "DuckDB": 942.98, "GeoPandas": 0.49},
+        "q10": {"SedonaDB": 42.02, "DuckDB": "ERROR", "GeoPandas": "ERROR"},
+        "q11": {"SedonaDB": 97.52, "DuckDB": "ERROR", "GeoPandas": "ERROR"},
         "q12": {"SedonaDB": 145.66, "DuckDB": "ERROR", "GeoPandas": "TIMEOUT"},
     },
 }
@@ -134,6 +134,20 @@ class SpatialBenchTables:
     index_mode: str = "eager"
     _cache: dict[str, pl.DataFrame] | None = None
 
+    def parallel_fetch(self, needs: dict[str, list[str] | None]) -> None:
+        """Fetch several tables concurrently into the cache, with projection pushdown.
+
+        Args:
+            needs: Map of table name to the columns to fetch, or None for all columns.
+        """
+        if self._cache is None:
+            self._cache = {}
+        pending = {name: cols for name, cols in needs.items() if name not in self._cache}
+        if not pending:
+            return
+        frames = pl.collect_all([self.scan(name, cols) for name, cols in pending.items()])
+        self._cache.update(zip(pending, frames, strict=True))
+
     def table(self, name: str, columns: list[str] | None = None) -> pl.DataFrame:
         """Return table ``name``, reading and caching it on first access.
 
@@ -146,10 +160,10 @@ class SpatialBenchTables:
         """
         if self._cache is None:
             self._cache = {}
-        key = name if columns is None else f"{name}:{','.join(columns)}"
-        if key not in self._cache:
-            self._cache[key] = read_table(self.data_dir, name, columns)
-        return self._cache[key]
+        if name not in self._cache:
+            self._cache[name] = read_table(self.data_dir, name, columns)
+        df = self._cache[name]
+        return df.select(columns) if columns is not None else df
 
     def scan(self, name: str, columns: list[str] | None = None) -> pl.LazyFrame:
         """Lazily scan table ``name`` (uncached, for late-materialization access).
@@ -414,7 +428,11 @@ def measure_query(
     avg = sum(times) / len(times)
     print(
         f"[testcase] completed {query.id} using pycanopy in {avg:.2f}s"
-        + (f" (avg of {len(times)} runs: {', '.join(f'{t:.2f}s' for t in times)})" if len(times) > 1 else ""),
+        + (
+            f" (avg of {len(times)} runs: {', '.join(f'{t:.2f}s' for t in times)})"
+            if len(times) > 1
+            else ""
+        ),
         flush=True,
     )
     return {"status": "ok", "pycanopy_seconds": round(avg, 4), "run_times": times, **out}
@@ -613,7 +631,9 @@ def run_suite(
     _preflight_dns(data_dir)
     results = {"scale_factor": scale_factor, "index_mode": index_mode, "queries": {}}
     for query in query_modules:
-        results["queries"][query.id] = measure_query(query, data_dir, index_mode, verify=verify, runs=runs)
+        results["queries"][query.id] = measure_query(
+            query, data_dir, index_mode, verify=verify, runs=runs
+        )
     sf = int(scale_factor)
     suffix = "" if index_mode == "eager" else f"_{index_mode}"
     out_path = Path(output) if output else _ASSETS_DIR / f"spatialbench_sf{sf}{suffix}.png"

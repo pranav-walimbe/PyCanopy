@@ -24,12 +24,8 @@ def _build_parser() -> argparse.ArgumentParser:
     index_group.add_argument(
         "--index-eager", action="store_const", const="eager", dest="index_mode"
     )
-    index_group.add_argument(
-        "--index-auto", action="store_const", const="auto", dest="index_mode"
-    )
-    index_group.add_argument(
-        "--index-none", action="store_const", const="none", dest="index_mode"
-    )
+    index_group.add_argument("--index-auto", action="store_const", const="auto", dest="index_mode")
+    index_group.add_argument("--index-none", action="store_const", const="none", dest="index_mode")
     parser.set_defaults(index_mode="auto")
     parser.add_argument("--n", type=int, default=3, metavar="N")
     parser.add_argument("--verify", action="store_true")

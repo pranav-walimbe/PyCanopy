@@ -44,7 +44,9 @@ def load_config() -> dict:
     return cfg
 
 
-def _user_data(cfg: dict, run_id: str, scale_factor: int, index_mode: str, verify: bool, n: int) -> str:
+def _user_data(
+    cfg: dict, run_id: str, scale_factor: int, index_mode: str, verify: bool, n: int
+) -> str:
     # Substitute @@NAME@@ placeholders in bootstrap.sh for this run
     script = (_DIR / "bootstrap.sh").read_text()
     suffix = "" if index_mode == "eager" else f"_{index_mode}"
@@ -70,7 +72,9 @@ def _user_data(cfg: dict, run_id: str, scale_factor: int, index_mode: str, verif
     return script
 
 
-def _launch(ec2, ssm, cfg: dict, run_id: str, scale_factor: int, index_mode: str, verify: bool, n: int) -> str:
+def _launch(
+    ec2, ssm, cfg: dict, run_id: str, scale_factor: int, index_mode: str, verify: bool, n: int
+) -> str:
     # Launch the benchmark instance and return its id
     ami = ssm.get_parameter(Name=_SSM_AL2023)["Parameter"]["Value"]
     resp = ec2.run_instances(
@@ -242,7 +246,9 @@ def main(argv: list[str] | None = None) -> int:
     ssm = boto3.client("ssm", region_name=region)
 
     run_id = uuid.uuid4().hex[:12]
-    instance_id = _launch(ec2, ssm, cfg, run_id, args.scale_factor, args.index_mode, args.verify, args.n)
+    instance_id = _launch(
+        ec2, ssm, cfg, run_id, args.scale_factor, args.index_mode, args.verify, args.n
+    )
     try:
         ok = _wait_for_success(s3, ec2, cfg, run_id, instance_id)
         paths = _download(s3, cfg, run_id)

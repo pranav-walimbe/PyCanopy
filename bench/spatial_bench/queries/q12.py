@@ -28,6 +28,11 @@ title = "5 nearest buildings to each trip pickup"
 
 K = 5
 
+TABLES_NEEDED = {
+    "building": ["b_buildingkey", "b_name", "b_boundary"],
+    "trip": ["t_tripkey", "t_pickuploc"],
+}
+
 # kNN ties can pick different buildings, so the per-trip distances are compared rather
 # than building identity (the SedonaDB column is distance_to_building).
 compare = {"keys": ["t_tripkey"], "values": [("distance_to_polygon", "distance_to_building")]}
@@ -51,6 +56,7 @@ def pycanopy(tables) -> pl.LazyFrame:
         A LazyFrame scanning the sorted (t_tripkey, b_buildingkey, distance_to_polygon)
         Parquet output, which the harness streams rather than materialising in RAM.
     """
+    tables.parallel_fetch(TABLES_NEEDED)
     buildings = tables.table("building", ["b_buildingkey", "b_name", "b_boundary"])
     sf = tables.polygon_frame(buildings, "b_boundary")
 

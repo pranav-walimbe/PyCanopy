@@ -20,12 +20,15 @@ title = "Per-zone trip stats (zones with zero trips retained)"
 
 _TRIP_COLS = ["t_pickuploc", "t_pickuptime", "t_dropofftime", "t_distance"]
 
+TABLES_NEEDED = {"zone": ["z_zonekey", "z_name", "z_boundary"], "trip": _TRIP_COLS}
+
 # avg_duration is an interval in SedonaDB (Timedelta) vs float seconds here, so it is
 # left out of the value check; num_trips and avg_distance are compared.
 compare = {"keys": ["z_zonekey"], "values": ["num_trips", "avg_distance"]}
 
 
 def pycanopy(tables) -> pl.DataFrame:
+    tables.parallel_fetch(TABLES_NEEDED)
     zone = tables.table("zone", ["z_zonekey", "z_name", "z_boundary"])
     sf = tables.polygon_frame(zone, "z_boundary")
 

@@ -15,6 +15,11 @@ title = "Monthly travel hull area for repeat customers"
 
 MIN_TRIPS = 5
 
+TABLES_NEEDED = {
+    "trip": ["t_custkey", "t_dropoffloc", "t_pickuptime"],
+    "customer": ["c_custkey", "c_name"],
+}
+
 compare = {
     "keys": ["c_custkey", "pickup_month"],
     "values": ["monthly_travel_hull_area"],
@@ -23,6 +28,7 @@ compare = {
 
 
 def pycanopy(tables) -> pl.DataFrame:
+    tables.parallel_fetch(TABLES_NEEDED)
     trip = tables.table("trip", ["t_custkey", "t_dropoffloc", "t_pickuptime"])
     cust = tables.table("customer", ["c_custkey", "c_name"])
 

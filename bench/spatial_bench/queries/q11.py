@@ -13,10 +13,16 @@ from pycanopy import wkb_points_to_xy
 id = "q11"
 title = "Count trips that cross between different zones"
 
+TABLES_NEEDED = {
+    "trip": ["t_tripkey", "t_pickuploc", "t_dropoffloc"],
+    "zone": ["z_zonekey", "z_boundary"],
+}
+
 compare = {"keys": [], "values": ["cross_zone_trip_count"]}
 
 
 def pycanopy(tables) -> pl.DataFrame:
+    tables.parallel_fetch(TABLES_NEEDED)
     trip = tables.table("trip", ["t_tripkey", "t_pickuploc", "t_dropoffloc"])
     zone = tables.table("zone", ["z_zonekey", "z_boundary"])
     sf = tables.polygon_frame(zone, "z_boundary")
