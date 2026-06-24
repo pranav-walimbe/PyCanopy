@@ -20,13 +20,18 @@ def _build_parser() -> argparse.ArgumentParser:
     # CLI for the on-box benchmark runner
     parser = argparse.ArgumentParser(description="Measure PyCanopy on SpatialBench.")
     parser.add_argument("--scale-factor", type=int, required=True)
-    parser.add_argument(
-        "--index-eager",
-        action="store_const",
-        const="eager",
-        dest="index_mode",
+    index_group = parser.add_mutually_exclusive_group()
+    index_group.add_argument(
+        "--index-eager", action="store_const", const="eager", dest="index_mode"
+    )
+    index_group.add_argument(
+        "--index-auto", action="store_const", const="auto", dest="index_mode"
+    )
+    index_group.add_argument(
+        "--index-none", action="store_const", const="none", dest="index_mode"
     )
     parser.set_defaults(index_mode="auto")
+    parser.add_argument("--n", type=int, default=3, metavar="N")
     parser.add_argument("--verify", action="store_true")
     return parser
 
@@ -48,6 +53,7 @@ def main(argv: list[str] | None = None) -> int:
         args.scale_factor,
         args.index_mode,
         verify=args.verify,
+        runs=args.n,
     )
     return 0
 

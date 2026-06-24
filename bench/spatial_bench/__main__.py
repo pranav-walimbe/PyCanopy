@@ -44,11 +44,11 @@ def load_config() -> dict:
     return cfg
 
 
-def _user_data(cfg: dict, run_id: str, scale_factor: int, index_mode: str, verify: bool) -> str:
+def _user_data(cfg: dict, run_id: str, scale_factor: int, index_mode: str, verify: bool, n: int) -> str:
     # Substitute @@NAME@@ placeholders in bootstrap.sh for this run
     script = (_DIR / "bootstrap.sh").read_text()
     suffix = "" if index_mode == "eager" else f"_{index_mode}"
-    bench_flags: list[str] = []
+    bench_flags: list[str] = [f"--n {n}"]
     if index_mode == "eager":
         bench_flags.append("--index-eager")
     if verify:
@@ -70,7 +70,7 @@ def _user_data(cfg: dict, run_id: str, scale_factor: int, index_mode: str, verif
     return script
 
 
-def _launch(ec2, ssm, cfg: dict, run_id: str, scale_factor: int, index_mode: str, verify: bool) -> str:
+def _launch(ec2, ssm, cfg: dict, run_id: str, scale_factor: int, index_mode: str, verify: bool, n: int) -> str:
     # Launch the benchmark instance and return its id
     ami = ssm.get_parameter(Name=_SSM_AL2023)["Parameter"]["Value"]
     resp = ec2.run_instances(
@@ -78,7 +78,7 @@ def _launch(ec2, ssm, cfg: dict, run_id: str, scale_factor: int, index_mode: str
         InstanceType=cfg["instance_type"],
         MinCount=1,
         MaxCount=1,
-        UserData=_user_data(cfg, run_id, scale_factor, index_mode, verify),
+        UserData=_user_data(cfg, run_id, scale_factor, index_mode, verify, n),
         InstanceInitiatedShutdownBehavior="terminate",
         IamInstanceProfile={"Name": cfg["instance_profile"]},
         BlockDeviceMappings=[
@@ -185,18 +185,40 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Scale factor to benchmark (1 or 10).",
     )
-    parser.add_argument(
+    index_group = parser.add_mutually_exclusive_group()
+    index_group.add_argument(
         "--index-eager",
         action="store_const",
         const="eager",
         dest="index_mode",
-        help="Build an index whenever a kind is selected (default is cost-based auto).",
+        help="Build an index at frame construction time (index build cost is inside the timed window).",
+    )
+    index_group.add_argument(
+        "--index-auto",
+        action="store_const",
+        const="auto",
+        dest="index_mode",
+        help="Build the index only when the cost model estimates it beats a full scan (default).",
+    )
+    index_group.add_argument(
+        "--index-none",
+        action="store_const",
+        const="none",
+        dest="index_mode",
+        help="Always scan; no index is built.",
     )
     parser.set_defaults(index_mode="auto")
     parser.add_argument(
+        "--n",
+        type=int,
+        default=3,
+        metavar="N",
+        help="Number of timed runs per query; reported time is the average (default 3).",
+    )
+    parser.add_argument(
         "--verify",
         action="store_true",
-        help="Run the SedonaDB output check per query.",
+        help="Run the SedonaDB output check per query (only valid with --scale-factor 1 --n 1).",
     )
     return parser
 
@@ -211,6 +233,8 @@ def main(argv: list[str] | None = None) -> int:
         The process exit code, 0 on success and 1 on failure.
     """
     args = _build_parser().parse_args(argv)
+    if args.verify and not (args.scale_factor == 1 and args.n == 1):
+        sys.exit("--verify is only allowed with --scale-factor 1 --n 1")
     cfg = load_config()
     region = cfg["region"]
     ec2 = boto3.client("ec2", region_name=region)
@@ -218,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
     ssm = boto3.client("ssm", region_name=region)
 
     run_id = uuid.uuid4().hex[:12]
-    instance_id = _launch(ec2, ssm, cfg, run_id, args.scale_factor, args.index_mode, args.verify)
+    instance_id = _launch(ec2, ssm, cfg, run_id, args.scale_factor, args.index_mode, args.verify, args.n)
     try:
         ok = _wait_for_success(s3, ec2, cfg, run_id, instance_id)
         paths = _download(s3, cfg, run_id)

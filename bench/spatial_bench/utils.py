@@ -32,8 +32,7 @@ _ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
 # Source: apache/sedona-spatialbench docs/single-node-benchmarks.md, m7i.2xlarge
 # (8 vCPU, 32 GB), 1200 s timeout, cold start (DuckDB external file cache disabled),
 # runtimes include full data loading. A value is seconds, "TIMEOUT", or "ERROR"
-# (no bar rendered, status annotated on the chart). Missing entries (no key) render
-# as no bar. Spatial Polars not included in the m7i published results.
+# (no bar rendered, status annotated on the chart). 
 PUBLISHED_ENGINES = ("SedonaDB", "DuckDB", "GeoPandas")
 
 PUBLISHED: dict[int, dict[str, dict[str, float | str]]] = {
@@ -354,7 +353,7 @@ def _run_once(query, data_dir: str, index_mode: str, verify: bool) -> dict:
 
 
 def measure_query(
-    query, data_dir: str, index_mode: str = "eager", verify: bool = True, runs: int = 3
+    query, data_dir: str, index_mode: str = "eager", verify: bool = False, runs: int = 3
 ) -> dict:
     """Spawn isolated subprocesses for one query and return the averaged timing.
 
@@ -592,7 +591,8 @@ def run_suite(
     scale_factor: float,
     index_mode: str = "eager",
     output: str | None = None,
-    verify: bool = True,
+    verify: bool = False,
+    runs: int = 3,
 ) -> Path:
     """Measure each query module and render the comparison chart, returning its path.
 
@@ -613,7 +613,7 @@ def run_suite(
     _preflight_dns(data_dir)
     results = {"scale_factor": scale_factor, "index_mode": index_mode, "queries": {}}
     for query in query_modules:
-        results["queries"][query.id] = measure_query(query, data_dir, index_mode, verify=verify)
+        results["queries"][query.id] = measure_query(query, data_dir, index_mode, verify=verify, runs=runs)
     sf = int(scale_factor)
     suffix = "" if index_mode == "eager" else f"_{index_mode}"
     out_path = Path(output) if output else _ASSETS_DIR / f"spatialbench_sf{sf}{suffix}.png"

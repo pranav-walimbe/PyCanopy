@@ -4,8 +4,7 @@
 
 PyCanopy is measured against the [Apache SpatialBench](https://github.com/apache/sedona-spatialbench)
 query suite: 12 spatial queries over a NYC taxi + zone dataset at scale factors SF1 and SF10.
-Published baseline numbers (SedonaDB, DuckDB, GeoPandas) come from
-`docs/single-node-benchmarks.md` in that repository, measured on the same m7i.2xlarge hardware / constraints.
+Published baseline numbers (SedonaDB, DuckDB, GeoPandas) come from `docs/single-node-benchmarks.md` in that repository, measured on the same m7i.2xlarge hardware / constraints.
 
 ## Methodology
 
@@ -13,15 +12,18 @@ Published baseline numbers (SedonaDB, DuckDB, GeoPandas) come from
 launched for the benchmark which matches the published baseline hardware.
 
 **Cold S3 Reads** Data is read directly from the public S3 bucket
-(`s3://wherobots-examples/...`) inside the timed window. 
+(`s3://wherobots-examples/...`) inside the timed window.
 
 **Per-query Process Isolation:** Each query runs in a **fresh Python subprocess**
 (`python -m bench.spatial_bench._runner`) to make timings accurate.
 
-**Repetitions:** Each query is executed **3 times** in separate subprocesses. The reported
-time is the **average of all three runs**. Each subprocess has a **1200-second per-query timeout**, matching the published baseline timeout.
+**Repetitions:** Each query is executed `--n` times in separate subprocesses.
+The reported time is the average across all runs. Each subprocess has a **1200-second
+per-query timeout**, matching the published baseline timeout.
 
-**Output Verification:** Users can optionally specify a --verify flag on a benchmark run to trigger output comparison between Apache Sedona and PyCanopy. Note: outputs can be very large to materialize so this is only recommended for SF1.
+**Output Verification:** Pass `--verify` to compare PyCanopy output against SedonaDB per
+query. Only allowed with `--scale-factor 1 --n 1` (SF10 results are too large to materialise
+and multi-run verify is redundant).
 
 ## Run Benchmark
 
@@ -29,7 +31,7 @@ Requires AWS credentials with EC2 + S3 permissions. IAM setup and bucket configu
 in `config.yaml`.
 
 ```
-python -m bench.spatial_bench --scale-factor {1,10} [--index-eager|--index-auto|--index-none] [--verify]
+python -m bench.spatial_bench --scale-factor {1,10} [--index-eager|--index-auto|--index-none] [--n N] [--verify]
 ```
 
 The launcher spins up an EC2 box, polls S3 for completion, downloads the chart PNG, and
