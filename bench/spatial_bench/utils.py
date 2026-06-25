@@ -224,9 +224,8 @@ def oracle_result(query_id: str, data_dir: str) -> pl.DataFrame:
     """
     sd = sedonadb.connect()
     for table in _ORACLE_TABLES:
-        # On S3 SedonaDB rejects a bare directory, so glob the parquet like the PyCanopy
-        # read_table does. Geometry stays WKB and is decoded with ST_GeomFromWKB in the SQL.
-        sd.read_parquet(f"{data_dir.rstrip('/')}/{table}/**/*.parquet").to_view(table)
+        # Read via the working Polars S3 path and register the frame, so SedonaDB never reads S3
+        sd.create_data_frame(read_table(data_dir, table)).to_view(table)
     return pl.from_arrow(sd.sql(SEDONA_SQL[query_id]).to_arrow_table())
 
 
