@@ -7,7 +7,8 @@ The whole flow is one command:
 Reads config.yaml, launches an m7i.2xlarge whose user-data (bootstrap.sh) builds
 PyCanopy and measures it against the published SedonaDB / DuckDB / GeoPandas /
 Spatial Polars baseline, then renders the chart and self-terminates while this
-process polls S3 and downloads the PNG into assets/.
+process polls S3 and downloads the PNG into assets/. With --profile instead, it
+runs the SF1 diagnostic and downloads profile.txt.
 """
 
 from __future__ import annotations
@@ -45,16 +46,17 @@ def load_config() -> dict:
 
 
 def _user_data(
-    cfg: dict, run_id: str, scale_factor: int, index_mode: str, verify: bool, n: int
+    cfg: dict, run_id: str, scale_factor: int, index_mode: str, profile: bool, n: int
 ) -> str:
     # Substitute @@NAME@@ placeholders in bootstrap.sh for this run
     script = (_DIR / "bootstrap.sh").read_text()
     suffix = "" if index_mode == "eager" else f"_{index_mode}"
-    bench_flags: list[str] = [f"--n {n}"]
-    if index_mode == "eager":
-        bench_flags.append("--index-eager")
-    if verify:
-        bench_flags.append("--verify")
+    if profile:
+        bench_flags: list[str] = ["--profile"]
+    else:
+        bench_flags = [f"--n {n}"]
+        if index_mode == "eager":
+            bench_flags.append("--index-eager")
     repl = {
         "RUN_ID": run_id,
         "REGION": cfg["region"],
@@ -73,7 +75,7 @@ def _user_data(
 
 
 def _launch(
-    ec2, ssm, cfg: dict, run_id: str, scale_factor: int, index_mode: str, verify: bool, n: int
+    ec2, ssm, cfg: dict, run_id: str, scale_factor: int, index_mode: str, profile: bool, n: int
 ) -> str:
     # Launch the benchmark instance and return its id
     ami = ssm.get_parameter(Name=_SSM_AL2023)["Parameter"]["Value"]
@@ -82,7 +84,7 @@ def _launch(
         InstanceType=cfg["instance_type"],
         MinCount=1,
         MaxCount=1,
-        UserData=_user_data(cfg, run_id, scale_factor, index_mode, verify, n),
+        UserData=_user_data(cfg, run_id, scale_factor, index_mode, profile, n),
         InstanceInitiatedShutdownBehavior="terminate",
         IamInstanceProfile={"Name": cfg["instance_profile"]},
         BlockDeviceMappings=[
@@ -163,7 +165,7 @@ def _wait_for_success(s3, ec2, cfg: dict, run_id: str, instance_id: str) -> bool
 
 
 def _download(s3, cfg: dict, run_id: str) -> list[Path]:
-    # Download chart PNGs into assets/ and the log into tmp; skip _SUCCESS and progress markers
+    # Download the chart PNG / profile.txt into assets/ and the log into tmp, skipping markers
     prefix = f"{_RESULT_PREFIX}/{run_id}/"
     objs = s3.list_objects_v2(Bucket=cfg["result_bucket"], Prefix=prefix).get("Contents", [])
     paths: list[Path] = []
@@ -171,7 +173,8 @@ def _download(s3, cfg: dict, run_id: str) -> list[Path]:
         name = obj["Key"].rsplit("/", 1)[-1]
         if name in ("_SUCCESS", "progress.log"):
             continue
-        dest = _ASSETS_DIR if name.endswith(".png") else Path(tempfile.gettempdir())
+        keep = name.endswith(".png") or name == "profile.txt"
+        dest = _ASSETS_DIR if keep else Path(tempfile.gettempdir())
         dest.mkdir(parents=True, exist_ok=True)
         local = dest / name
         s3.download_file(cfg["result_bucket"], obj["Key"], str(local))
@@ -186,8 +189,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--scale-factor",
         type=int,
         choices=(1, 10),
-        required=True,
-        help="Scale factor to benchmark (1 or 10).",
+        help="Scale factor to benchmark (1 or 10). Required unless --profile is given.",
     )
     index_group = parser.add_mutually_exclusive_group()
     index_group.add_argument(
@@ -211,18 +213,16 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="index_mode",
         help="Always scan; no index is built.",
     )
-    parser.set_defaults(index_mode="auto")
     parser.add_argument(
         "--n",
         type=int,
-        default=3,
         metavar="N",
         help="Number of timed runs per query; reported time is the average (default 3).",
     )
     parser.add_argument(
-        "--verify",
+        "--profile",
         action="store_true",
-        help="Run the SedonaDB output check per query (only valid with --scale-factor 1 --n 1).",
+        help="SF1 profiling mode (one run, per-stage time + memory + verify); takes no other flags.",
     )
     return parser
 
@@ -237,8 +237,17 @@ def main(argv: list[str] | None = None) -> int:
         The process exit code, 0 on success and 1 on failure.
     """
     args = _build_parser().parse_args(argv)
-    if args.verify and not (args.scale_factor == 1 and args.n == 1):
-        sys.exit("--verify is only allowed with --scale-factor 1 --n 1")
+    if args.profile:
+        if args.scale_factor is not None or args.index_mode is not None or args.n is not None:
+            sys.exit("--profile takes no other flags (it runs SF1, one run, with verification)")
+        scale_factor, index_mode, n = 1, "auto", 1
+    else:
+        if args.scale_factor is None:
+            sys.exit("pass --scale-factor {1,10}, or --profile")
+        scale_factor = args.scale_factor
+        index_mode = args.index_mode or "auto"
+        n = args.n if args.n is not None else 3
+
     cfg = load_config()
     region = cfg["region"]
     ec2 = boto3.client("ec2", region_name=region)
@@ -246,9 +255,7 @@ def main(argv: list[str] | None = None) -> int:
     ssm = boto3.client("ssm", region_name=region)
 
     run_id = uuid.uuid4().hex[:12]
-    instance_id = _launch(
-        ec2, ssm, cfg, run_id, args.scale_factor, args.index_mode, args.verify, args.n
-    )
+    instance_id = _launch(ec2, ssm, cfg, run_id, scale_factor, index_mode, args.profile, n)
     try:
         ok = _wait_for_success(s3, ec2, cfg, run_id, instance_id)
         paths = _download(s3, cfg, run_id)
@@ -256,13 +263,12 @@ def main(argv: list[str] | None = None) -> int:
         ec2.terminate_instances(InstanceIds=[instance_id])
         print(f"[ec2] terminated {instance_id}", flush=True)
 
-    if not ok or not any(p.suffix == ".png" for p in paths):
+    artifact = "profile.txt" if args.profile else ".png"
+    produced = [p for p in paths if p.name == artifact or p.suffix == artifact]
+    if not ok or not produced:
         logs = [p for p in paths if p.suffix == ".log"]
         print(f"[ec2] run failed; inspect {logs[0]}" if logs else "[ec2] run failed", flush=True)
         return 1
-
-    png = next(p for p in paths if p.suffix == ".png")
-    print(f"[ec2] chart saved to {png}", flush=True)
     return 0
 
 

@@ -21,9 +21,11 @@ launched for the benchmark which matches the published baseline hardware.
 The reported time is the average across all runs. Each subprocess has a **1200-second
 per-query timeout**, matching the published baseline timeout.
 
-**Output Verification:** Pass `--verify` to compare PyCanopy output against SedonaDB per
-query. Only allowed with `--scale-factor 1 --n 1` (SF10 results are too large to materialise
-and multi-run verify is redundant).
+**Profile mode:** `--profile` is a separate diagnostic mode (no other flags allowed). It runs
+SF1 once per query through an instrumented path, attributing time and memory to per-stage
+buckets (fetch / build / query / collect) and verifying each full result against the SedonaDB
+oracle. The summary is written to `assets/profile.txt`. SF1 only, since it materialises every
+result and runs the oracle.
 
 ## Run Benchmark
 
@@ -31,11 +33,12 @@ Requires AWS credentials with EC2 + S3 permissions. IAM setup and bucket configu
 in `config.yaml`.
 
 ```
-python -m bench.spatial_bench --scale-factor {1,10} [--index-eager|--index-auto|--index-none] [--n N] [--verify]
+python -m bench.spatial_bench --scale-factor {1,10} [--index-eager|--index-auto|--index-none] [--n N]
+python -m bench.spatial_bench --profile
 ```
 
-The launcher spins up an EC2 box, polls S3 for completion, downloads the chart PNG, and
-terminates the instance.
+The launcher spins up an EC2 box, polls S3 for completion, downloads the chart PNG (or
+`profile.txt`), and terminates the instance.
 
 ## Directory Layout
 
@@ -44,6 +47,7 @@ bench/spatial_bench/
 ├── __main__.py      # local EC2 launcher (spin up, poll, download chart, terminate)
 ├── _onbox.py        # on-box suite driver (called by bootstrap.sh, loops over queries)
 ├── _runner.py       # per-query subprocess entry point (isolated interpreter per query)
+├── _profile.py      # profile mode: per-stage timing + memory + verification -> profile.txt
 ├── utils.py         # measure_query, write_chart, verify_outputs, PUBLISHED baselines
 ├── sedona_sql.py    # SedonaDB SQL for each query (used by the oracle verifier)
 ├── config.yaml      # fixed infra config (bucket, instance type, repo branch)

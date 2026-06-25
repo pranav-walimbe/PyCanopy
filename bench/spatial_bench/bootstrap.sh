@@ -25,14 +25,14 @@ LOG=/var/log/pycanopy-bootstrap.log
 exec > >(tee -a "$LOG") 2>&1
 log() { echo "[bootstrap] $*"; }
 
-# Always ship the log and self-terminate, whether we succeed or fail.
+# Always ship the log and self-terminate, whether we succeed or fail
 cleanup() { aws s3 cp "$LOG" "${S3_BASE}/bootstrap.log" --region "$REGION" || true; shutdown -h now; }
 trap cleanup EXIT
 
-# Hard cap: terminate even if a step wedges.
+# Hard cap: terminate even if a step wedges
 ( sleep $((MAX_RUNTIME_MIN * 60)); log "watchdog timeout"; shutdown -h now ) &
 
-# Publish the log to S3 every 15s so the launcher can show live step progress.
+# Publish the log to S3 every 15s so the launcher can show live step progress
 ( while true; do
     aws s3 cp "$LOG" "${S3_BASE}/progress.log" --region "$REGION" >/dev/null 2>&1 || true
     sleep 15
@@ -59,6 +59,7 @@ git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" /opt/pycanopy
 cd /opt/pycanopy
 
 log "building PyCanopy (release)"
+
 # uv provisions Python and installs the bench group from the committed uv.lock.
 # --no-install-project skips an editable build during sync since maturin develop does it next.
 uv sync --no-install-project --group bench
@@ -75,8 +76,16 @@ export TMPDIR=/data/scratch
 export AWS_DEFAULT_REGION="$REGION"
 log "measuring sf${SCALE_FACTOR}"
 uv run python -m bench.spatial_bench._onbox --scale-factor "$SCALE_FACTOR" @@BENCH_FLAGS@@
+
+# Normal mode writes the chart PNG, profile mode writes profile.txt; upload whichever exists.
+# Plain [ -f ] && cp would return non-zero when absent and abort under set -e, so use if.
 OUT="spatialbench_sf${SCALE_FACTOR}@@OUT_SUFFIX@@.png"
-aws s3 cp "/opt/pycanopy/assets/$OUT" "${S3_BASE}/$OUT" --region "$REGION"
+if [ -f "/opt/pycanopy/assets/$OUT" ]; then
+  aws s3 cp "/opt/pycanopy/assets/$OUT" "${S3_BASE}/$OUT" --region "$REGION"
+fi
+if [ -f "/opt/pycanopy/assets/profile.txt" ]; then
+  aws s3 cp "/opt/pycanopy/assets/profile.txt" "${S3_BASE}/profile.txt" --region "$REGION"
+fi
 
 log "done"
 echo ok | aws s3 cp - "${S3_BASE}/_SUCCESS" --region "$REGION"

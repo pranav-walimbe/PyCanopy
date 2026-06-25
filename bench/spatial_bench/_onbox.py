@@ -11,6 +11,7 @@ import argparse
 import sys
 
 from bench.spatial_bench import queries as query_registry
+from bench.spatial_bench._profile import run_profile_suite
 from bench.spatial_bench.utils import run_suite
 
 _DATA_TEMPLATE = "s3://wherobots-examples/data/spatialbench/SpatialBench_sf{sf}"
@@ -28,7 +29,7 @@ def _build_parser() -> argparse.ArgumentParser:
     index_group.add_argument("--index-none", action="store_const", const="none", dest="index_mode")
     parser.set_defaults(index_mode="auto")
     parser.add_argument("--n", type=int, default=3, metavar="N")
-    parser.add_argument("--verify", action="store_true")
+    parser.add_argument("--profile", action="store_true")
     return parser
 
 
@@ -43,14 +44,10 @@ def main(argv: list[str] | None = None) -> int:
     """
     args = _build_parser().parse_args(argv)
     data_dir = _DATA_TEMPLATE.replace("{sf}", str(args.scale_factor))
-    run_suite(
-        query_registry.ALL,
-        data_dir,
-        args.scale_factor,
-        args.index_mode,
-        verify=args.verify,
-        runs=args.n,
-    )
+    if args.profile:
+        run_profile_suite(query_registry.ALL, data_dir, args.index_mode)
+    else:
+        run_suite(query_registry.ALL, data_dir, args.scale_factor, args.index_mode, runs=args.n)
     return 0
 
 

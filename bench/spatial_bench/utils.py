@@ -212,61 +212,21 @@ class SpatialBenchTables:
 _ORACLE_TABLES = ("trip", "zone", "building", "customer")
 
 
-def _strip_outer_order_by(sql: str) -> str:
-    # Drop the final top-level ORDER BY so the aggregate wrapper never sorts the full
-    # result. The scan skips string literals and -- comments and tracks paren depth, so an
-    # ORDER BY inside a subquery (q4's top-tips LIMIT) or the words inside a comment
-    # (q5's "ST_Collect_Agg (with _Agg suffix)") are left untouched.
-    lowered = sql.lower()
-    depth, i, n, cut = 0, 0, len(sql), None
-    while i < n:
-        c = sql[i]
-        if c == "'":
-            i += 1
-            while i < n and sql[i] != "'":
-                i += 1
-        elif c == "-" and i + 1 < n and sql[i + 1] == "-":
-            while i < n and sql[i] != "\n":
-                i += 1
-        elif c == "(":
-            depth += 1
-        elif c == ")":
-            depth -= 1
-        elif depth == 0 and lowered.startswith("order by", i):
-            cut = i
-            i += 8
-            continue
-        i += 1
-    return sql[:cut] if cut is not None else sql
-
-
-def _aggregate_sql(inner: str, value_cols: list[str]) -> str:
-    # Wrap a query so SedonaDB returns one row: COUNT(*) plus each value column's sum.
-    # Pushing the reduction into the engine means the full result never materialises, and
-    # since COUNT and SUM are order-independent the outer ORDER BY is stripped first.
-    body = _strip_outer_order_by(inner)
-    sums = "".join(f", SUM(CAST({c} AS DOUBLE)) AS {c}" for c in value_cols)
-    return f"SELECT COUNT(*) AS __h__{sums}\nFROM (\n{body}\n) __agg__"
-
-
-def oracle_summary(query_id: str, data_dir: str, value_cols: list[str]) -> tuple[int, dict]:
-    """Reduce query_id through SedonaDB to (row count, per-column float sums).
+def oracle_result(query_id: str, data_dir: str) -> pl.DataFrame:
+    """Run query_id through SedonaDB and return its full result.
 
     Args:
         query_id: Query id (e.g. "q1") indexing SEDONA_SQL.
         data_dir: ``s3://`` URI of the SpatialBench dataset root.
-        value_cols: SedonaDB result columns to sum (empty checks the row count only).
 
     Returns:
-        A (row count, {column: sum}) tuple summarizing the SedonaDB result.
+        The complete SedonaDB result as a Polars DataFrame.
     """
     sd = sedonadb.connect()
     for table in _ORACLE_TABLES:
         # SedonaDB reads the bare directory or file directly, with ST_GeomFromWKB in SQL
         sd.read_parquet(f"{data_dir.rstrip('/')}/{table}").to_view(table)
-    sql = _aggregate_sql(SEDONA_SQL[query_id], value_cols)
-    row = pl.from_arrow(sd.sql(sql).to_arrow_table())
-    return int(row["__h__"][0]), {c: row[c][0] for c in value_cols}
+    return pl.from_arrow(sd.sql(SEDONA_SQL[query_id]).to_arrow_table())
 
 
 # Output verification (PyCanopy result vs SedonaDB result)
@@ -282,15 +242,6 @@ def _as_polars(df) -> pl.DataFrame:
     return df if isinstance(df, pl.DataFrame) else pl.from_pandas(df)
 
 
-def _height_and_sums(df, value_cols) -> tuple[int, dict[str, float]]:
-    # Return (row count, Float64 column sums) in one bounded streaming pass
-    exprs = [pl.len().alias("__h__")]
-    exprs += [pl.col(c).cast(pl.Float64, strict=False).sum().alias(c) for c in value_cols]
-    lf = df if isinstance(df, pl.LazyFrame) else _as_polars(df).lazy()
-    row = lf.select(exprs).collect(engine="streaming")
-    return row["__h__"][0], {c: row[c][0] for c in value_cols}
-
-
 def verify_outputs(
     pc_df,
     query_id: str,
@@ -300,51 +251,75 @@ def verify_outputs(
     rel_tol: float = 1e-2,
     abs_tol: float = 1e-2,
 ) -> tuple[bool, str]:
-    """Sanity-check a PyCanopy result against the SedonaDB oracle.
+    """Compare a full PyCanopy result against the full SedonaDB oracle result.
 
-    Compares row count then each value column's float sum within tolerance. The oracle
-    reduces to the count and sums in SQL (one row back), and the PyCanopy side streams the
-    same aggregates, so neither full result ever materialises. Both checks are order-independent.
+    Both results are sorted by their compared columns and checked row for row, so the two
+    unordered outputs line up even when keys repeat (q12's k rows per trip).
 
     Args:
         pc_df: PyCanopy result (polars LazyFrame, polars DataFrame, or pandas DataFrame).
         query_id: Query id (e.g. "q1") indexing the SedonaDB oracle.
         data_dir: ``s3://`` URI of the SpatialBench dataset root.
-        keys: Key columns from the compare spec (accepted but not used in the check).
-        values: Column specs to sum-compare, each a name or (pc_col, sedona_col) pair.
-        rel_tol: Relative tolerance on each column sum.
-        abs_tol: Absolute tolerance on each column sum.
+        keys: Key columns compared exactly (same name on both sides).
+        values: Value column specs compared within tolerance, each a name or (pc_col, sedona_col) pair.
+        rel_tol: Relative tolerance on each value column.
+        abs_tol: Absolute tolerance on each value column.
 
     Returns:
-        A (passed, detail) tuple, where detail describes the match or the first mismatch.
+        A (passed, detail) tuple, where detail describes the match or the first failing check.
     """
     pairs = _pairs(values)
-    pc_h, pc_sums = _height_and_sums(pc_df, [a for a, _ in pairs])
-    sed_h, sed_sums = oracle_summary(query_id, data_dir, [b for _, b in pairs])
-    if pc_h != sed_h:
-        return False, f"row count pycanopy={pc_h} sedona={sed_h}"
+    key_cols = list(keys)
+    val_cols = [b for _, b in pairs]
 
-    for pc_col, sed_col in pairs:
-        a, b = pc_sums[pc_col], sed_sums[sed_col]
-        if abs(a - b) > abs_tol + rel_tol * abs(b):
-            return False, f"sum mismatch in {pc_col}: {a} vs {b}"
-    return True, f"{pc_h} rows match"
+    pc = pc_df.collect() if isinstance(pc_df, pl.LazyFrame) else _as_polars(pc_df)
+    pc = pc.select(key_cols + [a for a, _ in pairs]).rename({a: b for a, b in pairs})
+    oracle = oracle_result(query_id, data_dir).select(key_cols + val_cols)
+    casts = [pl.col(c).cast(pl.Float64) for c in val_cols]
+    pc = pc.with_columns(casts)
+    oracle = oracle.with_columns(casts)
+
+    if pc.height != oracle.height:
+        return False, f"row count pycanopy={pc.height} sedona={oracle.height}"
+
+    order = key_cols + val_cols
+    pc = pc.sort(order, nulls_last=True)
+    oracle = oracle.sort(order, nulls_last=True).rename({c: f"__o_{c}" for c in order})
+
+    # Side by side, the two sorted frames must agree row for row. Position alignment holds
+    # because both were sorted the same way, so any real difference falls out of step here.
+    checks = []
+    for c in key_cols:
+        a, b = pl.col(c), pl.col(f"__o_{c}")
+        checks.append((a == b).fill_null(False) | (a.is_null() & b.is_null()))
+    for c in val_cols:
+        a, b = pl.col(c), pl.col(f"__o_{c}")
+        near = a.is_not_null() & b.is_not_null() & ((a - b).abs() <= abs_tol + rel_tol * b.abs())
+        checks.append(near | (a.is_null() & b.is_null()))
+
+    bad = pl.concat([pc, oracle], how="horizontal").filter(~pl.all_horizontal(checks))
+    if bad.height:
+        return False, f"{bad.height} row(s) differ, first: {bad.row(0, named=True)}"
+    return True, f"{pc.height} rows match"
 
 
 # Measure + chart
 
 
-def _run_once(query, data_dir: str, index_mode: str, verify: bool) -> dict:
-    # Spawn one subprocess for query and parse its structured stdout into a result dict
-    cmd = [
-        sys.executable,
-        "-m",
-        "bench.spatial_bench._runner",
-        query.id,
-        data_dir,
-        index_mode,
-        *(["--verify"] if verify else []),
-    ]
+def spawn_query(query_id: str, data_dir: str, index_mode: str, *flags: str) -> dict:
+    """Run one query in an isolated subprocess and parse its structured stdout.
+
+    Args:
+        query_id: Query id (e.g. "q1").
+        data_dir: ``s3://`` URI of the SpatialBench dataset root.
+        index_mode: PyCanopy index build policy ("eager" / "none" / "auto").
+        flags: Extra flags forwarded to the runner (e.g. "--profile").
+
+    Returns:
+        A result dict: status "ok" carries time and the parsed kv lines, otherwise an error.
+    """
+    cmd = [sys.executable, "-m", "bench.spatial_bench._runner", query_id, data_dir, index_mode]
+    cmd.extend(flags)
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1200)
     except subprocess.TimeoutExpired:
@@ -358,37 +333,31 @@ def _run_once(query, data_dir: str, index_mode: str, verify: bool) -> dict:
 
     if "PYCANOPY_ERROR" in kv:
         return {"status": "error", "error": kv["PYCANOPY_ERROR"]}
-
     if "PYCANOPY_TIME" not in kv:
         snippet = proc.stderr[:400] if proc.stderr else "(no stderr)"
         return {"status": "error", "error": f"runner produced no timing output; stderr: {snippet}"}
+    return {"status": "ok", "time": float(kv["PYCANOPY_TIME"]), "kv": kv}
 
-    return {"status": "ok", "time": float(kv["PYCANOPY_TIME"]), "kv": kv if verify else {}}
 
-
-def measure_query(
-    query, data_dir: str, index_mode: str = "eager", verify: bool = False, runs: int = 3
-) -> dict:
+def measure_query(query, data_dir: str, index_mode: str = "eager", runs: int = 3) -> dict:
     """Spawn isolated subprocesses for one query and return the averaged timing.
 
-    Runs the query up to ``runs`` times in fresh subprocesses. Verification runs only on
-    the first attempt. Subsequent runs are skipped if the first fails or times out.
+    Runs the query up to ``runs`` times in fresh subprocesses, stopping early if the
+    first attempt fails or times out.
 
     Args:
         query: A query module exposing id, pycanopy(tables), and compare.
         data_dir: ``s3://`` URI of the SpatialBench dataset root.
         index_mode: PyCanopy index build policy ("eager" / "none" / "auto").
-        verify: Run the SedonaDB output check on the first run when True.
         runs: Number of timed repetitions to average (default 3).
 
     Returns:
-        A result dict with status, pycanopy_seconds (average), run_times, and match fields.
+        A result dict with status, pycanopy_seconds (average), and run_times.
     """
     times: list[float] = []
-    out: dict = {}
 
     for i in range(runs):
-        r = _run_once(query, data_dir, index_mode, verify=verify and i == 0)
+        r = spawn_query(query.id, data_dir, index_mode)
 
         if r["status"] == "timeout":
             print(f"[testcase] timeout {query.id} (run {i + 1})", flush=True)
@@ -404,27 +373,6 @@ def measure_query(
 
         times.append(r["time"])
 
-        if i == 0:
-            kv = r["kv"]
-            if verify:
-                if "PYCANOPY_MATCH" in kv:
-                    out["match"] = "match"
-                    out["match_detail"] = kv["PYCANOPY_MATCH"]
-                elif "PYCANOPY_MISMATCH" in kv:
-                    out["match"] = "MISMATCH"
-                    out["match_detail"] = kv["PYCANOPY_MISMATCH"]
-                    print(
-                        f"[verification] mismatch on testcase {query.id}: {kv['PYCANOPY_MISMATCH']}",
-                        flush=True,
-                    )
-                elif "PYCANOPY_VERIFY_ERROR" in kv:
-                    out["match"] = "skipped"
-                    out["match_detail"] = f"oracle error: {kv['PYCANOPY_VERIFY_ERROR']}"
-                    print(
-                        f"[verification] skipped {query.id}: {kv['PYCANOPY_VERIFY_ERROR']}",
-                        flush=True,
-                    )
-
     avg = sum(times) / len(times)
     print(
         f"[testcase] completed {query.id} using pycanopy in {avg:.2f}s"
@@ -435,7 +383,7 @@ def measure_query(
         ),
         flush=True,
     )
-    return {"status": "ok", "pycanopy_seconds": round(avg, 4), "run_times": times, **out}
+    return {"status": "ok", "pycanopy_seconds": round(avg, 4), "run_times": times}
 
 
 def _nice_cap(v: float) -> float:
@@ -609,7 +557,6 @@ def run_suite(
     scale_factor: float,
     index_mode: str = "eager",
     output: str | None = None,
-    verify: bool = False,
     runs: int = 3,
 ) -> Path:
     """Measure each query module and render the comparison chart, returning its path.
@@ -623,7 +570,7 @@ def run_suite(
         scale_factor: Scale factor, used for the chart label and output filename.
         index_mode: PyCanopy index build policy ("eager" / "none" / "auto").
         output: Explicit PNG path, or None for assets/spatialbench_sf{N}[_mode].png.
-        verify: Run the SedonaDB output check per query when True.
+        runs: Number of timed repetitions to average per query.
 
     Returns:
         The chart PNG path written.
@@ -631,9 +578,7 @@ def run_suite(
     _preflight_dns(data_dir)
     results = {"scale_factor": scale_factor, "index_mode": index_mode, "queries": {}}
     for query in query_modules:
-        results["queries"][query.id] = measure_query(
-            query, data_dir, index_mode, verify=verify, runs=runs
-        )
+        results["queries"][query.id] = measure_query(query, data_dir, index_mode, runs=runs)
     sf = int(scale_factor)
     suffix = "" if index_mode == "eager" else f"_{index_mode}"
     out_path = Path(output) if output else _ASSETS_DIR / f"spatialbench_sf{sf}{suffix}.png"
