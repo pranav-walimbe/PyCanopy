@@ -32,12 +32,16 @@ TABLES_NEEDED = {
 compare = {"keys": ["t_tripkey"], "values": [("distance_to_polygon", "distance_to_building")]}
 
 
+_SCRATCH: Path | None = None
+
+
 def _scratch_dir() -> Path:
-    """Return a disk-backed scratch directory for the out-of-core sink and sort spill."""
-    base = os.environ.get("PYCANOPY_SCRATCH") or tempfile.gettempdir()
-    out = Path(base) / "pc_q12"
-    out.mkdir(parents=True, exist_ok=True)
-    return out
+    # One unique temp dir per process so repeated benchmark runs never overwrite each other
+    global _SCRATCH
+    if _SCRATCH is None:
+        base = os.environ.get("PYCANOPY_SCRATCH") or tempfile.gettempdir()
+        _SCRATCH = Path(tempfile.mkdtemp(dir=base, prefix="pc_q12_"))
+    return _SCRATCH
 
 
 def pycanopy(tables) -> pl.LazyFrame:
