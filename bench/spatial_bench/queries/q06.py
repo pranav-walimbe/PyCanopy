@@ -24,8 +24,7 @@ _TRIP_COLS = ["t_pickuploc", "t_totalamount", "t_pickuptime", "t_dropofftime"]
 
 TABLES_NEEDED = {"zone": ["z_zonekey", "z_name", "z_boundary"], "trip": _TRIP_COLS}
 
-# avg_distance here is AVG(t_totalamount) on both sides; avg_duration (an interval in
-# SedonaDB) is left out of the value check.
+# avg_distance here is AVG(t_totalamount) on both sides
 compare = {"keys": ["z_zonekey"], "values": ["total_pickups", "avg_distance"]}
 
 

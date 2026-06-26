@@ -1,4 +1,5 @@
 use geo::{coord, Rect};
+use rayon::prelude::*;
 
 use crate::stats::types::{
     DatasetStats, Distribution, GeometryKind, SpatialHistogram, HISTOGRAM_RESOLUTION,
@@ -86,15 +87,24 @@ pub fn collect_polygons(
 }
 
 fn compute_extent(xs: &[f64], ys: &[f64]) -> Option<Rect<f64>> {
-    let (min_x, min_y, max_x, max_y) = xs.iter().zip(ys.iter()).fold(
+    // min/max reduce in parallel: order-independent, so the extent matches a serial fold
+    let init = || {
         (
             f64::INFINITY,
             f64::INFINITY,
             f64::NEG_INFINITY,
             f64::NEG_INFINITY,
-        ),
-        |(mn_x, mn_y, mx_x, mx_y), (&x, &y)| (mn_x.min(x), mn_y.min(y), mx_x.max(x), mx_y.max(y)),
-    );
+        )
+    };
+    let (min_x, min_y, max_x, max_y) = xs
+        .par_iter()
+        .zip(ys.par_iter())
+        .fold(init, |(mn_x, mn_y, mx_x, mx_y), (&x, &y)| {
+            (mn_x.min(x), mn_y.min(y), mx_x.max(x), mx_y.max(y))
+        })
+        .reduce(init, |a, b| {
+            (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))
+        });
     if min_x.is_finite() {
         Some(Rect::new(
             coord! { x: min_x, y: min_y },
@@ -183,27 +193,44 @@ fn build_polygon_centroid_histogram(
     let h = (extent.max().y - extent.min().y).max(f64::EPSILON);
     let cell_w = w / HISTOGRAM_RESOLUTION as f64;
     let cell_h = h / HISTOGRAM_RESOLUTION as f64;
-    let mut counts = vec![0u32; HISTOGRAM_RESOLUTION * HISTOGRAM_RESOLUTION];
     let n_polys = poly_offsets.len().saturating_sub(1);
-    for &ext_ring_i64 in poly_offsets.iter().take(n_polys) {
-        // Centroid from exterior ring only
-        let ext_ring = ext_ring_i64 as usize;
-        let start = ring_offsets[ext_ring] as usize;
-        let end = ring_offsets[ext_ring + 1] as usize;
-        if start >= end {
-            continue;
-        }
-        let count = (end - start) as f64;
-        let cx = xs[start..end].iter().sum::<f64>() / count;
-        let cy = ys[start..end].iter().sum::<f64>() / count;
-        let col = ((cx - extent.min().x) / cell_w)
-            .floor()
-            .clamp(0.0, (HISTOGRAM_RESOLUTION - 1) as f64) as usize;
-        let row = ((cy - extent.min().y) / cell_h)
-            .floor()
-            .clamp(0.0, (HISTOGRAM_RESOLUTION - 1) as f64) as usize;
-        counts[row * HISTOGRAM_RESOLUTION + col] += 1;
-    }
+    let cells = HISTOGRAM_RESOLUTION * HISTOGRAM_RESOLUTION;
+    // Bin each polygon's exterior-ring centroid in parallel, accumulating into per-thread
+    // histograms then summing them. Integer sums are order-independent, so counts are exact.
+    let counts = (0..n_polys)
+        .into_par_iter()
+        .fold(
+            || vec![0u32; cells],
+            |mut local, p| {
+                let ext_ring = poly_offsets[p] as usize;
+                let start = ring_offsets[ext_ring] as usize;
+                let end = ring_offsets[ext_ring + 1] as usize;
+                if start < end {
+                    let count = (end - start) as f64;
+                    let cx = xs[start..end].iter().sum::<f64>() / count;
+                    let cy = ys[start..end].iter().sum::<f64>() / count;
+                    let col = ((cx - extent.min().x) / cell_w)
+                        .floor()
+                        .clamp(0.0, (HISTOGRAM_RESOLUTION - 1) as f64)
+                        as usize;
+                    let row = ((cy - extent.min().y) / cell_h)
+                        .floor()
+                        .clamp(0.0, (HISTOGRAM_RESOLUTION - 1) as f64)
+                        as usize;
+                    local[row * HISTOGRAM_RESOLUTION + col] += 1;
+                }
+                local
+            },
+        )
+        .reduce(
+            || vec![0u32; cells],
+            |mut a, b| {
+                for (x, y) in a.iter_mut().zip(b.iter()) {
+                    *x += y;
+                }
+                a
+            },
+        );
     SpatialHistogram {
         counts,
         min_x: extent.min().x,

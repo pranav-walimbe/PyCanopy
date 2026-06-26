@@ -2,6 +2,7 @@
 //! Each function crosses the Python/Rust boundary once and loops via rayon.
 //! Returns Vec<u64> or Vec<(u64, u64)> to avoid per-element Python int allocation.
 
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 use rayon::prelude::*;
@@ -226,6 +227,175 @@ pub fn par_within_distance_to_polygons<I: SpatialIndex + Sync>(
         .collect()
 }
 
+/// Per-part exterior-ring MBR as `[min_x, min_y, max_x, max_y]`, one entry per part.
+/// The squared point-to-MBR distance lower-bounds the exact point-to-polygon distance.
+fn part_mbrs(xs: &[f64], ys: &[f64], ring_offsets: &[i64], poly_offsets: &[i64]) -> Vec<[f64; 4]> {
+    let n_parts = poly_offsets.len().saturating_sub(1);
+    let mut out = Vec::with_capacity(n_parts);
+    for &ext_ring_i64 in poly_offsets.iter().take(n_parts) {
+        let ext_ring = ext_ring_i64 as usize;
+        let start = ring_offsets[ext_ring] as usize;
+        let end = ring_offsets[ext_ring + 1] as usize;
+        if start >= end {
+            out.push([0.0, 0.0, 0.0, 0.0]);
+            continue;
+        }
+        let (mut mnx, mut mny, mut mxx, mut mxy) = (
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        );
+        for k in start..end {
+            mnx = mnx.min(xs[k]);
+            mny = mny.min(ys[k]);
+            mxx = mxx.max(xs[k]);
+            mxy = mxy.max(ys[k]);
+        }
+        out.push([mnx, mny, mxx, mxy]);
+    }
+    out
+}
+
+#[inline]
+fn point_box_dist2(px: f64, py: f64, b: &[f64; 4]) -> f64 {
+    // Squared distance from a point to an axis-aligned box, zero when the point is inside
+    let dx = (b[0] - px).max(0.0).max(px - b[2]);
+    let dy = (b[1] - py).max(0.0).max(py - b[3]);
+    dx * dx + dy * dy
+}
+
+/// k nearest single-part polygons for one query, refining candidates nearest-MBR-first and
+/// pruning the per-edge scan once k exact hits bound the search. Padded with `(u64::MAX, inf)`.
+#[allow(clippy::too_many_arguments)]
+fn knn_polys_pruned<I: SpatialIndex>(
+    index: &I,
+    qx: f64,
+    qy: f64,
+    fetch: usize,
+    k: usize,
+    xs: &[f64],
+    ys: &[f64],
+    ring_offsets: &[i64],
+    poly_offsets: &[i64],
+    bbox: &[[f64; 4]],
+) -> Vec<(u64, f64)> {
+    // Order candidates by MBR lower bound
+    let mut cands: Vec<(usize, f64)> = index
+        .nearest(qx, qy, fetch)
+        .into_iter()
+        .map(|ei| (ei, point_box_dist2(qx, qy, &bbox[ei])))
+        .collect();
+    cands.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+
+    let mut kept: Vec<(u64, f64)> = Vec::with_capacity(k + 1);
+    let mut kth_sq = f64::INFINITY;
+    for (ei, lb_sq) in cands {
+        if kept.len() == k && lb_sq >= kth_sq {
+            break;
+        }
+        let d = point_to_polygon_distance(qx, qy, xs, ys, ring_offsets, poly_offsets, ei);
+        let pos = kept.partition_point(|c| c.1 <= d);
+        kept.insert(pos, (ei as u64, d));
+        if kept.len() > k {
+            kept.pop();
+        }
+        if kept.len() == k {
+            kth_sq = kept[k - 1].1 * kept[k - 1].1;
+        }
+    }
+    kept.resize(k, (u64::MAX, f64::INFINITY));
+    kept
+}
+
+/// k nearest multi-part polygons for one query, reducing each polygon's parts to its nearest
+/// part before ranking. Exhaustive: with the part mapping the k-th distance is not a safe bound.
+#[allow(clippy::too_many_arguments)]
+fn knn_polys_multipart<I: SpatialIndex>(
+    index: &I,
+    qx: f64,
+    qy: f64,
+    fetch: usize,
+    k: usize,
+    xs: &[f64],
+    ys: &[f64],
+    ring_offsets: &[i64],
+    poly_offsets: &[i64],
+    part_poly: &[u32],
+) -> Vec<(u64, f64)> {
+    let mut cands: Vec<(u64, f64)> = index
+        .nearest(qx, qy, fetch)
+        .into_iter()
+        .map(|ei| {
+            let d = point_to_polygon_distance(qx, qy, xs, ys, ring_offsets, poly_offsets, ei);
+            (part_poly[ei] as u64, d)
+        })
+        .collect();
+    cands.sort_unstable_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then(a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal))
+    });
+    cands.dedup_by_key(|c| c.0);
+    cands.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+    cands.truncate(k);
+    cands.resize(k, (u64::MAX, f64::INFINITY));
+    cands
+}
+
+/// Interleave two 16-bit coordinates into a 32-bit Morton (Z-order) code
+fn morton_encode(xi: u32, yi: u32) -> u32 {
+    fn spread(mut v: u32) -> u32 {
+        v &= 0xffff;
+        v = (v | (v << 8)) & 0x00ff_00ff;
+        v = (v | (v << 4)) & 0x0f0f_0f0f;
+        v = (v | (v << 2)) & 0x3333_3333;
+        (v | (v << 1)) & 0x5555_5555
+    }
+    spread(xi) | (spread(yi) << 1)
+}
+
+/// Argsort of the query points by Morton (Z-order) code, normalised to 16 bits per axis, so
+/// neighbouring probes share R-tree paths. Identity order for small inputs that would not pay.
+fn morton_order(qxs: &[f64], qys: &[f64]) -> Vec<u32> {
+    let n = qxs.len();
+    let mut order: Vec<u32> = (0..n as u32).collect();
+    if n < 1024 {
+        return order;
+    }
+    let (mut minx, mut miny, mut maxx, mut maxy) = (
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    );
+    for (&x, &y) in qxs.iter().zip(qys.iter()) {
+        minx = minx.min(x);
+        miny = miny.min(y);
+        maxx = maxx.max(x);
+        maxy = maxy.max(y);
+    }
+    let sx = if maxx > minx {
+        65535.0 / (maxx - minx)
+    } else {
+        0.0
+    };
+    let sy = if maxy > miny {
+        65535.0 / (maxy - miny)
+    } else {
+        0.0
+    };
+    let keys: Vec<u32> = (0..n)
+        .into_par_iter()
+        .map(|i| {
+            let xi = ((qxs[i] - minx) * sx) as u32;
+            let yi = ((qys[i] - miny) * sy) as u32;
+            morton_encode(xi, yi)
+        })
+        .collect();
+    order.par_sort_unstable_by_key(|&i| keys[i as usize]);
+    order
+}
+
 /// For each query point, the k nearest Engine polygons by exact point-to-polygon distance.
 /// The MBR index over-samples candidates because MBR-nearest only approximates polygon
 /// distance. The candidates are then refined exactly. (indices, distances) in n_queries*k
@@ -243,53 +413,73 @@ pub fn par_knn_to_polygons<I: SpatialIndex + Sync>(
     n_parts: usize,
     part_poly: Option<&[u32]>,
 ) -> (Vec<u64>, Vec<f64>) {
+    let n = qxs.len();
     // Over-sample MBR-nearest candidates: an MBR can be nearer than its polygon, so
     // fetch a multiple of k (capped at the part count) before exact refinement.
     let fetch = (k.saturating_mul(4)).clamp(k, n_parts.max(k));
-    qxs.par_iter()
-        .zip(qys.par_iter())
-        .flat_map_iter(|(&qx, &qy)| {
-            let mut cands: Vec<(u64, f64)> = index
-                .nearest(qx, qy, fetch)
-                .into_iter()
-                .map(|ei| {
-                    let d =
-                        point_to_polygon_distance(qx, qy, xs, ys, ring_offsets, poly_offsets, ei);
-                    let id = part_poly.map_or(ei as u64, |pp| pp[ei] as u64);
-                    (id, d)
-                })
-                .collect();
-            // Reduce parts of one polygon to its nearest part before ranking by distance
-            if part_poly.is_some() {
-                cands.sort_unstable_by(|a, b| {
-                    a.0.cmp(&b.0)
-                        .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-                });
-                cands.dedup_by_key(|c| c.0);
-            }
-            cands.sort_unstable_by(|a, b| {
-                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
-            });
-            cands.truncate(k);
-            cands.resize(k, (u64::MAX, f64::INFINITY));
+    // Only the single-part path uses the MBR table, so build it only then
+    let bbox = match part_poly {
+        Some(_) => Vec::new(),
+        None => part_mbrs(xs, ys, ring_offsets, poly_offsets),
+    };
+
+    // Probe in Morton order so neighbouring queries share R-tree paths and reuse warm cache.
+    // rayon's collect preserves order, so block `rank` holds the results for query `order[rank]`.
+    let order = morton_order(qxs, qys);
+    let ranked: Vec<(u64, f64)> = order
+        .par_iter()
+        .flat_map_iter(|&qi| {
+            let qi = qi as usize;
+            let (qx, qy) = (qxs[qi], qys[qi]);
+            let cands = match part_poly {
+                Some(pp) => knn_polys_multipart(
+                    index,
+                    qx,
+                    qy,
+                    fetch,
+                    k,
+                    xs,
+                    ys,
+                    ring_offsets,
+                    poly_offsets,
+                    pp,
+                ),
+                None => knn_polys_pruned(
+                    index,
+                    qx,
+                    qy,
+                    fetch,
+                    k,
+                    xs,
+                    ys,
+                    ring_offsets,
+                    poly_offsets,
+                    &bbox,
+                ),
+            };
             cands.into_iter()
         })
-        .fold(
-            || (Vec::new(), Vec::new()),
-            |mut acc, (i, d)| {
-                acc.0.push(i);
-                acc.1.push(d);
-                acc
-            },
-        )
-        .reduce(
-            || (Vec::new(), Vec::new()),
-            |mut a, b| {
-                a.0.extend(b.0);
-                a.1.extend(b.1);
-                a
-            },
-        )
+        .collect();
+
+    // Invert the permutation, then gather each query's k-block into its original position.
+    // Output chunks are disjoint, so the scatter parallelises without unsafe.
+    let mut inv = vec![0u32; n];
+    for (rank, &qi) in order.iter().enumerate() {
+        inv[qi as usize] = rank as u32;
+    }
+    let mut idx = vec![0u64; n * k];
+    let mut dist = vec![0f64; n * k];
+    idx.par_chunks_mut(k)
+        .zip(dist.par_chunks_mut(k))
+        .enumerate()
+        .for_each(|(qi, (ic, dc))| {
+            let base = inv[qi] as usize * k;
+            for j in 0..k {
+                ic[j] = ranked[base + j].0;
+                dc[j] = ranked[base + j].1;
+            }
+        });
+    (idx, dist)
 }
 
 /// Self-join over Engine polygons. Unordered pairs (i, j) with i < j whose boundaries
@@ -397,4 +587,95 @@ pub fn par_bbox_filter(
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index::rtree::PackedRTree;
+
+    // A grid of g*g unit squares spaced 2 apart, as flat single-part polygon ring arrays
+    fn grid_squares(g: usize) -> (Vec<f64>, Vec<f64>, Vec<i64>, Vec<i64>) {
+        let n = g * g;
+        let mut xs = Vec::with_capacity(n * 5);
+        let mut ys = Vec::with_capacity(n * 5);
+        let mut ring_offsets = Vec::with_capacity(n + 1);
+        let mut poly_offsets = Vec::with_capacity(n + 1);
+        for p in 0..n {
+            let (cx, cy) = ((p % g) as f64 * 2.0, (p / g) as f64 * 2.0);
+            ring_offsets.push((p * 5) as i64);
+            poly_offsets.push(p as i64);
+            for &(dx, dy) in &[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)] {
+                xs.push(cx + dx);
+                ys.push(cy + dy);
+            }
+        }
+        ring_offsets.push((n * 5) as i64);
+        poly_offsets.push(n as i64);
+        (xs, ys, ring_offsets, poly_offsets)
+    }
+
+    #[test]
+    fn morton_reordered_knn_preserves_per_query_blocks() {
+        // Enough queries (>=1024) to exercise the Morton reorder and gather paths
+        let g = 12;
+        let (xs, ys, ring_offsets, poly_offsets) = grid_squares(g);
+        let n_polys = poly_offsets.len() - 1;
+        let index = PackedRTree::build_polygons(&xs, &ys, &ring_offsets, &poly_offsets);
+
+        let n = 1500;
+        let span = (g as f64) * 2.0;
+        let mut state = 0x2545f4914f6cdd1du64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let qxs: Vec<f64> = (0..n).map(|_| next() * span).collect();
+        let qys: Vec<f64> = (0..n).map(|_| next() * span).collect();
+
+        let k = 3;
+        let (idx, dist) = par_knn_to_polygons(
+            &index,
+            &qxs,
+            &qys,
+            &xs,
+            &ys,
+            &ring_offsets,
+            &poly_offsets,
+            k,
+            n_polys,
+            None,
+        );
+        assert_eq!(idx.len(), n * k);
+
+        for q in 0..n {
+            // Independent brute-force k nearest polygon distances for this query
+            let mut all: Vec<f64> = (0..n_polys)
+                .map(|p| {
+                    point_to_polygon_distance(
+                        qxs[q],
+                        qys[q],
+                        &xs,
+                        &ys,
+                        &ring_offsets,
+                        &poly_offsets,
+                        p,
+                    )
+                })
+                .collect();
+            all.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+            let mut got: Vec<f64> = dist[q * k..q * k + k].to_vec();
+            got.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+            for j in 0..k {
+                assert!(
+                    (got[j] - all[j]).abs() < 1e-9,
+                    "query {q} neighbour {j}: kernel {} vs brute {}",
+                    got[j],
+                    all[j]
+                );
+            }
+        }
+    }
 }

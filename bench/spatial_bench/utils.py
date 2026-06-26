@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import math
-import os
-import socket
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlparse
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -535,22 +532,6 @@ def write_chart(results: dict, out_path: Path) -> None:
     plt.close(fig)
 
 
-def _preflight_dns(data_dir: str) -> None:
-    # Resolve S3 hostnames before the first query timer starts
-    parsed = urlparse(data_dir)
-    if parsed.scheme != "s3":
-        raise ValueError(f"data_dir must be an s3:// URI, got: {data_dir!r}")
-    region = os.environ.get("AWS_DEFAULT_REGION", "us-west-2")
-    for host in (
-        f"{parsed.netloc}.s3.{region}.amazonaws.com",
-        f"s3.{region}.amazonaws.com",
-    ):
-        try:
-            socket.getaddrinfo(host, 443)
-        except OSError:
-            pass
-
-
 def run_suite(
     query_modules: list,
     data_dir: str,
@@ -561,8 +542,8 @@ def run_suite(
 ) -> Path:
     """Measure each query module and render the comparison chart, returning its path.
 
-    Resolves S3 DNS before the first query timer starts, then loops measure_query over
-    each module and writes the comparison chart for the given scale and index mode.
+    Loops measure_query over each module and writes the comparison chart for the
+    given scale and index mode.
 
     Args:
         query_modules: Query modules to run, each exposing id, pycanopy, and compare.
@@ -575,7 +556,6 @@ def run_suite(
     Returns:
         The chart PNG path written.
     """
-    _preflight_dns(data_dir)
     results = {"scale_factor": scale_factor, "index_mode": index_mode, "queries": {}}
     for query in query_modules:
         results["queries"][query.id] = measure_query(query, data_dir, index_mode, runs=runs)

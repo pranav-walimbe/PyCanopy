@@ -17,7 +17,6 @@ from pathlib import Path
 from bench.spatial_bench.utils import (
     _ASSETS_DIR,
     SpatialBenchTables,
-    _preflight_dns,
     spawn_query,
 )
 
@@ -273,7 +272,6 @@ def run_profile_suite(query_modules: list, data_dir: str, index_mode: str = "aut
     Returns:
         The profile.txt path written under assets/.
     """
-    _preflight_dns(data_dir)
     results = {query.id: profile_query(query, data_dir, index_mode) for query in query_modules}
     path = _ASSETS_DIR / "profile.txt"
     write_profile(results, index_mode, path)

@@ -4,13 +4,7 @@ PyCanopy: a point-to-polygon kNN join of trip pickups against building footprint
 The result is k rows per trip, larger than RAM at SF10, so it is produced out of core.
 The streamed join is exposed as a native Polars source (lazy_source), so the join,
 the distance sort and the Parquet sink fuse into one Polars streaming pipeline that
-spills to disk under a memory budget. Nothing the size of the full join is held in RAM
-or written as an intermediate. A terminal select is pushed into the join so only the
-output columns are gathered.
-
-The scratch directory must be on real disk. On the benchmark box /tmp is tmpfs (RAM),
-so PYCANOPY_SCRATCH (and POLARS_TEMP_DIR for the sort spill) are pointed at the data
-volume in bootstrap.sh. The fallback is the system temp dir for local runs.
+spills to disk under a memory budget.
 """
 
 from __future__ import annotations
