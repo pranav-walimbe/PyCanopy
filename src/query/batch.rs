@@ -482,6 +482,87 @@ pub fn par_knn_to_polygons<I: SpatialIndex + Sync>(
     (idx, dist)
 }
 
+/// Like `par_knn_to_polygons` but returns all valid pairs globally sorted by
+/// (distance ASC, target_idx ASC), matching `ORDER BY distance_to_building, b_buildingkey`.
+///
+/// Returns `(query_indices, target_indices, distances)` as three flat Vecs with no padding.
+/// The full result is built in RAM and sorted with rayon before returning.
+#[allow(clippy::too_many_arguments)]
+pub fn par_knn_to_polygons_sorted<I: SpatialIndex + Sync>(
+    index: &I,
+    qxs: &[f64],
+    qys: &[f64],
+    xs: &[f64],
+    ys: &[f64],
+    ring_offsets: &[i64],
+    poly_offsets: &[i64],
+    k: usize,
+    n_parts: usize,
+    part_poly: Option<&[u32]>,
+) -> (Vec<u64>, Vec<u64>, Vec<f64>) {
+    let fetch = (k.saturating_mul(4)).clamp(k, n_parts.max(k));
+    let bbox = match part_poly {
+        Some(_) => Vec::new(),
+        None => part_mbrs(xs, ys, ring_offsets, poly_offsets),
+    };
+    let order = morton_order(qxs, qys);
+
+    // Collect (query_idx, target_idx, distance) triples, skipping padding slots
+    let mut triples: Vec<(u64, u64, f64)> = order
+        .par_iter()
+        .flat_map_iter(|&qi| {
+            let qi_usize = qi as usize;
+            let (qx, qy) = (qxs[qi_usize], qys[qi_usize]);
+            let cands = match part_poly {
+                Some(pp) => knn_polys_multipart(
+                    index,
+                    qx,
+                    qy,
+                    fetch,
+                    k,
+                    xs,
+                    ys,
+                    ring_offsets,
+                    poly_offsets,
+                    pp,
+                ),
+                None => knn_polys_pruned(
+                    index,
+                    qx,
+                    qy,
+                    fetch,
+                    k,
+                    xs,
+                    ys,
+                    ring_offsets,
+                    poly_offsets,
+                    &bbox,
+                ),
+            };
+            cands
+                .into_iter()
+                .filter(|(t_idx, _)| *t_idx != u64::MAX)
+                .map(move |(t_idx, dist)| (qi as u64, t_idx, dist))
+        })
+        .collect();
+
+    // Global sort: distance first, target index as tiebreaker
+    triples.par_sort_unstable_by(|a, b| {
+        a.2.partial_cmp(&b.2).unwrap_or(Ordering::Equal).then(a.1.cmp(&b.1))
+    });
+
+    let n = triples.len();
+    let mut q_idx = Vec::with_capacity(n);
+    let mut t_idx = Vec::with_capacity(n);
+    let mut dists = Vec::with_capacity(n);
+    for (q, t, d) in triples {
+        q_idx.push(q);
+        t_idx.push(t);
+        dists.push(d);
+    }
+    (q_idx, t_idx, dists)
+}
+
 /// Self-join over Engine polygons. Unordered pairs (i, j) with i < j whose boundaries
 /// intersect. MBR candidates refined by an exact polygon-polygon test.
 pub fn par_polygon_intersects_join<I: SpatialIndex + Sync>(

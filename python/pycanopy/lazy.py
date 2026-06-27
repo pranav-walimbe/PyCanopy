@@ -333,6 +333,7 @@ class SpatialLazyFrame:
         x_col: str,
         y_col: str,
         k: int,
+        sorted_output: bool = False,
     ) -> SpatialLazyFrame:
         """Spatial join: for each point in query_df find its k nearest Engine polygons.
 
@@ -344,13 +345,17 @@ class SpatialLazyFrame:
             x_col: Column in query_df holding x coordinates.
             y_col: Column in query_df holding y coordinates.
             k: Number of nearest polygons per query point.
+            sorted_output: If True, all pairs are sorted by (distance_to_polygon ASC,
+                target_idx ASC) inside Rust via rayon before returning. The full result
+                materialises in RAM, so morsel streaming is bypassed. Matches
+                ORDER BY distance_to_building, b_buildingkey without a Polars sort step.
 
         Returns:
             New SpatialLazyFrame with the polygon kNN join node appended.
         """
         return SpatialLazyFrame(
             self._sf,
-            [*self._plan, PolygonKnnJoinNode(query_df, x_col, y_col, k)],
+            [*self._plan, PolygonKnnJoinNode(query_df, x_col, y_col, k, sorted_output=sorted_output)],
         )
 
     def points_within_distance_of_polygon(self, polygon, distance: float) -> SpatialLazyFrame:

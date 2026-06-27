@@ -1,10 +1,9 @@
 """Q12: The 5 nearest buildings to each trip pickup location.
 
 PyCanopy: a point-to-polygon kNN join of trip pickups against building footprints.
-The result is k rows per trip, larger than RAM at SF10, so it is produced out of core.
-The streamed join is exposed as a native Polars source (lazy_source), so the join,
-the distance sort and the Parquet sink fuse into one Polars streaming pipeline that
-spills to disk under a memory budget.
+sorted_output=True runs the kNN on all query points in one Rust call and sorts the pairs
+by (distance ASC, target_idx ASC) inside Rust via rayon before returning. No Polars
+streaming sort, no EBS spill. The result is written to Parquet and scanned lazily.
 """
 
 from __future__ import annotations
@@ -45,7 +44,7 @@ def _scratch_dir() -> Path:
 
 
 def pycanopy(tables) -> pl.LazyFrame:
-    """Sink the sorted kNN join out of core, return a lazy scan of the result.
+    """Run the kNN join with Rust-side sort, sink to Parquet, return a lazy scan.
 
     Args:
         tables: SpatialBench table accessor providing the trip and building tables.
@@ -65,10 +64,9 @@ def pycanopy(tables) -> pl.LazyFrame:
     out_path = _scratch_dir() / "sorted.parquet"
     (
         sf.lazy()
-        .polygon_knn_join(query_df, "qx", "qy", k=K)
+        .polygon_knn_join(query_df, "qx", "qy", k=K, sorted_output=True)
         .select(["t_tripkey", "b_buildingkey", "distance_to_polygon"])
-        .lazy_source()
-        .sort(["distance_to_polygon", "b_buildingkey"])
-        .sink_parquet(out_path)
+        .collect()
+        .write_parquet(out_path)
     )
     return pl.scan_parquet(out_path)

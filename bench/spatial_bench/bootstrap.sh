@@ -88,4 +88,5 @@ if [ -f "/opt/pycanopy/assets/profile.txt" ]; then
 fi
 
 log "done"
+aws s3 cp "$LOG" "${S3_BASE}/progress.log" --region "$REGION" || true
 echo ok | aws s3 cp - "${S3_BASE}/_SUCCESS" --region "$REGION"

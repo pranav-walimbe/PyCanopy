@@ -27,7 +27,8 @@ use planner::{
 };
 use query::{
     batch::{
-        par_bbox_filter, par_contains, par_knn, par_knn_to_polygons, par_knn_with_delta,
+        par_bbox_filter, par_contains, par_knn, par_knn_to_polygons, par_knn_to_polygons_sorted,
+        par_knn_with_delta,
         par_points_within_distance_of_polygon, par_polygon_intersects_join, par_within_distance,
         par_within_distance_flipped, par_within_distance_to_polygons,
     },
@@ -1270,6 +1271,86 @@ impl Engine {
             ),
         };
         Ok((PyArray1::from_vec(py, idx), PyArray1::from_vec(py, dist)))
+    }
+
+    /// Like `batch_knn_to_polygons` but returns all valid pairs globally sorted by
+    /// (distance ASC, target_idx ASC). No per-query blocks, no padding slots.
+    ///
+    /// Returns `(query_indices, target_indices, distances)` as three flat arrays. The sort
+    /// happens inside Rust via rayon, so no Polars streaming sort or EBS spill is needed.
+    /// Engine must be a polygon dataset.
+    #[allow(clippy::type_complexity)]
+    fn batch_knn_to_polygons_sorted<'py>(
+        &mut self,
+        py: Python<'py>,
+        query_xs: PyReadonlyArray1<f64>,
+        query_ys: PyReadonlyArray1<f64>,
+        k: usize,
+    ) -> PyResult<(
+        Bound<'py, PyArray1<u64>>,
+        Bound<'py, PyArray1<u64>>,
+        Bound<'py, PyArray1<f64>>,
+    )> {
+        let qxs = query_xs
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("query_xs must be a contiguous float64 array"))?;
+        let qys = query_ys
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("query_ys must be a contiguous float64 array"))?;
+        if qxs.len() != qys.len() {
+            return Err(PyValueError::new_err(
+                "query_xs and query_ys must have the same length",
+            ));
+        }
+        if self.ring_offsets.is_none() {
+            return Err(PyValueError::new_err(
+                "batch_knn_to_polygons_sorted requires a polygon dataset",
+            ));
+        }
+        let kind = self.plan_index_kind(
+            &Query::Knn {
+                point: Point::new(0.0, 0.0),
+                k,
+            },
+            qxs.len(),
+            IndexKind::RTree,
+        );
+        self.build_index_if_needed(kind);
+        let ring_off = self.ring_offsets.as_deref().unwrap();
+        let poly_off = self.poly_offsets.as_deref().unwrap();
+        let n_parts = poly_off.len().saturating_sub(1);
+        let part_poly = self.part_poly.as_deref();
+        let (q_idx, t_idx, dist) = match kind {
+            IndexKind::BruteForce => par_knn_to_polygons_sorted(
+                self.brute.as_ref().unwrap(),
+                qxs,
+                qys,
+                &self.xs,
+                &self.ys,
+                ring_off,
+                poly_off,
+                k,
+                n_parts,
+                part_poly,
+            ),
+            _ => par_knn_to_polygons_sorted(
+                self.rtree.as_ref().unwrap(),
+                qxs,
+                qys,
+                &self.xs,
+                &self.ys,
+                ring_off,
+                poly_off,
+                k,
+                n_parts,
+                part_poly,
+            ),
+        };
+        Ok((
+            PyArray1::from_vec(py, q_idx),
+            PyArray1::from_vec(py, t_idx),
+            PyArray1::from_vec(py, dist),
+        ))
     }
 
     /// Self-join: unordered pairs (i, j) with i < j of Engine polygons that intersect.

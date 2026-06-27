@@ -206,6 +206,8 @@ class SpatialExecutor:
         if has_joins:
             morsel = batch_size if batch_size is not None else MORSEL_ROWS
             join_node = next(n for n in plan if isinstance(n, _JOIN_TYPES))
+            if isinstance(join_node, PolygonKnnJoinNode) and join_node.sorted_output:
+                return self._execute_polygon_knn_sorted(plan, sf)
             if join_node.query_df.height > morsel:
                 frames = self._stream_join_frames(plan, sf, morsel)
                 return pl.concat(frames, how="vertical", rechunk=False)
@@ -529,3 +531,35 @@ class SpatialExecutor:
         if joined.width == 0:
             return pl.DataFrame([dist_series]).lazy()
         return joined.with_columns(dist_series).lazy()
+
+    def _execute_polygon_knn_sorted(self, plan: Plan, sf) -> pl.DataFrame:
+        # Full-probe path for sorted_output=True: runs all queries in one Rust call,
+        # gets back globally sorted pairs, assembles join, applies post-join nodes.
+        projection, body = self._extract_projection(plan)
+        join_pos = next(i for i, n in enumerate(body) if isinstance(n, _JOIN_TYPES))
+        node = body[join_pos]
+        post_nodes = body[join_pos + 1 :]
+
+        query_xs = node.query_df[node.x_col].to_numpy()
+        query_ys = node.query_df[node.y_col].to_numpy()
+
+        q_indices, t_indices, dists = sf.engine.batch_knn_to_polygons_sorted(
+            query_xs, query_ys, node.k
+        )
+        q_idx = pl.Series("", q_indices.astype(np.uint32))
+        t_idx = pl.Series("", t_indices.astype(np.uint32))
+
+        joined = self._assemble_join(node, sf, q_idx, t_idx)
+        dist_series = pl.Series("distance_to_polygon", dists)
+        if joined.width == 0:
+            df = pl.DataFrame([dist_series])
+        else:
+            df = joined.with_columns(dist_series)
+
+        lf = df.lazy()
+        for post in post_nodes:
+            lf = self._emit_node(post, sf, lf, PluginPath.EXPR)
+        df = lf.collect()
+        if projection is not None:
+            df = df.select(list(projection))
+        return df
