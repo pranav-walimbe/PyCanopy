@@ -6,6 +6,7 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 use rayon::prelude::*;
+use rdst::{RadixKey, RadixSort};
 
 use crate::index::kdtree::PackedKdTree;
 use crate::index::SpatialIndex;
@@ -482,6 +483,28 @@ pub fn par_knn_to_polygons<I: SpatialIndex + Sync>(
     (idx, dist)
 }
 
+// dist_bits = f64::to_bits(): non-negative floats sort identically as u64.
+// LSD levels 0-7 = target_idx (secondary key), 8-15 = dist_bits (primary key).
+#[derive(Clone, Copy)]
+struct KnnTriple {
+    dist_bits: u64,
+    target_idx: u64,
+    query_idx: u64,
+}
+
+impl RadixKey for KnnTriple {
+    const LEVELS: usize = 16;
+
+    #[inline]
+    fn get_level(&self, level: usize) -> u8 {
+        if level < 8 {
+            (self.target_idx >> (level * 8)) as u8
+        } else {
+            (self.dist_bits >> ((level - 8) * 8)) as u8
+        }
+    }
+}
+
 /// Like `par_knn_to_polygons` but returns all valid pairs globally sorted by
 /// (distance ASC, target_idx ASC), matching `ORDER BY distance_to_building, b_buildingkey`.
 ///
@@ -507,8 +530,7 @@ pub fn par_knn_to_polygons_sorted<I: SpatialIndex + Sync>(
     };
     let order = morton_order(qxs, qys);
 
-    // Collect (query_idx, target_idx, distance) triples, skipping padding slots
-    let mut triples: Vec<(u64, u64, f64)> = order
+    let mut triples: Vec<KnnTriple> = order
         .par_iter()
         .flat_map_iter(|&qi| {
             let qi_usize = qi as usize;
@@ -542,25 +564,24 @@ pub fn par_knn_to_polygons_sorted<I: SpatialIndex + Sync>(
             cands
                 .into_iter()
                 .filter(|(t_idx, _)| *t_idx != u64::MAX)
-                .map(move |(t_idx, dist)| (qi as u64, t_idx, dist))
+                .map(move |(t_idx, dist)| KnnTriple {
+                    dist_bits: dist.to_bits(),
+                    target_idx: t_idx,
+                    query_idx: qi as u64,
+                })
         })
         .collect();
 
-    // Global sort: distance first, target index as tiebreaker
-    triples.par_sort_unstable_by(|a, b| {
-        a.2.partial_cmp(&b.2)
-            .unwrap_or(Ordering::Equal)
-            .then(a.1.cmp(&b.1))
-    });
+    triples.radix_sort_unstable();
 
     let n = triples.len();
     let mut q_idx = Vec::with_capacity(n);
     let mut t_idx = Vec::with_capacity(n);
     let mut dists = Vec::with_capacity(n);
-    for (q, t, d) in triples {
-        q_idx.push(q);
-        t_idx.push(t);
-        dists.push(d);
+    for triple in triples {
+        q_idx.push(triple.query_idx);
+        t_idx.push(triple.target_idx);
+        dists.push(f64::from_bits(triple.dist_bits));
     }
     (q_idx, t_idx, dists)
 }

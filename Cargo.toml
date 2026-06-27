@@ -13,6 +13,7 @@ numpy = "0.23"
 geo = "0.31"
 geo-index = "0.3"
 rayon = "1"
+rdst = "0.20"
 thiserror = "2"
 ordered-float = "4"
 
