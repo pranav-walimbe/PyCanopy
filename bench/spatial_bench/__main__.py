@@ -102,6 +102,7 @@ def _launch(
         MaxCount=1,
         UserData=_user_data(cfg, run_id, scale_factor, index_mode, profile, n, query_ids),
         InstanceInitiatedShutdownBehavior="terminate",
+        Placement={"Tenancy": "dedicated"},
         IamInstanceProfile={"Name": cfg["instance_profile"]},
         BlockDeviceMappings=[
             {
