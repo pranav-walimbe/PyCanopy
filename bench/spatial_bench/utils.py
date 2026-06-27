@@ -406,6 +406,47 @@ def _pct(values: list[float], p: float) -> float:
     return s[lo] + (s[hi] - s[lo]) * (k - lo)
 
 
+def write_results_txt(results: dict, out_path: Path) -> None:
+    """Write a plain-text results table alongside the chart PNG.
+
+    Rows are sorted by query id. Each row shows the averaged PyCanopy time and, when
+    more than one run was recorded, the individual run times in parentheses.
+
+    Args:
+        results: Measured results dict (scale_factor, index_mode, per-query timings).
+        out_path: Destination text file path.
+    """
+    sf = int(results["scale_factor"])
+    mode = results["index_mode"]
+    qs = results["queries"]
+    qids = sorted(qs, key=lambda q: int(q[1:]))
+
+    lines = [f"SpatialBench SF{sf}  index mode: {mode}", ""]
+    header = f"{'query':<8}  {'avg (s)':>10}  runs (s)"
+    lines.append(header)
+    lines.append("-" * len(header))
+
+    for qid in qids:
+        q = qs[qid]
+        status = q.get("status", "error")
+        if status == "timeout":
+            lines.append(f"{qid:<8}  {'TIMEOUT':>10}")
+        elif status != "ok" or q.get("pycanopy_seconds") is None:
+            lines.append(f"{qid:<8}  {'ERROR':>10}")
+        else:
+            avg = q["pycanopy_seconds"]
+            run_times = q.get("run_times", [])
+            avg_str = f"{avg:.2f}"
+            if len(run_times) > 1:
+                runs_str = ", ".join(f"{t:.2f}" for t in run_times)
+                lines.append(f"{qid:<8}  {avg_str:>10}  ({runs_str})")
+            else:
+                lines.append(f"{qid:<8}  {avg_str:>10}")
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(lines) + "\n")
+
+
 def write_chart(results: dict, out_path: Path) -> None:
     """Render a horizontal grouped bar chart: live PyCanopy vs published SedonaDB/DuckDB/GeoPandas.
 
@@ -563,4 +604,6 @@ def run_suite(
     suffix = "" if index_mode == "eager" else f"_{index_mode}"
     out_path = Path(output) if output else _ASSETS_DIR / f"spatialbench_sf{sf}{suffix}.png"
     write_chart(results, out_path)
+    txt_path = out_path.with_name(f"spatial-bench-sf{sf}{suffix}-results.txt")
+    write_results_txt(results, txt_path)
     return out_path
