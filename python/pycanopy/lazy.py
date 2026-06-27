@@ -355,7 +355,10 @@ class SpatialLazyFrame:
         """
         return SpatialLazyFrame(
             self._sf,
-            [*self._plan, PolygonKnnJoinNode(query_df, x_col, y_col, k, sorted_output=sorted_output)],
+            [
+                *self._plan,
+                PolygonKnnJoinNode(query_df, x_col, y_col, k, sorted_output=sorted_output),
+            ],
         )
 
     def points_within_distance_of_polygon(self, polygon, distance: float) -> SpatialLazyFrame:
