@@ -173,7 +173,7 @@ def _download(s3, cfg: dict, run_id: str) -> list[Path]:
         name = obj["Key"].rsplit("/", 1)[-1]
         if name in ("_SUCCESS", "progress.log"):
             continue
-        keep = name.endswith(".png") or name == "profile.txt"
+        keep = name.endswith(".png") or name.endswith(".txt")
         dest = _ASSETS_DIR if keep else Path(tempfile.gettempdir())
         dest.mkdir(parents=True, exist_ok=True)
         local = dest / name

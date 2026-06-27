@@ -77,11 +77,15 @@ export AWS_DEFAULT_REGION="$REGION"
 log "measuring sf${SCALE_FACTOR}"
 uv run python -m bench.spatial_bench._onbox --scale-factor "$SCALE_FACTOR" @@BENCH_FLAGS@@
 
-# Normal mode writes the chart PNG, profile mode writes profile.txt; upload whichever exists.
+# Normal mode writes chart PNG + results txt; profile mode writes profile.txt; upload whichever exists.
 # Plain [ -f ] && cp would return non-zero when absent and abort under set -e, so use if.
 OUT="spatialbench_sf${SCALE_FACTOR}@@OUT_SUFFIX@@.png"
 if [ -f "/opt/pycanopy/assets/$OUT" ]; then
   aws s3 cp "/opt/pycanopy/assets/$OUT" "${S3_BASE}/$OUT" --region "$REGION"
+fi
+RESULTS_TXT="spatial-bench-sf${SCALE_FACTOR}@@OUT_SUFFIX@@-results.txt"
+if [ -f "/opt/pycanopy/assets/$RESULTS_TXT" ]; then
+  aws s3 cp "/opt/pycanopy/assets/$RESULTS_TXT" "${S3_BASE}/$RESULTS_TXT" --region "$REGION"
 fi
 if [ -f "/opt/pycanopy/assets/profile.txt" ]; then
   aws s3 cp "/opt/pycanopy/assets/profile.txt" "${S3_BASE}/profile.txt" --region "$REGION"
