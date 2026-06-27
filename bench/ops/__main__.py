@@ -1,13 +1,7 @@
-"""Operation benchmark: every spatial primitive at a size tuned to its cost.
+"""Operation benchmark
 
-Runs each operation on a fresh engine (cold, index build included) and again warm
-(index cached) against a naive GeoPandas baseline (no spatial index). Single-query
-ops run large, while the joins run smaller because the naive competitor loops over
-every query point. Data is uniformly random and the engine indexes eagerly. Prints
-one line per op and writes the summary table to assets/.
-
-Usage:
-    python -m bench.ops
+Runs each join operation cold (SpatialFrame construction + index build + query) and warm
+(index cached, query only) against the best available indexed Python baseline.
 """
 
 from __future__ import annotations
@@ -24,31 +18,20 @@ import shapely
 from bench.ops.utils import (
     BenchmarkReport,
     MockDataset,
-    geopandas_batch_contains_naive,
-    geopandas_contains_naive,
-    geopandas_intersects_naive,
-    geopandas_intersects_self_join_naive,
-    geopandas_knn_join_naive,
-    geopandas_knn_naive,
-    geopandas_range_naive,
-    geopandas_within_distance_naive,
-    make_knn_queries,
-    make_range_queries,
-    measure,
+    geopandas_batch_contains_indexed,
+    geopandas_intersects_self_join_indexed,
+    geopandas_knn_join_indexed,
+    geopandas_polygon_knn_join_indexed,
+    geopandas_within_distance_indexed,
     measure_sf,
 )
 
 _ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
 
-# Per-tier dataset sizes, set by what the naive GeoPandas competitor costs: a single
-# query scans N once (cheap), but a join loops over all N query points (O(N^2)).
-N_SINGLE = 100_000  # single-query ops: range, kNN, contains, range (polygons)
-N_JOIN = 10_000  # point joins: knn_join, within_distance_join
-N_POLY = 5_000  # polygon joins + self-join (point-to-polygon distance is heavier)
+N_JOIN = 100_000   # point join target and probe size
+N_POLY = 100_000   # polygon join target and probe size
 
-K = 10
 K_JOIN = 5
-SELECTIVITY = 0.01
 DISTANCE = 0.05
 POLYGON_SIZE = 0.005
 
@@ -59,73 +42,24 @@ def _query_points(n: int) -> pl.DataFrame:
     return pl.DataFrame({"qx": pts[:, 0], "qy": pts[:, 1]})
 
 
-def _point_query_ops(report: BenchmarkReport) -> None:
-    # Range query and kNN on a point dataset, each vs the naive GeoPandas scan
-    ds = MockDataset("points", n=N_SINGLE, seed=42)
-    coords = ds.as_coords()
-    gs = gpd.GeoSeries(shapely.points(coords[:, 0], coords[:, 1]))
-    range_q = make_range_queries(coords, SELECTIVITY, n=1, seed=1)[0]
-    knn_q = make_knn_queries(n=1, seed=1)[0]
-
-    report.add(
-        measure(
-            "range query",
-            ds,
-            lambda eng: eng.range_query(*range_q),
-            competitors=[("GeoPandas", lambda: geopandas_range_naive(gs)(range_q))],
-        )
-    )
-    report.add(
-        measure(
-            f"kNN k={K}",
-            ds,
-            lambda eng: eng.knn(*knn_q, K),
-            competitors=[("GeoPandas", lambda: geopandas_knn_naive(gs, K)(knn_q))],
-        )
-    )
-
-
-def _polygon_query_ops(report: BenchmarkReport) -> None:
-    # Point-in-polygon contains and MBR range on a polygon dataset, vs the naive scan
-    ds = MockDataset("polygons", n=N_SINGLE, seed=42, polygon_size=POLYGON_SIZE)
-    gs = gpd.GeoSeries(ds.as_shapely_list())
-    first_centroid = gs.iloc[0].centroid
-    contain_q = (first_centroid.x, first_centroid.y)
-    range_q = (0.45, 0.45, 0.49, 0.49)
-
-    report.add(
-        measure(
-            "contains (polygons)",
-            ds,
-            lambda eng: eng.contains(*contain_q),
-            competitors=[("GeoPandas", lambda: geopandas_contains_naive(gs)(contain_q))],
-        )
-    )
-    report.add(
-        measure(
-            "range (polygons)",
-            ds,
-            lambda eng: eng.range_query(*range_q),
-            competitors=[("GeoPandas", lambda: geopandas_intersects_naive(gs)(range_q))],
-        )
-    )
-
-
 def _point_join_ops(report: BenchmarkReport) -> None:
-    # kNN join and within-distance join on points, each vs the naive O(Q*N) GeoPandas loop
+    # knn_join (cKDTree) and within_distance_join (STRtree) on N_JOIN points
     ds = MockDataset("points", n=N_JOIN, seed=42)
     query_df = _query_points(N_JOIN)
     coords = ds.as_coords()
     gs = gpd.GeoSeries(shapely.points(coords[:, 0], coords[:, 1]))
 
+    cold_fn, warm_fn = geopandas_knn_join_indexed(gs, query_df, K_JOIN)
     report.add(
         measure_sf(
             f"knn_join k={K_JOIN}",
             ds,
             lambda sf: sf.lazy().knn_join(query_df, "qx", "qy", k=K_JOIN).collect(),
-            competitors=[("GeoPandas", lambda: geopandas_knn_join_naive(gs, K_JOIN)(query_df))],
+            competitors=[("cKDTree", cold_fn, warm_fn)],
         )
     )
+
+    cold_fn, warm_fn = geopandas_within_distance_indexed(gs, query_df, DISTANCE)
     report.add(
         measure_sf(
             "within_distance_join",
@@ -133,35 +67,38 @@ def _point_join_ops(report: BenchmarkReport) -> None:
             lambda sf: (
                 sf.lazy().within_distance_join(query_df, "qx", "qy", distance=DISTANCE).collect()
             ),
-            competitors=[
-                ("GeoPandas", lambda: geopandas_within_distance_naive(gs, DISTANCE)(query_df))
-            ],
+            competitors=[("STRtree", cold_fn, warm_fn)],
         )
     )
 
 
 def _polygon_join_ops(report: BenchmarkReport) -> None:
-    # Polygon joins (within, kNN, within-distance) and the intersects self-join, vs naive
+    # polygon_knn_join (cKDTree centroids), within_join, polygon_within_distance_join, intersects self-join
     ds = MockDataset("polygons", n=N_POLY, seed=42, polygon_size=POLYGON_SIZE)
     query_df = _query_points(N_POLY)
     gs = gpd.GeoSeries(ds.as_shapely_list())
 
-    report.add(
-        measure_sf(
-            "within_join",
-            ds,
-            lambda sf: sf.lazy().within_join(query_df, "qx", "qy").collect(),
-            competitors=[("GeoPandas", lambda: geopandas_batch_contains_naive(gs)(query_df))],
-        )
-    )
+    cold_fn, warm_fn = geopandas_polygon_knn_join_indexed(gs, query_df, K_JOIN)
     report.add(
         measure_sf(
             f"polygon_knn_join k={K_JOIN}",
             ds,
             lambda sf: sf.lazy().polygon_knn_join(query_df, "qx", "qy", k=K_JOIN).collect(),
-            competitors=[("GeoPandas", lambda: geopandas_knn_join_naive(gs, K_JOIN)(query_df))],
+            competitors=[("cKDTree (centroids)", cold_fn, warm_fn)],
         )
     )
+
+    cold_fn, warm_fn = geopandas_batch_contains_indexed(gs, query_df)
+    report.add(
+        measure_sf(
+            "within_join",
+            ds,
+            lambda sf: sf.lazy().within_join(query_df, "qx", "qy").collect(),
+            competitors=[("STRtree", cold_fn, warm_fn)],
+        )
+    )
+
+    cold_fn, warm_fn = geopandas_within_distance_indexed(gs, query_df, DISTANCE)
     report.add(
         measure_sf(
             "polygon_within_distance_join",
@@ -171,17 +108,17 @@ def _polygon_join_ops(report: BenchmarkReport) -> None:
                 .polygon_within_distance_join(query_df, "qx", "qy", distance=DISTANCE)
                 .collect()
             ),
-            competitors=[
-                ("GeoPandas", lambda: geopandas_within_distance_naive(gs, DISTANCE)(query_df))
-            ],
+            competitors=[("STRtree", cold_fn, warm_fn)],
         )
     )
+
+    cold_fn, warm_fn = geopandas_intersects_self_join_indexed(gs)
     report.add(
         measure_sf(
             "intersects self-join",
             ds,
             lambda sf: sf.intersects_pairs(),
-            competitors=[("GeoPandas", geopandas_intersects_self_join_naive(gs))],
+            competitors=[("STRtree", cold_fn, warm_fn)],
         )
     )
 
@@ -205,14 +142,12 @@ def _warm_polars_jit() -> None:
 
 
 def run() -> BenchmarkReport:
-    """Run every operation on uniform data and write the summary table to assets/.
+    """Run every join operation and write the summary table to assets/.
 
     Returns:
         The populated BenchmarkReport.
     """
     report = BenchmarkReport()
-    _point_query_ops(report)
-    _polygon_query_ops(report)
     _point_join_ops(report)
     _polygon_join_ops(report)
     out = _ASSETS_DIR / "ops.txt"
@@ -231,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
         The process exit code, always 0 on success.
     """
     parser = argparse.ArgumentParser(
-        description="Run PyCanopy operation benchmarks on uniform data."
+        description="Run PyCanopy join benchmarks vs GeoPandas on uniform data."
     )
     parser.parse_args(argv)
 

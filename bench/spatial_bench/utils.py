@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import math
-import os
-import time
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,71 +26,40 @@ _ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
 # Published Apache SpatialBench baseline (chart reference)
 
 
-# Source: apache/sedona-spatialbench Actions run #152 (2026-06-20)
-# m7i.2xlarge (8 vCPU, 32 GB), 600 s timeout, SedonaDB 0.3.0 / DuckDB 1.5.4 /
-# GeoPandas 1.1.3 / Spatial Polars 0.3.0. A value is seconds, "TIMEOUT", or "ERROR"
-# (no bar rendered, status annotated on the chart). Missing entries (no key) render
-# as no bar.
-PUBLISHED_ENGINES = ("SedonaDB", "DuckDB", "GeoPandas", "Spatial Polars")
+# Source: apache/sedona-spatialbench docs/single-node-benchmarks.md, m7i.2xlarge
+# (8 vCPU, 32 GB), 1200 s timeout, cold start (DuckDB external file cache disabled),
+# runtimes include full data loading. A value is seconds, "TIMEOUT", or "ERROR"
+# (no bar rendered, status annotated on the chart).
+PUBLISHED_ENGINES = ("SedonaDB", "DuckDB", "GeoPandas")
 
 PUBLISHED: dict[int, dict[str, dict[str, float | str]]] = {
     1: {
-        "q1": {"SedonaDB": 0.70, "DuckDB": 0.22, "GeoPandas": 14.12, "Spatial Polars": 3.34},
-        "q2": {"SedonaDB": 1.27, "DuckDB": 0.36, "GeoPandas": 14.79, "Spatial Polars": 3.91},
-        "q3": {"SedonaDB": 1.17, "DuckDB": 0.32, "GeoPandas": 15.15, "Spatial Polars": 2.80},
-        "q4": {"SedonaDB": 0.81, "DuckDB": 0.43, "GeoPandas": 18.75, "Spatial Polars": 4.65},
-        "q5": {"SedonaDB": 6.29, "DuckDB": 1.79, "GeoPandas": 56.74, "Spatial Polars": 17.27},
-        "q6": {"SedonaDB": 1.45, "DuckDB": 0.79, "GeoPandas": 20.90, "Spatial Polars": 7.96},
-        "q7": {"SedonaDB": 3.85, "DuckDB": 9.89, "GeoPandas": 176.15, "Spatial Polars": 8.23},
-        "q8": {"SedonaDB": 1.20, "DuckDB": 0.93, "GeoPandas": 15.63, "Spatial Polars": 6.30},
-        "q9": {"SedonaDB": 0.43, "DuckDB": 0.05, "GeoPandas": 0.12, "Spatial Polars": 0.07},
-        "q10": {"SedonaDB": 9.11, "DuckDB": 238.03, "GeoPandas": 42.17, "Spatial Polars": 17.05},
-        "q11": {
-            "SedonaDB": 13.23,
-            "DuckDB": "TIMEOUT",
-            "GeoPandas": 67.20,
-            "Spatial Polars": 28.02,
-        },
-        "q12": {
-            "SedonaDB": 41.66,
-            "DuckDB": "TIMEOUT",
-            "GeoPandas": "TIMEOUT",
-            "Spatial Polars": 65.71,
-        },
+        "q1": {"SedonaDB": 0.66, "DuckDB": 0.96, "GeoPandas": 12.78},
+        "q2": {"SedonaDB": 8.07, "DuckDB": 9.95, "GeoPandas": 20.74},
+        "q3": {"SedonaDB": 0.80, "DuckDB": 1.17, "GeoPandas": 13.59},
+        "q4": {"SedonaDB": 8.41, "DuckDB": 9.83, "GeoPandas": 25.24},
+        "q5": {"SedonaDB": 5.10, "DuckDB": 1.80, "GeoPandas": 47.08},
+        "q6": {"SedonaDB": 8.59, "DuckDB": 9.36, "GeoPandas": 24.43},
+        "q7": {"SedonaDB": 1.66, "DuckDB": 1.82, "GeoPandas": 137.00},
+        "q8": {"SedonaDB": 1.10, "DuckDB": 1.08, "GeoPandas": 16.08},
+        "q9": {"SedonaDB": 0.23, "DuckDB": 50.15, "GeoPandas": 0.28},
+        "q10": {"SedonaDB": 18.79, "DuckDB": 207.84, "GeoPandas": 46.13},
+        "q11": {"SedonaDB": 32.98, "DuckDB": "TIMEOUT", "GeoPandas": 51.01},
+        "q12": {"SedonaDB": 14.55, "DuckDB": "ERROR", "GeoPandas": "TIMEOUT"},
     },
     10: {
-        "q1": {"SedonaDB": 3.06, "DuckDB": 2.23, "GeoPandas": "ERROR", "Spatial Polars": 32.22},
-        "q2": {"SedonaDB": 3.84, "DuckDB": 3.24, "GeoPandas": "ERROR", "Spatial Polars": 31.21},
-        "q3": {"SedonaDB": 5.75, "DuckDB": 3.18, "GeoPandas": "ERROR", "Spatial Polars": 36.51},
-        "q4": {"SedonaDB": 1.78, "DuckDB": 1.20, "GeoPandas": "ERROR", "Spatial Polars": "ERROR"},
-        "q5": {"SedonaDB": 99.43, "DuckDB": 357.99, "GeoPandas": "ERROR", "Spatial Polars": 128.31},
-        "q6": {"SedonaDB": 4.93, "DuckDB": 4.62, "GeoPandas": "ERROR", "Spatial Polars": "ERROR"},
-        "q7": {
-            "SedonaDB": 37.92,
-            "DuckDB": "ERROR",
-            "GeoPandas": "TIMEOUT",
-            "Spatial Polars": 82.56,
-        },
-        "q8": {"SedonaDB": 9.56, "DuckDB": 10.35, "GeoPandas": "ERROR", "Spatial Polars": "ERROR"},
-        "q9": {"SedonaDB": 0.44, "DuckDB": 0.20, "GeoPandas": 0.30, "Spatial Polars": 0.34},
-        "q10": {
-            "SedonaDB": 71.60,
-            "DuckDB": "TIMEOUT",
-            "GeoPandas": "ERROR",
-            "Spatial Polars": "ERROR",
-        },
-        "q11": {
-            "SedonaDB": 103.21,
-            "DuckDB": "ERROR",
-            "GeoPandas": "ERROR",
-            "Spatial Polars": "ERROR",
-        },
-        "q12": {
-            "SedonaDB": "ERROR",
-            "DuckDB": "TIMEOUT",
-            "GeoPandas": "ERROR",
-            "Spatial Polars": "ERROR",
-        },
+        "q1": {"SedonaDB": 3.04, "DuckDB": 4.58, "GeoPandas": "ERROR"},
+        "q2": {"SedonaDB": 8.89, "DuckDB": 8.26, "GeoPandas": "ERROR"},
+        "q3": {"SedonaDB": 4.09, "DuckDB": 5.17, "GeoPandas": "TIMEOUT"},
+        "q4": {"SedonaDB": 7.52, "DuckDB": 8.51, "GeoPandas": "ERROR"},
+        "q5": {"SedonaDB": 50.81, "DuckDB": 14.40, "GeoPandas": "ERROR"},
+        "q6": {"SedonaDB": 9.11, "DuckDB": 10.67, "GeoPandas": "ERROR"},
+        "q7": {"SedonaDB": 14.44, "DuckDB": 14.03, "GeoPandas": "ERROR"},
+        "q8": {"SedonaDB": 7.24, "DuckDB": 7.57, "GeoPandas": "TIMEOUT"},
+        "q9": {"SedonaDB": 0.38, "DuckDB": 942.98, "GeoPandas": 0.49},
+        "q10": {"SedonaDB": 42.02, "DuckDB": "ERROR", "GeoPandas": "ERROR"},
+        "q11": {"SedonaDB": 97.52, "DuckDB": "ERROR", "GeoPandas": "ERROR"},
+        "q12": {"SedonaDB": 145.66, "DuckDB": "ERROR", "GeoPandas": "TIMEOUT"},
     },
 }
 
@@ -98,33 +67,22 @@ PUBLISHED: dict[int, dict[str, dict[str, float | str]]] = {
 # Table loading
 
 
-def _resolve_table(data_dir: str, table: str) -> tuple[str, bool]:
-    # Locate table under data_dir as (path, is_directory), handling the single-file and
-    # directory-of-files layouts of the public datasets. s3:// URIs are directories.
-    base = data_dir.rstrip("/")
-    if base.startswith("s3://"):
-        return f"{base}/{table}", True
-    single = f"{base}/{table}.parquet"
-    if os.path.exists(single):
-        return single, False
-    if os.path.isdir(f"{base}/{table}"):
-        return f"{base}/{table}", True
-    return single, False
-
-
 def read_table(data_dir: str, table: str, columns: list[str] | None = None) -> pl.DataFrame:
     """Read one SpatialBench table as a Polars DataFrame (geometry stays WKB).
 
     Args:
-        data_dir: Local directory or ``s3://`` URI of the parquet tables.
+        data_dir: ``s3://`` URI of the SpatialBench dataset root.
         table: Table name (e.g. "trip").
         columns: Optional subset of columns to read.
 
     Returns:
         The table as a Polars DataFrame.
     """
-    path, is_dir = _resolve_table(data_dir, table)
-    return pl.read_parquet(f"{path}/**/*.parquet" if is_dir else path, columns=columns)
+    return pl.read_parquet(
+        f"{data_dir.rstrip('/')}/{table}/**/*.parquet",
+        columns=columns,
+        storage_options={"skip_signature": "true"},
+    )
 
 
 def scan_table(data_dir: str, table: str, columns: list[str] | None = None) -> pl.LazyFrame:
@@ -134,37 +92,18 @@ def scan_table(data_dir: str, table: str, columns: list[str] | None = None) -> p
     cheap columns never decodes the wide WKB column for the rows it later discards.
 
     Args:
-        data_dir: Local directory or ``s3://`` URI of the parquet tables.
+        data_dir: ``s3://`` URI of the SpatialBench dataset root.
         table: Table name (e.g. "trip").
         columns: Optional subset of columns to project.
 
     Returns:
         A LazyFrame over the table's parquet.
     """
-    path, is_dir = _resolve_table(data_dir, table)
-    lf = pl.scan_parquet(f"{path}/**/*.parquet" if is_dir else path)
-    return lf.select(columns) if columns else lf
-
-
-def warm_tables(data_dir: str, tables: tuple[str, ...]) -> None:
-    """Read each table's raw parquet bytes into the OS page cache (untimed).
-
-    Run before a measurement so the timed PyCanopy load reads from RAM, matching the
-    resident-data condition of the published baseline. No-op for s3:// inputs.
-
-    Args:
-        data_dir: Local directory or ``s3://`` URI of the parquet tables.
-        tables: Table names to warm.
-    """
-    if data_dir.rstrip("/").startswith("s3://"):
-        return
-    for table in tables:
-        path, is_dir = _resolve_table(data_dir, table)
-        files = Path(path).rglob("*.parquet") if is_dir else [Path(path)]
-        for f in files:
-            with open(f, "rb", buffering=0) as fh:
-                while fh.read(1 << 20):
-                    pass
+    lf = pl.scan_parquet(
+        f"{data_dir.rstrip('/')}/{table}/**/*.parquet",
+        storage_options={"skip_signature": "true"},
+    )
+    return lf.select(columns) if columns is not None else lf
 
 
 def wkb_to_polygons(series: pl.Series) -> list:
@@ -184,13 +123,27 @@ class SpatialBenchTables:
     """Lazily-built, cached handles to the SpatialBench tables for one run.
 
     Args:
-        data_dir: Local directory or ``s3://`` URI of the parquet tables.
+        data_dir: ``s3://`` URI of the SpatialBench dataset root.
         index_mode: PyCanopy index build policy ("eager" / "none" / "auto").
     """
 
     data_dir: str
     index_mode: str = "eager"
     _cache: dict[str, pl.DataFrame] | None = None
+
+    def parallel_fetch(self, needs: dict[str, list[str] | None]) -> None:
+        """Fetch several tables concurrently into the cache, with projection pushdown.
+
+        Args:
+            needs: Map of table name to the columns to fetch, or None for all columns.
+        """
+        if self._cache is None:
+            self._cache = {}
+        pending = {name: cols for name, cols in needs.items() if name not in self._cache}
+        if not pending:
+            return
+        frames = pl.collect_all([self.scan(name, cols) for name, cols in pending.items()])
+        self._cache.update(zip(pending, frames, strict=True))
 
     def table(self, name: str, columns: list[str] | None = None) -> pl.DataFrame:
         """Return table ``name``, reading and caching it on first access.
@@ -204,10 +157,10 @@ class SpatialBenchTables:
         """
         if self._cache is None:
             self._cache = {}
-        key = name if columns is None else f"{name}:{','.join(columns)}"
-        if key not in self._cache:
-            self._cache[key] = read_table(self.data_dir, name, columns)
-        return self._cache[key]
+        if name not in self._cache:
+            self._cache[name] = read_table(self.data_dir, name, columns)
+        df = self._cache[name]
+        return df.select(columns) if columns is not None else df
 
     def scan(self, name: str, columns: list[str] | None = None) -> pl.LazyFrame:
         """Lazily scan table ``name`` (uncached, for late-materialization access).
@@ -256,65 +209,21 @@ class SpatialBenchTables:
 _ORACLE_TABLES = ("trip", "zone", "building", "customer")
 
 
-def _strip_outer_order_by(sql: str) -> str:
-    # Drop the final top-level ORDER BY so the aggregate wrapper never sorts the full
-    # result. The scan skips string literals and -- comments and tracks paren depth, so an
-    # ORDER BY inside a subquery (q4's top-tips LIMIT) or the words inside a comment
-    # (q5's "ST_Collect_Agg (with _Agg suffix)") are left untouched.
-    lowered = sql.lower()
-    depth, i, n, cut = 0, 0, len(sql), None
-    while i < n:
-        c = sql[i]
-        if c == "'":
-            i += 1
-            while i < n and sql[i] != "'":
-                i += 1
-        elif c == "-" and i + 1 < n and sql[i + 1] == "-":
-            while i < n and sql[i] != "\n":
-                i += 1
-        elif c == "(":
-            depth += 1
-        elif c == ")":
-            depth -= 1
-        elif depth == 0 and lowered.startswith("order by", i):
-            cut = i
-            i += 8
-            continue
-        i += 1
-    return sql[:cut] if cut is not None else sql
-
-
-def _aggregate_sql(inner: str, value_cols: list[str]) -> str:
-    # Wrap a query so SedonaDB returns one row: COUNT(*) plus each value column's sum.
-    # Pushing the reduction into the engine means the full result never materialises, and
-    # since COUNT and SUM are order-independent the outer ORDER BY is stripped first.
-    body = _strip_outer_order_by(inner)
-    sums = "".join(f", SUM(CAST({c} AS DOUBLE)) AS {c}" for c in value_cols)
-    return f"SELECT COUNT(*) AS __h__{sums}\nFROM (\n{body}\n) __agg__"
-
-
-def oracle_summary(query_id: str, data_dir: str, value_cols: list[str]) -> tuple[int, dict]:
-    """Reduce query_id through SedonaDB to (row count, per-column float sums).
-
-    The COUNT and SUMs are pushed into the SedonaDB SQL, so the oracle returns a single
-    row, the full result never leaves the engine, and verification adds no per-query
-    memory load. The check needs only the count and sums, both of which are order-independent.
+def oracle_result(query_id: str, data_dir: str) -> pl.DataFrame:
+    """Run query_id through SedonaDB and return its full result.
 
     Args:
         query_id: Query id (e.g. "q1") indexing SEDONA_SQL.
-        data_dir: Local directory or ``s3://`` URI of the parquet tables.
-        value_cols: SedonaDB result columns to sum (empty checks the row count only).
+        data_dir: ``s3://`` URI of the SpatialBench dataset root.
 
     Returns:
-        A (row count, {column: sum}) tuple summarizing the SedonaDB result.
+        The complete SedonaDB result as a Polars DataFrame.
     """
     sd = sedonadb.connect()
     for table in _ORACLE_TABLES:
-        # SedonaDB reads the bare directory or file directly, with ST_GeomFromWKB in SQL
-        sd.read_parquet(_resolve_table(data_dir, table)[0]).to_view(table)
-    sql = _aggregate_sql(SEDONA_SQL[query_id], value_cols)
-    row = pl.from_arrow(sd.sql(sql).to_arrow_table())
-    return int(row["__h__"][0]), {c: row[c][0] for c in value_cols}
+        # Read via the working Polars S3 path and register the frame, so SedonaDB never reads S3
+        sd.create_data_frame(read_table(data_dir, table)).to_view(table)
+    return pl.from_arrow(sd.sql(SEDONA_SQL[query_id]).to_arrow_table())
 
 
 # Output verification (PyCanopy result vs SedonaDB result)
@@ -330,16 +239,6 @@ def _as_polars(df) -> pl.DataFrame:
     return df if isinstance(df, pl.DataFrame) else pl.from_pandas(df)
 
 
-def _height_and_sums(df, value_cols) -> tuple[int, dict[str, float]]:
-    # Return (row count, Float64 column sums) in one bounded streaming pass, so a result
-    # larger than RAM (a LazyFrame over an out-of-core sink) never materialises in memory.
-    exprs = [pl.len().alias("__h__")]
-    exprs += [pl.col(c).cast(pl.Float64, strict=False).sum().alias(c) for c in value_cols]
-    lf = df if isinstance(df, pl.LazyFrame) else _as_polars(df).lazy()
-    row = lf.select(exprs).collect(engine="streaming")
-    return row["__h__"][0], {c: row[c][0] for c in value_cols}
-
-
 def verify_outputs(
     pc_df,
     query_id: str,
@@ -349,79 +248,139 @@ def verify_outputs(
     rel_tol: float = 1e-2,
     abs_tol: float = 1e-2,
 ) -> tuple[bool, str]:
-    """Sanity-check a PyCanopy result against the SedonaDB oracle.
+    """Compare a full PyCanopy result against the full SedonaDB oracle result.
 
-    Compares row count then each value column's float sum within tolerance. The oracle
-    reduces to the count and sums in SQL (one row back), and the PyCanopy side streams the
-    same aggregates, so neither full result ever materialises. Both checks are order-independent.
+    Both results are sorted by their compared columns and checked row for row, so the two
+    unordered outputs line up even when keys repeat (q12's k rows per trip).
 
     Args:
         pc_df: PyCanopy result (polars LazyFrame, polars DataFrame, or pandas DataFrame).
         query_id: Query id (e.g. "q1") indexing the SedonaDB oracle.
-        data_dir: Local directory or ``s3://`` URI of the parquet tables.
-        keys: Key columns from the compare spec (accepted but not used in the check).
-        values: Column specs to sum-compare, each a name or (pc_col, sedona_col) pair.
-        rel_tol: Relative tolerance on each column sum.
-        abs_tol: Absolute tolerance on each column sum.
+        data_dir: ``s3://`` URI of the SpatialBench dataset root.
+        keys: Key columns compared exactly (same name on both sides).
+        values: Value column specs compared within tolerance, each a name or (pc_col, sedona_col) pair.
+        rel_tol: Relative tolerance on each value column.
+        abs_tol: Absolute tolerance on each value column.
 
     Returns:
-        A (passed, detail) tuple, where detail describes the match or the first mismatch.
+        A (passed, detail) tuple, where detail describes the match or the first failing check.
     """
     pairs = _pairs(values)
-    pc_h, pc_sums = _height_and_sums(pc_df, [a for a, _ in pairs])
-    sed_h, sed_sums = oracle_summary(query_id, data_dir, [b for _, b in pairs])
-    if pc_h != sed_h:
-        return False, f"row count pycanopy={pc_h} sedona={sed_h}"
+    key_cols = list(keys)
+    val_cols = [b for _, b in pairs]
 
-    for pc_col, sed_col in pairs:
-        a, b = pc_sums[pc_col], sed_sums[sed_col]
-        if abs(a - b) > abs_tol + rel_tol * abs(b):
-            return False, f"sum mismatch in {pc_col}: {a} vs {b}"
-    return True, f"{pc_h} rows match"
+    pc = pc_df.collect() if isinstance(pc_df, pl.LazyFrame) else _as_polars(pc_df)
+    pc = pc.select(key_cols + [a for a, _ in pairs]).rename({a: b for a, b in pairs})
+    oracle = oracle_result(query_id, data_dir).select(key_cols + val_cols)
+    casts = [pl.col(c).cast(pl.Float64) for c in val_cols]
+    pc = pc.with_columns(casts)
+    oracle = oracle.with_columns(casts)
+
+    if pc.height != oracle.height:
+        return False, f"row count pycanopy={pc.height} sedona={oracle.height}"
+
+    order = key_cols + val_cols
+    pc = pc.sort(order, nulls_last=True)
+    oracle = oracle.sort(order, nulls_last=True).rename({c: f"__o_{c}" for c in order})
+
+    # Side by side, the two sorted frames must agree row for row. Position alignment holds
+    # because both were sorted the same way, so any real difference falls out of step here.
+    checks = []
+    for c in key_cols:
+        a, b = pl.col(c), pl.col(f"__o_{c}")
+        checks.append((a == b).fill_null(False) | (a.is_null() & b.is_null()))
+    for c in val_cols:
+        a, b = pl.col(c), pl.col(f"__o_{c}")
+        near = a.is_not_null() & b.is_not_null() & ((a - b).abs() <= abs_tol + rel_tol * b.abs())
+        checks.append(near | (a.is_null() & b.is_null()))
+
+    bad = pl.concat([pc, oracle], how="horizontal").filter(~pl.all_horizontal(checks))
+    if bad.height:
+        return False, f"{bad.height} row(s) differ, first: {bad.row(0, named=True)}"
+    return True, f"{pc.height} rows match"
 
 
 # Measure + chart
 
 
-def measure_query(query, data_dir: str, index_mode: str = "eager", verify: bool = True) -> dict:
-    """Time PyCanopy on one query, then verify its output against SedonaDB.
+def spawn_query(query_id: str, data_dir: str, index_mode: str, *flags: str) -> dict:
+    """Run one query in an isolated subprocess and parse its structured stdout.
 
-    The dataset is warmed into the page cache (untimed) and decoded fresh inside the timed
-    region, so the load is included but always reads from RAM. SedonaDB only checks output.
+    Args:
+        query_id: Query id (e.g. "q1").
+        data_dir: ``s3://`` URI of the SpatialBench dataset root.
+        index_mode: PyCanopy index build policy ("eager" / "none" / "auto").
+        flags: Extra flags forwarded to the runner (e.g. "--profile").
+
+    Returns:
+        A result dict: status "ok" carries time and the parsed kv lines, otherwise an error.
+    """
+    cmd = [sys.executable, "-m", "bench.spatial_bench._runner", query_id, data_dir, index_mode]
+    cmd.extend(flags)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1200)
+    except subprocess.TimeoutExpired:
+        return {"status": "timeout"}
+
+    kv: dict[str, str] = {}
+    for line in proc.stdout.splitlines():
+        if line.startswith("PYCANOPY_") and "=" in line:
+            k, _, v = line.partition("=")
+            kv[k] = v
+
+    if "PYCANOPY_ERROR" in kv:
+        return {"status": "error", "error": kv["PYCANOPY_ERROR"]}
+    if "PYCANOPY_TIME" not in kv:
+        snippet = proc.stderr[:400] if proc.stderr else "(no stderr)"
+        return {"status": "error", "error": f"runner produced no timing output; stderr: {snippet}"}
+    return {"status": "ok", "time": float(kv["PYCANOPY_TIME"]), "kv": kv}
+
+
+def measure_query(query, data_dir: str, index_mode: str = "eager", runs: int = 3) -> dict:
+    """Spawn isolated subprocesses for one query and return the averaged timing.
+
+    Runs the query up to ``runs`` times in fresh subprocesses, stopping early if the
+    first attempt fails or times out.
 
     Args:
         query: A query module exposing id, pycanopy(tables), and compare.
-        data_dir: Local directory or ``s3://`` URI of the parquet tables.
+        data_dir: ``s3://`` URI of the SpatialBench dataset root.
         index_mode: PyCanopy index build policy ("eager" / "none" / "auto").
-        verify: Run the SedonaDB output check when True.
+        runs: Number of timed repetitions to average (default 3).
 
     Returns:
-        A result dict with status, pycanopy_seconds, and (when verified) match fields.
+        A result dict with status, pycanopy_seconds (average), and run_times.
     """
-    warm_tables(data_dir, _ORACLE_TABLES)
-    tables = SpatialBenchTables(data_dir=data_dir, index_mode=index_mode)
-    try:
-        t0 = time.perf_counter()
-        pc_df = query.pycanopy(tables)
-        pc_s = time.perf_counter() - t0
-        print(f"[testcase] completed {query.id} using pycanopy in {pc_s:.2f}s", flush=True)
-    except Exception as exc:
-        print(f"[testcase] failed {query.id}: {type(exc).__name__}: {exc}", flush=True)
-        return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+    times: list[float] = []
 
-    out = {"status": "ok", "pycanopy_seconds": round(pc_s, 4)}
-    if verify:
-        try:
-            ok, detail = verify_outputs(pc_df, query.id, data_dir, **query.compare)
-            out["match"] = "match" if ok else "MISMATCH"
-            out["match_detail"] = detail
-            if not ok:
-                print(f"[verification] mismatch on testcase {query.id}: {detail}", flush=True)
-        except Exception as exc:
-            out["match"] = "skipped"
-            out["match_detail"] = f"oracle error: {type(exc).__name__}: {exc}"
-            print(f"[verification] skipped {query.id}: {type(exc).__name__}: {exc}", flush=True)
-    return out
+    for i in range(runs):
+        r = spawn_query(query.id, data_dir, index_mode)
+
+        if r["status"] == "timeout":
+            print(f"[testcase] timeout {query.id} (run {i + 1})", flush=True)
+            if not times:
+                return {"status": "timeout"}
+            break
+
+        if r["status"] == "error":
+            print(f"[testcase] failed {query.id} (run {i + 1}): {r['error']}", flush=True)
+            if not times:
+                return {"status": "error", "error": r["error"]}
+            break
+
+        times.append(r["time"])
+
+    avg = sum(times) / len(times)
+    print(
+        f"[testcase] completed {query.id} using pycanopy in {avg:.2f}s"
+        + (
+            f" (avg of {len(times)} runs: {', '.join(f'{t:.2f}s' for t in times)})"
+            if len(times) > 1
+            else ""
+        ),
+        flush=True,
+    )
+    return {"status": "ok", "pycanopy_seconds": round(avg, 4), "run_times": times}
 
 
 def _nice_cap(v: float) -> float:
@@ -468,7 +427,6 @@ def write_chart(results: dict, out_path: Path) -> None:
         "SedonaDB": "#DD8452",
         "DuckDB": "#8C8C8C",
         "GeoPandas": "#C9BBA8",
-        "Spatial Polars": "#59A96A",
     }
     series = ["PyCanopy", *PUBLISHED_ENGINES]
     n_s, n_q = len(series), len(qids)
@@ -559,7 +517,7 @@ def write_chart(results: dict, out_path: Path) -> None:
     if any(qs[q].get("match") == "MISMATCH" for q in qids):
         subtitle += "    * output mismatch"
     ax.set_title(
-        f"Apache SpatialBench SF{sf}: PyCanopy vs SedonaDB / DuckDB / GeoPandas / Spatial Polars\n{subtitle}",
+        f"Apache SpatialBench SF{sf}: PyCanopy vs SedonaDB / DuckDB / GeoPandas\n{subtitle}",
         fontsize=10,
     )
     ax.legend(
@@ -580,27 +538,27 @@ def run_suite(
     scale_factor: float,
     index_mode: str = "eager",
     output: str | None = None,
-    verify: bool = True,
+    runs: int = 3,
 ) -> Path:
     """Measure each query module and render the comparison chart, returning its path.
 
-    This is the on-box driver bootstrap.sh re-enters through the package. It loops
-    measure_query over the modules then writes the chart for the scale and index mode.
+    Loops measure_query over each module and writes the comparison chart for the
+    given scale and index mode.
 
     Args:
         query_modules: Query modules to run, each exposing id, pycanopy, and compare.
-        data_dir: Local directory or ``s3://`` URI of the parquet tables.
+        data_dir: ``s3://`` URI of the SpatialBench dataset root.
         scale_factor: Scale factor, used for the chart label and output filename.
         index_mode: PyCanopy index build policy ("eager" / "none" / "auto").
         output: Explicit PNG path, or None for assets/spatialbench_sf{N}[_mode].png.
-        verify: Run the SedonaDB output check per query when True.
+        runs: Number of timed repetitions to average per query.
 
     Returns:
         The chart PNG path written.
     """
     results = {"scale_factor": scale_factor, "index_mode": index_mode, "queries": {}}
     for query in query_modules:
-        results["queries"][query.id] = measure_query(query, data_dir, index_mode, verify=verify)
+        results["queries"][query.id] = measure_query(query, data_dir, index_mode, runs=runs)
     sf = int(scale_factor)
     suffix = "" if index_mode == "eager" else f"_{index_mode}"
     out_path = Path(output) if output else _ASSETS_DIR / f"spatialbench_sf{sf}{suffix}.png"

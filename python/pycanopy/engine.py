@@ -686,6 +686,32 @@ class Engine:
             k,
         )
 
+    def batch_knn_to_polygons_sorted(
+        self,
+        query_xs: np.ndarray,
+        query_ys: np.ndarray,
+        k: int,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Like batch_knn_to_polygons but returns all valid pairs sorted by (distance ASC, target_idx ASC).
+
+        The sort runs inside Rust via rayon, so no Polars streaming sort or EBS spill is needed.
+        The full result materialises in RAM before returning.
+
+        Args:
+            query_xs: Contiguous float64 array of query x coordinates.
+            query_ys: Contiguous float64 array of query y coordinates.
+            k: Number of nearest polygons per query point.
+
+        Returns:
+            Tuple (query_indices, target_indices, distances) as three flat uint64/uint64/float64
+            arrays. No per-query block structure, no padding slots.
+        """
+        return self._core.batch_knn_to_polygons_sorted(
+            np.ascontiguousarray(query_xs, dtype=np.float64),
+            np.ascontiguousarray(query_ys, dtype=np.float64),
+            k,
+        )
+
     def polygon_intersects_self_join(self) -> np.ndarray:
         """Return all intersecting polygon pairs (i, j) with i < j. Polygon datasets only.
 

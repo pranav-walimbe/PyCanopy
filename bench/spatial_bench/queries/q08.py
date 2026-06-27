@@ -18,10 +18,13 @@ title = "Trip pickups within ~500m of each building"
 
 THRESHOLD = 0.0045  # degrees (~500m)
 
+TABLES_NEEDED = {"building": ["b_buildingkey", "b_name", "b_boundary"], "trip": ["t_pickuploc"]}
+
 compare = {"keys": ["b_buildingkey"], "values": ["nearby_pickup_count"]}
 
 
 def pycanopy(tables) -> pl.DataFrame:
+    tables.parallel_fetch(TABLES_NEEDED)
     buildings = tables.table("building", ["b_buildingkey", "b_name", "b_boundary"])
     sf = tables.polygon_frame(buildings, "b_boundary")
 

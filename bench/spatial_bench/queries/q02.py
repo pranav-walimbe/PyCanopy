@@ -15,10 +15,13 @@ title = "Count trips starting within Coconino County zone"
 
 ZONE_NAME = "Coconino County"
 
+TABLES_NEEDED = {"zone": ["z_name", "z_boundary"], "trip": ["t_pickuploc"]}
+
 compare = {"keys": [], "values": ["trip_count_in_coconino_county"]}
 
 
 def pycanopy(tables) -> pl.DataFrame:
+    tables.parallel_fetch(TABLES_NEEDED)
     zone = tables.table("zone", ["z_name", "z_boundary"])
     target = zone.filter(pl.col("z_name") == ZONE_NAME).head(1)
     if target.height == 0:

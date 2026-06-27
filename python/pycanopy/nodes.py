@@ -178,6 +178,7 @@ class PolygonKnnJoinNode:
     y_col: str
     k: int
     keep_columns: tuple[str, ...] | None = None
+    sorted_output: bool = False
 
 
 # Type alias for a complete plan
