@@ -20,6 +20,12 @@ def _materialize(result):
     return result
 
 
+def _read_steal() -> tuple[int, int]:
+    # Returns (steal_jiffies, total_jiffies) from /proc/stat aggregate CPU line
+    fields = open("/proc/stat").readline().split()
+    return int(fields[8]), sum(int(f) for f in fields[1:])
+
+
 def main() -> None:
     """Parse args, run one query with timing, and print structured output to stdout."""
     parser = argparse.ArgumentParser(add_help=False)
@@ -40,6 +46,7 @@ def main() -> None:
         tables = SpatialBenchTables(data_dir=args.data_dir, index_mode=args.index_mode)
 
     try:
+        s0, c0 = _read_steal()
         t0 = _time.perf_counter()
         result = qmodule.pycanopy(tables)
         if args.profile:
@@ -50,6 +57,9 @@ def main() -> None:
             result = _materialize(result)
             print(f"PYCANOPY_MATERIALIZE={_time.perf_counter() - t_mat:.4f}", flush=True)
         elapsed = _time.perf_counter() - t0
+        s1, c1 = _read_steal()
+        steal_pct = (s1 - s0) / (c1 - c0) * 100 if c1 > c0 else 0.0
+        print(f"PYCANOPY_STEAL={steal_pct:.2f}", flush=True)
     except Exception as exc:
         print(f"PYCANOPY_ERROR={type(exc).__name__}: {exc}", flush=True)
         sys.exit(1)
