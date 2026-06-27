@@ -548,7 +548,9 @@ pub fn par_knn_to_polygons_sorted<I: SpatialIndex + Sync>(
 
     // Global sort: distance first, target index as tiebreaker
     triples.par_sort_unstable_by(|a, b| {
-        a.2.partial_cmp(&b.2).unwrap_or(Ordering::Equal).then(a.1.cmp(&b.1))
+        a.2.partial_cmp(&b.2)
+            .unwrap_or(Ordering::Equal)
+            .then(a.1.cmp(&b.1))
     });
 
     let n = triples.len();

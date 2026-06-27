@@ -28,9 +28,8 @@ use planner::{
 use query::{
     batch::{
         par_bbox_filter, par_contains, par_knn, par_knn_to_polygons, par_knn_to_polygons_sorted,
-        par_knn_with_delta,
-        par_points_within_distance_of_polygon, par_polygon_intersects_join, par_within_distance,
-        par_within_distance_flipped, par_within_distance_to_polygons,
+        par_knn_with_delta, par_points_within_distance_of_polygon, par_polygon_intersects_join,
+        par_within_distance, par_within_distance_flipped, par_within_distance_to_polygons,
     },
     geometry::{convex_hull_area, polygon_area, polygon_intersection_area},
     multipoly::{dedup_indices, dedup_self_pairs, polygon_parts_csr, sum_part_areas},
