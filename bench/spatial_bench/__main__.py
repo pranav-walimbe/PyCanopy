@@ -46,7 +46,13 @@ def load_config() -> dict:
 
 
 def _user_data(
-    cfg: dict, run_id: str, scale_factor: int, index_mode: str, profile: bool, n: int
+    cfg: dict,
+    run_id: str,
+    scale_factor: int,
+    index_mode: str,
+    profile: bool,
+    n: int,
+    query_ids: list[str] | None = None,
 ) -> str:
     # Substitute @@NAME@@ placeholders in bootstrap.sh for this run
     script = (_DIR / "bootstrap.sh").read_text()
@@ -57,6 +63,8 @@ def _user_data(
         bench_flags = [f"--n {n}"]
         if index_mode == "eager":
             bench_flags.append("--index-eager")
+    if query_ids:
+        bench_flags.append("--query " + " ".join(query_ids))
     repl = {
         "RUN_ID": run_id,
         "REGION": cfg["region"],
@@ -75,7 +83,15 @@ def _user_data(
 
 
 def _launch(
-    ec2, ssm, cfg: dict, run_id: str, scale_factor: int, index_mode: str, profile: bool, n: int
+    ec2,
+    ssm,
+    cfg: dict,
+    run_id: str,
+    scale_factor: int,
+    index_mode: str,
+    profile: bool,
+    n: int,
+    query_ids: list[str] | None = None,
 ) -> str:
     # Launch the benchmark instance and return its id
     ami = ssm.get_parameter(Name=_SSM_AL2023)["Parameter"]["Value"]
@@ -84,10 +100,9 @@ def _launch(
         InstanceType=cfg["instance_type"],
         MinCount=1,
         MaxCount=1,
-        UserData=_user_data(cfg, run_id, scale_factor, index_mode, profile, n),
+        UserData=_user_data(cfg, run_id, scale_factor, index_mode, profile, n, query_ids),
         InstanceInitiatedShutdownBehavior="terminate",
         IamInstanceProfile={"Name": cfg["instance_profile"]},
-        Placement={"Tenancy": "dedicated"},
         BlockDeviceMappings=[
             {
                 "DeviceName": "/dev/xvda",
@@ -225,6 +240,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="SF1 profiling mode (one run, per-stage time + memory + verify); takes no other flags.",
     )
+    parser.add_argument(
+        "--query",
+        nargs="+",
+        metavar="ID",
+        help="Run only these query IDs on the box (e.g. --query q12).",
+    )
     return parser
 
 
@@ -256,7 +277,9 @@ def main(argv: list[str] | None = None) -> int:
     ssm = boto3.client("ssm", region_name=region)
 
     run_id = uuid.uuid4().hex[:12]
-    instance_id = _launch(ec2, ssm, cfg, run_id, scale_factor, index_mode, args.profile, n)
+    instance_id = _launch(
+        ec2, ssm, cfg, run_id, scale_factor, index_mode, args.profile, n, args.query
+    )
     try:
         ok = _wait_for_success(s3, ec2, cfg, run_id, instance_id)
         paths = _download(s3, cfg, run_id)

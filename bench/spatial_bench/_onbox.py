@@ -30,6 +30,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.set_defaults(index_mode="auto")
     parser.add_argument("--n", type=int, default=3, metavar="N")
     parser.add_argument("--profile", action="store_true")
+    parser.add_argument("--query", nargs="+", metavar="ID", help="Run only these query IDs.")
     return parser
 
 
@@ -44,10 +45,14 @@ def main(argv: list[str] | None = None) -> int:
     """
     args = _build_parser().parse_args(argv)
     data_dir = _DATA_TEMPLATE.replace("{sf}", str(args.scale_factor))
+    qs = query_registry.ALL
+    if args.query:
+        ids = set(args.query)
+        qs = [q for q in qs if q.id in ids]
     if args.profile:
-        run_profile_suite(query_registry.ALL, data_dir, args.index_mode)
+        run_profile_suite(qs, data_dir, args.index_mode)
     else:
-        run_suite(query_registry.ALL, data_dir, args.scale_factor, args.index_mode, runs=args.n)
+        run_suite(qs, data_dir, args.scale_factor, args.index_mode, runs=args.n)
     return 0
 
 
