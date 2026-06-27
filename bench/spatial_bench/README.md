@@ -30,8 +30,12 @@ Requires AWS credentials with EC2 + S3 permissions. See `config.yaml` for bucket
 configuration.
 
 ```
-# Standard benchmark run
+# Standard benchmark run (all queries)
 python -m bench.spatial_bench --scale-factor {1,10} [--index-eager|--index-auto|--index-none] [--n N]
+
+# Run only specific queries (useful for debugging individual queries)
+python -m bench.spatial_bench --scale-factor 1 --query q12
+python -m bench.spatial_bench --scale-factor 1 --query q4 q10 q11
 
 # Per-stage profiling + verification (SF1 only)
 python -m bench.spatial_bench --profile

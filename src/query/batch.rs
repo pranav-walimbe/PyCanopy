@@ -9,7 +9,8 @@ use std::sync::Arc;
 use rayon::prelude::*;
 use rdst::{RadixKey, RadixSort};
 
-const KNN_SORT_MORSEL: usize = 4096;
+// Spatial tile grid dimension; each cell's polygon vertex working set targets L3 cache.
+const TILE_GRID: usize = 16;
 
 use crate::index::kdtree::PackedKdTree;
 use crate::index::SpatialIndex;
@@ -427,62 +428,41 @@ pub fn par_knn_to_polygons<I: SpatialIndex + Sync>(
         None => part_mbrs(xs, ys, ring_offsets, poly_offsets),
     };
 
-    // Probe in Morton order so neighbouring queries share R-tree paths and reuse warm cache.
-    // rayon's collect preserves order, so block `rank` holds the results for query `order[rank]`.
     let order = morton_order(qxs, qys);
-    let ranked: Vec<(u64, f64)> = order
+    let tiles = build_query_tiles(qxs, qys, &order, TILE_GRID);
+
+    // Parallelise over tiles so each tile's polygon vertices stay warm in L3 across its queries
+    let tile_results: Vec<Vec<(u32, Vec<(u64, f64)>)>> = tiles
         .par_iter()
-        .flat_map_iter(|&qi| {
-            let qi = qi as usize;
-            let (qx, qy) = (qxs[qi], qys[qi]);
-            let cands = match part_poly {
-                Some(pp) => knn_polys_multipart(
-                    index,
-                    qx,
-                    qy,
-                    fetch,
-                    k,
-                    xs,
-                    ys,
-                    ring_offsets,
-                    poly_offsets,
-                    pp,
-                ),
-                None => knn_polys_pruned(
-                    index,
-                    qx,
-                    qy,
-                    fetch,
-                    k,
-                    xs,
-                    ys,
-                    ring_offsets,
-                    poly_offsets,
-                    &bbox,
-                ),
-            };
-            cands.into_iter()
+        .map(|cell| {
+            cell.iter()
+                .map(|&qi| {
+                    let (qx, qy) = (qxs[qi as usize], qys[qi as usize]);
+                    let cands = match part_poly {
+                        Some(pp) => knn_polys_multipart(
+                            index, qx, qy, fetch, k, xs, ys, ring_offsets, poly_offsets, pp,
+                        ),
+                        None => knn_polys_pruned(
+                            index, qx, qy, fetch, k, xs, ys, ring_offsets, poly_offsets, &bbox,
+                        ),
+                    };
+                    (qi, cands)
+                })
+                .collect()
         })
         .collect();
 
-    // Invert the permutation, then gather each query's k-block into its original position.
-    // Output chunks are disjoint, so the scatter parallelises without unsafe.
-    let mut inv = vec![0u32; n];
-    for (rank, &qi) in order.iter().enumerate() {
-        inv[qi as usize] = rank as u32;
-    }
     let mut idx = vec![0u64; n * k];
     let mut dist = vec![0f64; n * k];
-    idx.par_chunks_mut(k)
-        .zip(dist.par_chunks_mut(k))
-        .enumerate()
-        .for_each(|(qi, (ic, dc))| {
-            let base = inv[qi] as usize * k;
-            for j in 0..k {
-                ic[j] = ranked[base + j].0;
-                dc[j] = ranked[base + j].1;
+    for tile in tile_results {
+        for (qi, cands) in tile {
+            let base = qi as usize * k;
+            for (j, (ti, d)) in cands.into_iter().enumerate() {
+                idx[base + j] = ti;
+                dist[base + j] = d;
             }
-        });
+        }
+    }
     (idx, dist)
 }
 
@@ -508,21 +488,43 @@ impl RadixKey for KnnTriple {
     }
 }
 
-fn kway_merge(morsels: Vec<Vec<KnnTriple>>) -> Vec<KnnTriple> {
-    let total: usize = morsels.iter().map(|v| v.len()).sum();
+// Partition queries into a grid_n×grid_n spatial grid; nearby queries share polygon vertex cache lines
+fn build_query_tiles(qxs: &[f64], qys: &[f64], order: &[u32], grid_n: usize) -> Vec<Vec<u32>> {
+    let (mut min_x, mut min_y, mut max_x, mut max_y) =
+        (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for (&x, &y) in qxs.iter().zip(qys.iter()) {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    let gn = grid_n as f64;
+    let sx = if max_x > min_x { gn / (max_x - min_x) } else { 0.0 };
+    let sy = if max_y > min_y { gn / (max_y - min_y) } else { 0.0 };
+    let mut tiles: Vec<Vec<u32>> = vec![vec![]; grid_n * grid_n];
+    for &qi in order {
+        let cx = (((qxs[qi as usize] - min_x) * sx) as usize).min(grid_n - 1);
+        let cy = (((qys[qi as usize] - min_y) * sy) as usize).min(grid_n - 1);
+        tiles[cy * grid_n + cx].push(qi);
+    }
+    tiles
+}
+
+fn kway_merge(tiles: Vec<Vec<KnnTriple>>) -> Vec<KnnTriple> {
+    let total: usize = tiles.iter().map(|v| v.len()).sum();
     let mut out = Vec::with_capacity(total);
     let mut heap: BinaryHeap<Reverse<(u64, u64, usize, usize)>> = BinaryHeap::new();
-    for (mi, v) in morsels.iter().enumerate() {
+    for (ti, v) in tiles.iter().enumerate() {
         if !v.is_empty() {
-            heap.push(Reverse((v[0].dist_bits, v[0].target_idx, mi, 0)));
+            heap.push(Reverse((v[0].dist_bits, v[0].target_idx, ti, 0)));
         }
     }
-    while let Some(Reverse((_, _, mi, ei))) = heap.pop() {
-        out.push(morsels[mi][ei]);
+    while let Some(Reverse((_, _, ti, ei))) = heap.pop() {
+        out.push(tiles[ti][ei]);
         let next = ei + 1;
-        if next < morsels[mi].len() {
-            let t = &morsels[mi][next];
-            heap.push(Reverse((t.dist_bits, t.target_idx, mi, next)));
+        if next < tiles[ti].len() {
+            let t = &tiles[ti][next];
+            heap.push(Reverse((t.dist_bits, t.target_idx, ti, next)));
         }
     }
     out
@@ -532,7 +534,8 @@ fn kway_merge(morsels: Vec<Vec<KnnTriple>>) -> Vec<KnnTriple> {
 /// (distance ASC, target_idx ASC), matching `ORDER BY distance_to_building, b_buildingkey`.
 ///
 /// Returns `(query_indices, target_indices, distances)` as three flat Vecs with no padding.
-/// Queries are processed in morsel-sized chunks to bound straggler impact under CPU contention.
+/// Queries are partitioned into spatial tiles (Morton order within each tile) so polygon vertex
+/// data for a tile stays in L3 cache across its queries, then per-tile sorted runs are k-way merged.
 #[allow(clippy::too_many_arguments)]
 pub fn par_knn_to_polygons_sorted<I: SpatialIndex + Sync>(
     index: &I,
@@ -552,39 +555,21 @@ pub fn par_knn_to_polygons_sorted<I: SpatialIndex + Sync>(
         None => part_mbrs(xs, ys, ring_offsets, poly_offsets),
     };
     let order = morton_order(qxs, qys);
+    let tiles = build_query_tiles(qxs, qys, &order, TILE_GRID);
 
-    let sorted_morsels: Vec<Vec<KnnTriple>> = order
-        .par_chunks(KNN_SORT_MORSEL)
-        .map(|morsel| {
-            let mut triples: Vec<KnnTriple> = morsel
+    let sorted_tiles: Vec<Vec<KnnTriple>> = tiles
+        .par_iter()
+        .map(|cell| {
+            let mut triples: Vec<KnnTriple> = cell
                 .iter()
                 .flat_map(|&qi| {
-                    let qi_usize = qi as usize;
-                    let (qx, qy) = (qxs[qi_usize], qys[qi_usize]);
+                    let (qx, qy) = (qxs[qi as usize], qys[qi as usize]);
                     let cands = match part_poly {
                         Some(pp) => knn_polys_multipart(
-                            index,
-                            qx,
-                            qy,
-                            fetch,
-                            k,
-                            xs,
-                            ys,
-                            ring_offsets,
-                            poly_offsets,
-                            pp,
+                            index, qx, qy, fetch, k, xs, ys, ring_offsets, poly_offsets, pp,
                         ),
                         None => knn_polys_pruned(
-                            index,
-                            qx,
-                            qy,
-                            fetch,
-                            k,
-                            xs,
-                            ys,
-                            ring_offsets,
-                            poly_offsets,
-                            &bbox,
+                            index, qx, qy, fetch, k, xs, ys, ring_offsets, poly_offsets, &bbox,
                         ),
                     };
                     cands
@@ -602,7 +587,7 @@ pub fn par_knn_to_polygons_sorted<I: SpatialIndex + Sync>(
         })
         .collect();
 
-    let triples = kway_merge(sorted_morsels);
+    let triples = kway_merge(sorted_tiles);
     let n = triples.len();
     let mut q_idx = Vec::with_capacity(n);
     let mut t_idx = Vec::with_capacity(n);

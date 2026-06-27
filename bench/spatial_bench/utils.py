@@ -385,15 +385,12 @@ def measure_query(query, data_dir: str, index_mode: str = "eager", runs: int = 3
     for i, (t, kv) in enumerate(zip(times, run_kvs), 1):
         stages = kv.get("PYCANOPY_Q12_STAGES", "")
         mat = kv.get("PYCANOPY_MATERIALIZE", "")
-        steal = kv.get("PYCANOPY_STEAL", "")
-        if stages or mat or steal:
+        if stages or mat:
             parts = [f"total={t:.2f}s"]
             if stages:
                 parts.append(stages)
             if mat:
                 parts.append(f"materialize={float(mat):.2f}s")
-            if steal:
-                parts.append(f"steal={float(steal):.1f}%")
             print(f"[timing] {query.id} run {i}: {','.join(parts)}", flush=True)
     return {"status": "ok", "pycanopy_seconds": round(avg, 4), "run_times": times}
 
