@@ -440,10 +440,28 @@ pub fn par_knn_to_polygons<I: SpatialIndex + Sync>(
                     let (qx, qy) = (qxs[qi as usize], qys[qi as usize]);
                     let cands = match part_poly {
                         Some(pp) => knn_polys_multipart(
-                            index, qx, qy, fetch, k, xs, ys, ring_offsets, poly_offsets, pp,
+                            index,
+                            qx,
+                            qy,
+                            fetch,
+                            k,
+                            xs,
+                            ys,
+                            ring_offsets,
+                            poly_offsets,
+                            pp,
                         ),
                         None => knn_polys_pruned(
-                            index, qx, qy, fetch, k, xs, ys, ring_offsets, poly_offsets, &bbox,
+                            index,
+                            qx,
+                            qy,
+                            fetch,
+                            k,
+                            xs,
+                            ys,
+                            ring_offsets,
+                            poly_offsets,
+                            &bbox,
                         ),
                     };
                     (qi, cands)
@@ -490,8 +508,12 @@ impl RadixKey for KnnTriple {
 
 // Partition queries into a grid_n×grid_n spatial grid; nearby queries share polygon vertex cache lines
 fn build_query_tiles(qxs: &[f64], qys: &[f64], order: &[u32], grid_n: usize) -> Vec<Vec<u32>> {
-    let (mut min_x, mut min_y, mut max_x, mut max_y) =
-        (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    );
     for (&x, &y) in qxs.iter().zip(qys.iter()) {
         min_x = min_x.min(x);
         min_y = min_y.min(y);
@@ -499,8 +521,16 @@ fn build_query_tiles(qxs: &[f64], qys: &[f64], order: &[u32], grid_n: usize) -> 
         max_y = max_y.max(y);
     }
     let gn = grid_n as f64;
-    let sx = if max_x > min_x { gn / (max_x - min_x) } else { 0.0 };
-    let sy = if max_y > min_y { gn / (max_y - min_y) } else { 0.0 };
+    let sx = if max_x > min_x {
+        gn / (max_x - min_x)
+    } else {
+        0.0
+    };
+    let sy = if max_y > min_y {
+        gn / (max_y - min_y)
+    } else {
+        0.0
+    };
     let mut tiles: Vec<Vec<u32>> = vec![vec![]; grid_n * grid_n];
     for &qi in order {
         let cx = (((qxs[qi as usize] - min_x) * sx) as usize).min(grid_n - 1);
@@ -566,10 +596,28 @@ pub fn par_knn_to_polygons_sorted<I: SpatialIndex + Sync>(
                     let (qx, qy) = (qxs[qi as usize], qys[qi as usize]);
                     let cands = match part_poly {
                         Some(pp) => knn_polys_multipart(
-                            index, qx, qy, fetch, k, xs, ys, ring_offsets, poly_offsets, pp,
+                            index,
+                            qx,
+                            qy,
+                            fetch,
+                            k,
+                            xs,
+                            ys,
+                            ring_offsets,
+                            poly_offsets,
+                            pp,
                         ),
                         None => knn_polys_pruned(
-                            index, qx, qy, fetch, k, xs, ys, ring_offsets, poly_offsets, &bbox,
+                            index,
+                            qx,
+                            qy,
+                            fetch,
+                            k,
+                            xs,
+                            ys,
+                            ring_offsets,
+                            poly_offsets,
+                            &bbox,
                         ),
                     };
                     cands
