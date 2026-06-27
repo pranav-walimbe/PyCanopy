@@ -12,6 +12,9 @@ use rdst::{RadixKey, RadixSort};
 // Spatial tile grid dimension; each cell's polygon vertex working set targets L3 cache.
 const TILE_GRID: usize = 16;
 
+/// Per-tile kNN results: each entry is (query_idx, candidate (target_idx, dist) list)
+type TileResults = Vec<Vec<(u32, Vec<(u64, f64)>)>>;
+
 use crate::index::kdtree::PackedKdTree;
 use crate::index::SpatialIndex;
 use crate::query::geometry::point_to_polygon_distance;
@@ -432,7 +435,7 @@ pub fn par_knn_to_polygons<I: SpatialIndex + Sync>(
     let tiles = build_query_tiles(qxs, qys, &order, TILE_GRID);
 
     // Parallelise over tiles so each tile's polygon vertices stay warm in L3 across its queries
-    let tile_results: Vec<Vec<(u32, Vec<(u64, f64)>)>> = tiles
+    let tile_results: TileResults = tiles
         .par_iter()
         .map(|cell| {
             cell.iter()
