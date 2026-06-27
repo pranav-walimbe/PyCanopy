@@ -49,20 +49,6 @@ class MockDataset:
         else:
             self._data = _generate_polygons(n, seed, bounds, polygon_size)
 
-    def as_engine(self) -> Engine:
-        """Return a PyCanopy Engine (eager indexing) loaded with this dataset.
-
-        Returns:
-            An eager-indexed Engine over the dataset geometries.
-        """
-        engine = (
-            Engine(self._data)
-            if self.geometry_type == "points"
-            else Engine.from_polygons(self._data)
-        )
-        engine.set_index_mode("eager")
-        return engine
-
     def as_shapely_list(self) -> list:
         """Return polygon geometries as a list of shapely objects (polygons only).
 
@@ -241,9 +227,7 @@ class BenchmarkReport:
                     "gp cold ms": round(comp_cold, 3) if comp_cold is not None else None,
                     "gp ms": round(comp_warm, 3) if comp_warm is not None else None,
                     "speedup": (
-                        f"{comp_warm / op.warm_ms:.1f}x"
-                        if comp_warm and op.warm_ms > 0
-                        else None
+                        f"{comp_warm / op.warm_ms:.1f}x" if comp_warm and op.warm_ms > 0 else None
                     ),
                 }
             )
@@ -427,5 +411,3 @@ def geopandas_intersects_self_join_indexed(gs) -> tuple[Callable, Callable]:
         return pairs[:, mask]
 
     return cold, warm
-
-

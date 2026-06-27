@@ -1,4 +1,4 @@
-"""Operation benchmark
+"""Operation benchmark.
 
 Runs each join operation cold (SpatialFrame construction + index build + query) and warm
 (index cached, query only) against the best available indexed Python baseline.
@@ -28,8 +28,8 @@ from bench.ops.utils import (
 
 _ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
 
-N_JOIN = 100_000   # point join target and probe size
-N_POLY = 100_000   # polygon join target and probe size
+N_JOIN = 100_000  # point join target and probe size
+N_POLY = 100_000  # polygon join target and probe size
 
 K_JOIN = 5
 DISTANCE = 0.05
