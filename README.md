@@ -14,7 +14,7 @@
 ---
 
 > [!NOTE]
-> Highly competitive on [Apache SpatialBench](https://github.com/apache/sedona-spatialbench) (single node spatial query benchmark): fastest on 6 of 12 queries at SF1 and 4 of 12 at SF10.
+> Highly competitive on [Apache SpatialBench](https://github.com/apache/sedona-spatialbench) (single node spatial query benchmark): fastest on 6 of 12 queries at SF1 and 4 of 12 at SF10 despite never leaving Polars-like syntax
 
 <p align="center">
   <img src="assets/spatialbench_sf1_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1" width="100%"/>
