@@ -6,7 +6,6 @@ area and IoU computed per pair.
 
 from __future__ import annotations
 
-import numpy as np
 import polars as pl
 
 id = "q9"
@@ -18,20 +17,13 @@ compare = {"keys": ["building_1", "building_2"], "values": ["iou"], "rel_tol": 1
 def pycanopy(tables) -> pl.DataFrame:
     buildings = tables.table("building", ["b_buildingkey", "b_boundary"])
     sf = tables.polygon_frame(buildings, "b_boundary")
-    pairs = sf.intersects_pairs()
-
-    schema = {"building_1": pl.Int64, "building_2": pl.Int64, "iou": pl.Float64}
+    pairs = sf.intersects_pairs(key_col="b_buildingkey")
     if pairs.height == 0:
-        return pl.DataFrame(schema=schema)
-
-    keys = buildings["b_buildingkey"].to_numpy()
-    k1 = keys[pairs["left"].to_numpy()]
-    k2 = keys[pairs["right"].to_numpy()]
-    # Order each pair so building_1 < building_2 by key, matching the canonical query.
-    swap = k1 > k2
-    b1 = np.where(swap, k2, k1)
-    b2 = np.where(swap, k1, k2)
-    return pl.DataFrame(
-        {"building_1": b1, "building_2": b2, "iou": pairs["iou"].to_numpy()},
-        schema=schema,
+        return pl.DataFrame(
+            schema={"building_1": pl.Int64, "building_2": pl.Int64, "iou": pl.Float64}
+        )
+    return pairs.select(
+        pl.col("b_buildingkey_1").alias("building_1"),
+        pl.col("b_buildingkey_2").alias("building_2"),
+        "iou",
     ).sort(["iou", "building_1", "building_2"], descending=[True, False, False])

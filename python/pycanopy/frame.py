@@ -193,24 +193,42 @@ class SpatialFrame:
         areas = self._engine.polygon_areas()
         return self._df.with_columns(pl.Series("area", areas))
 
-    def intersects_pairs(self) -> pl.DataFrame:
+    def intersects_pairs(self, key_col: str | None = None) -> pl.DataFrame:
         """Return intersecting polygon pairs (i < j) with overlap area and IoU (polygon datasets).
 
+        Args:
+            key_col: Optional column name whose values replace the positional left/right indices.
+                When provided, output columns are named ``{key_col}_1`` and ``{key_col}_2``,
+                and each pair is canonicalized so the smaller key value appears in ``_1``.
+
         Returns:
-            DataFrame with columns: left, right, area_left, area_right, overlap_area, iou.
-            Empty (correct schema) when no polygons intersect.
+            DataFrame with columns left/right (or key_1/key_2 if key_col given),
+            area_left, area_right, overlap_area, iou. Empty with correct schema when none intersect.
         """
         flat = self._engine.polygon_intersects_self_join()
-        schema = {
-            "left": pl.UInt32,
-            "right": pl.UInt32,
-            "area_left": pl.Float64,
-            "area_right": pl.Float64,
-            "overlap_area": pl.Float64,
-            "iou": pl.Float64,
-        }
         if len(flat) == 0:
-            return pl.DataFrame(schema=schema)
+            if key_col is not None:
+                dtype = self._df[key_col].dtype
+                return pl.DataFrame(
+                    schema={
+                        f"{key_col}_1": dtype,
+                        f"{key_col}_2": dtype,
+                        "area_left": pl.Float64,
+                        "area_right": pl.Float64,
+                        "overlap_area": pl.Float64,
+                        "iou": pl.Float64,
+                    }
+                )
+            return pl.DataFrame(
+                schema={
+                    "left": pl.UInt32,
+                    "right": pl.UInt32,
+                    "area_left": pl.Float64,
+                    "area_right": pl.Float64,
+                    "overlap_area": pl.Float64,
+                    "iou": pl.Float64,
+                }
+            )
 
         pairs = flat.reshape(-1, 2)
         i_idx = pairs[:, 0]
@@ -221,6 +239,23 @@ class SpatialFrame:
         area_j = areas[j_idx]
         union = area_i + area_j - overlap
         iou = np.divide(overlap, union, out=np.zeros_like(overlap), where=union > 0.0)
+
+        if key_col is not None:
+            keys = self._df[key_col].to_numpy()
+            k1 = keys[i_idx]
+            k2 = keys[j_idx]
+            swap = k1 > k2
+            return pl.DataFrame(
+                {
+                    f"{key_col}_1": np.where(swap, k2, k1),
+                    f"{key_col}_2": np.where(swap, k1, k2),
+                    "area_left": area_i,
+                    "area_right": area_j,
+                    "overlap_area": overlap,
+                    "iou": iou,
+                }
+            )
+
         return pl.DataFrame(
             {
                 "left": i_idx.astype(np.uint32),
@@ -230,7 +265,14 @@ class SpatialFrame:
                 "overlap_area": overlap,
                 "iou": iou,
             },
-            schema=schema,
+            schema={
+                "left": pl.UInt32,
+                "right": pl.UInt32,
+                "area_left": pl.Float64,
+                "area_right": pl.Float64,
+                "overlap_area": pl.Float64,
+                "iou": pl.Float64,
+            },
         )
 
     def points_within_distance_of_polygon(self, polygon, distance: float) -> pl.DataFrame:

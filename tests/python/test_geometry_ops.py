@@ -186,6 +186,18 @@ def test_frame_intersects_pairs_iou():
     assert abs(row["iou"] - (1.0 / 7.0)) < 1e-9
 
 
+def test_frame_intersects_pairs_key_col():
+    df = pl.DataFrame(
+        {"id": [10, 5], "geom": [shapely.box(0, 0, 2, 2).wkb, shapely.box(1, 1, 3, 3).wkb]}
+    )
+    sf = SpatialFrame.from_wkb_polygons(df, "geom")
+    pairs = sf.intersects_pairs(key_col="id")
+    assert len(pairs) == 1
+    row = pairs.row(0, named=True)
+    assert row["id_1"] == 5 and row["id_2"] == 10
+    assert abs(row["iou"] - (1.0 / 7.0)) < 1e-9
+
+
 def test_frame_polygon_areas_column():
     sf = _poly_frame([(0, 0, 1, 1), (0, 0, 2, 2)])
     out = sf.polygon_areas()
