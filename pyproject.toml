@@ -48,14 +48,15 @@ dev = [
     "shapely>=2.0",
 ]
 # Everything bench/ needs. Core deps (numpy, polars, pyarrow) are already required.
-# SedonaDB is the spatial_bench verification + timing oracle; geopandas is the naive
-# competitor in the ops bench.
+# SedonaDB is the spatial_bench verification + timing oracle; geopandas + scipy are the
+# indexed competitors in the ops bench.
 bench = [
     "sedonadb>=0.3",
     "geoarrow-pyarrow>=0.2",
     "pyproj>=3.6",
     "geopandas>=1.0",
     "shapely>=2.0",
+    "scipy>=1.15.3",
     "matplotlib>=3.7",
     "s3fs>=2024.0",
     "boto3>=1.34",
