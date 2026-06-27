@@ -1,24 +1,10 @@
-"""Q12: The 5 nearest buildings to each trip pickup location.
-
-Two execution paths are chosen automatically based on estimated result size:
-
-  Small probe (SF1, ~720 MB): sorted_output=True runs the kNN on all query points in
-  one Rust call and sorts pairs by (distance ASC, target_idx ASC) inside Rust via rayon.
-  No Polars streaming sort, no EBS spill. Fast and consistent (~11s at SF1).
-
-  Large probe (SF10, ~7.2 GB): the streamed join is exposed as a native Polars source
-  (lazy_source), so the join, distance sort and Parquet sink fuse into one Polars
-  streaming pipeline that spills to disk under a memory budget. Avoids the dual
-  allocation that would otherwise push peak Rust memory above 14 GB.
-
-The threshold is SORTED_BYTES_LIMIT: below it the Rust sort path is safe; above it
-the streaming sort path is used.
-"""
+"""Q12: The 5 nearest buildings to each trip pickup location."""
 
 from __future__ import annotations
 
 import os
 import tempfile
+import time
 from pathlib import Path
 
 import polars as pl
@@ -29,9 +15,6 @@ id = "q12"
 title = "5 nearest buildings to each trip pickup"
 
 K = 5
-
-# Peak for sorted_output=True is ~2x this (triples + output vecs alive simultaneously)
-SORTED_BYTES_LIMIT = 2 * 1024**3
 
 TABLES_NEEDED = {
     "building": ["b_buildingkey", "b_name", "b_boundary"],
@@ -65,35 +48,35 @@ def pycanopy(tables) -> pl.LazyFrame:
         A LazyFrame scanning the sorted (t_tripkey, b_buildingkey, distance_to_polygon)
         Parquet output, which the harness streams rather than materialising in RAM.
     """
+    t0 = time.perf_counter()
     tables.parallel_fetch(TABLES_NEEDED)
+    t1 = time.perf_counter()
+
     buildings = tables.table("building", ["b_buildingkey", "b_name", "b_boundary"])
     sf = tables.polygon_frame(buildings, "b_boundary")
+    t2 = time.perf_counter()
 
     trip = tables.table("trip", ["t_tripkey", "t_pickuploc"])
     qx, qy = wkb_points_to_xy(trip["t_pickuploc"])
     query_df = trip.select("t_tripkey").with_columns(pl.Series("qx", qx), pl.Series("qy", qy))
 
     out_path = _scratch_dir() / "sorted.parquet"
-    estimated_bytes = len(trip) * K * 24
+    joined = (
+        sf.lazy()
+        .polygon_knn_join(query_df, "qx", "qy", k=K, sorted_output=True)
+        .select(["t_tripkey", "b_buildingkey", "distance_to_polygon"])
+        .collect()
+    )
+    t3 = time.perf_counter()
+    joined.write_parquet(out_path)
+    t4 = time.perf_counter()
 
-    if estimated_bytes <= SORTED_BYTES_LIMIT:
-        # Rust rayon sort: all queries in one call, pairs sorted in RAM, no EBS spill
-        (
-            sf.lazy()
-            .polygon_knn_join(query_df, "qx", "qy", k=K, sorted_output=True)
-            .select(["t_tripkey", "b_buildingkey", "distance_to_polygon"])
-            .collect()
-            .write_parquet(out_path)
-        )
-    else:
-        # Streaming Polars sort: morsels fused with sort and sink, bounded RAM via EBS spill
-        (
-            sf.lazy()
-            .polygon_knn_join(query_df, "qx", "qy", k=K)
-            .select(["t_tripkey", "b_buildingkey", "distance_to_polygon"])
-            .lazy_source()
-            .sort(["distance_to_polygon", "b_buildingkey"])
-            .sink_parquet(out_path)
-        )
-
+    print(
+        f"PYCANOPY_Q12_STAGES="
+        f"fetch={t1 - t0:.2f}s,"
+        f"build={t2 - t1:.2f}s,"
+        f"join={t3 - t2:.2f}s,"
+        f"write={t4 - t3:.2f}s",
+        flush=True,
+    )
     return pl.scan_parquet(out_path)

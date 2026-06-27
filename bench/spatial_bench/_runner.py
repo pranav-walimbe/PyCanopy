@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import time
+import time as _time
 
 from bench.spatial_bench import queries
 from bench.spatial_bench._profile import ProfilingTables, profile_payload
@@ -40,14 +40,16 @@ def main() -> None:
         tables = SpatialBenchTables(data_dir=args.data_dir, index_mode=args.index_mode)
 
     try:
-        t0 = time.perf_counter()
+        t0 = _time.perf_counter()
         result = qmodule.pycanopy(tables)
         if args.profile:
             with tables.profiler.stage("collect"):
                 result = _materialize(result)
         else:
+            t_mat = _time.perf_counter()
             result = _materialize(result)
-        elapsed = time.perf_counter() - t0
+            print(f"PYCANOPY_MATERIALIZE={_time.perf_counter() - t_mat:.4f}", flush=True)
+        elapsed = _time.perf_counter() - t0
     except Exception as exc:
         print(f"PYCANOPY_ERROR={type(exc).__name__}: {exc}", flush=True)
         sys.exit(1)

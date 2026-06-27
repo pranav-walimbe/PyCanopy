@@ -352,6 +352,7 @@ def measure_query(query, data_dir: str, index_mode: str = "eager", runs: int = 3
         A result dict with status, pycanopy_seconds (average), and run_times.
     """
     times: list[float] = []
+    run_kvs: list[dict] = []
 
     for i in range(runs):
         r = spawn_query(query.id, data_dir, index_mode)
@@ -369,6 +370,7 @@ def measure_query(query, data_dir: str, index_mode: str = "eager", runs: int = 3
             break
 
         times.append(r["time"])
+        run_kvs.append(r.get("kv", {}))
 
     avg = sum(times) / len(times)
     print(
@@ -380,6 +382,16 @@ def measure_query(query, data_dir: str, index_mode: str = "eager", runs: int = 3
         ),
         flush=True,
     )
+    for i, (t, kv) in enumerate(zip(times, run_kvs), 1):
+        stages = kv.get("PYCANOPY_Q12_STAGES", "")
+        mat = kv.get("PYCANOPY_MATERIALIZE", "")
+        if stages or mat:
+            parts = [f"total={t:.2f}s"]
+            if stages:
+                parts.append(stages)
+            if mat:
+                parts.append(f"materialize={float(mat):.2f}s")
+            print(f"[timing] {query.id} run {i}: {','.join(parts)}", flush=True)
     return {"status": "ok", "pycanopy_seconds": round(avg, 4), "run_times": times}
 
 
