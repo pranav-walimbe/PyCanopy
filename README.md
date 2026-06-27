@@ -14,7 +14,7 @@
 ---
 
 > [!NOTE]
-> State of the art on [Apache SpatialBench](https://github.com/apache/sedona-spatialbench) (single node spatial query benchmark): fastest on 6 of 12 queries at SF1 and 7 of 12 at SF10, winning every heavy spatial join at both scales.
+> Highly competitive on [Apache SpatialBench](https://github.com/apache/sedona-spatialbench) (single node spatial query benchmark): fastest on 6 of 12 queries at SF1 and 4 of 12 at SF10.
 
 <p align="center">
   <img src="assets/spatialbench_sf1_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1" width="100%"/>
@@ -340,38 +340,21 @@ sf.engine.flush()
 
 ### Apache SpatialBench
 
-Run on a single `m7i.2xlarge` (8 vCPU, 32 GB), the same hardware used by [Apache SpatialBench](https://github.com/apache/sedona-spatialbench). PyCanopy is measured live with `index_mode="auto"`; SedonaDB 0.3.0, DuckDB 1.5.4, GeoPandas 1.1.3, and Spatial Polars 0.3.0 are snapshot numbers from [run #152](https://github.com/apache/sedona-spatialbench/actions/runs/27864209643) (2026-06-20).
+Run on a single `m7i.2xlarge` (8 vCPU, 32 GB), the same hardware used by [Apache SpatialBench](https://github.com/apache/sedona-spatialbench). PyCanopy is measured live with `index_mode="auto"`.
 
-**SF1** (~6M trips). PyCanopy wins 6 of 12, taking every heavy spatial join (q7–q12). DuckDB wins q1–q6.
+**SF1** (~6M trips). PyCanopy wins 6 of 12 testcases.
 
 <p align="center">
   <img src="assets/spatialbench_sf1_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1" width="100%"/>
 </p>
 <p align="center"><sub>Apache SpatialBench SF1 · lower is better · linear axis, bars past the cap truncated with their value · TIMEOUT / ERROR annotated</sub></p>
 
-**SF10** (~60M trips). PyCanopy wins 7 of 12 and is the only engine to complete all 12. DuckDB wins q1–q4 and q6; GeoPandas and Spatial Polars error on most queries; SedonaDB errors on q12. q12 produces a result larger than 32 GB — PyCanopy streams the join out of core and finishes in 108s where every other engine fails.
+**SF10** (~60M trips). PyCanopy wins 4 of 12 testcases.
 
 <p align="center">
   <img src="assets/spatialbench_sf10_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF10" width="100%"/>
 </p>
 <p align="center"><sub>Apache SpatialBench SF10 · lower is better · linear axis, bars past the cap truncated with their value · TIMEOUT / ERROR annotated</sub></p>
-
-### Per-operation vs GeoPandas
-
-Apple M-series. **Cold** = fresh engine, index build included. **Warm** = cached index, second call. **GeoPandas** is the naive baseline (no spatial index). Uniform random data.
-
-| Operation                          |       N |    Cold |    Warm | GeoPandas |   Speedup |
-|:-----------------------------------|--------:|--------:|--------:|----------:|----------:|
-| Range query (points)               | 100,000 |  2.7 ms |   31 µs |    5.5 ms |   **177×** |
-| kNN k=10                           | 100,000 |  9.5 ms |    5 µs |    7.4 ms | **1,452×** |
-| Contains (polygons)                | 100,000 |  5.1 ms |    3 µs |    5.2 ms | **1,922×** |
-| Range (polygons)                   | 100,000 |  5.5 ms |    7 µs |    3.2 ms |   **470×** |
-| kNN join k=5                       |  10,000 |  8.8 ms |  2.8 ms |    5.6 s  | **1,958×** |
-| Within-distance join               |  10,000 | 15.7 ms | 13.9 ms |    3.7 s  |   **266×** |
-| Within join (polygons)             |   5,000 |  3.3 ms | 0.73 ms |    1.2 s  | **1,663×** |
-| Point→polygon kNN join k=5         |   5,000 |  7.4 ms |  4.4 ms |    6.3 s  | **1,414×** |
-| Point→polygon within-distance join |   5,000 |  6.9 ms |  6.5 ms |    5.5 s  |   **858×** |
-| Intersects self-join               |   5,000 |  3.0 ms | 0.89 ms |   0.84 s  |   **943×** |
 
 ---
 
