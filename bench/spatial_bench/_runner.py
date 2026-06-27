@@ -20,7 +20,6 @@ def _materialize(result):
     return result
 
 
-
 def main() -> None:
     """Parse args, run one query with timing, and print structured output to stdout."""
     parser = argparse.ArgumentParser(add_help=False)

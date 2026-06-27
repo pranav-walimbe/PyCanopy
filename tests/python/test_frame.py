@@ -229,3 +229,32 @@ def test_from_wkb_points_custom_coord_names():
 def test_from_wkb_points_missing_column_raises():
     with pytest.raises(ValueError, match="wkb_col"):
         SpatialFrame.from_wkb_points(pl.DataFrame({"v": [1]}), "geom")
+
+
+# range_filter tests
+
+
+def _wkb_polygon_frame():
+    # Two non-overlapping unit squares: one near origin, one far away
+    boxes = [shapely.box(0, 0, 1, 1), shapely.box(10, 10, 11, 11)]
+    return pl.DataFrame({"id": [1, 2], "geom": [b.wkb for b in boxes]})
+
+
+def test_range_filter_point_frame_returns_spatial_frame(sf):
+    result = sf.range_filter(0.0, 0.0, 1.5, 0.5)
+    assert isinstance(result, SpatialFrame)
+    assert sorted(result.df["v"].to_list()) == [10, 20]
+
+
+def test_range_filter_polygon_frame_returns_matching_polygon():
+    sf = SpatialFrame.from_wkb_polygons(_wkb_polygon_frame(), "geom")
+    result = sf.range_filter(0.0, 0.0, 2.0, 2.0)
+    assert isinstance(result, SpatialFrame)
+    assert result.df["id"].to_list() == [1]
+    assert result.engine.n == 1
+
+
+def test_range_filter_polygon_frame_empty_bbox():
+    sf = SpatialFrame.from_wkb_polygons(_wkb_polygon_frame(), "geom")
+    result = sf.range_filter(5.0, 5.0, 6.0, 6.0)
+    assert result.engine.n == 0

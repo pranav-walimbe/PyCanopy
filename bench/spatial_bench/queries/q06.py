@@ -8,7 +8,6 @@ the pair frame.
 
 from __future__ import annotations
 
-import numpy as np
 import polars as pl
 
 import pycanopy as pc
@@ -32,8 +31,8 @@ def pycanopy(tables) -> pl.DataFrame:
     tables.parallel_fetch(TABLES_NEEDED)
     zone = tables.table("zone", ["z_zonekey", "z_name", "z_boundary"])
     zsf = tables.polygon_frame(zone, "z_boundary")
-    cand_idx = zsf.engine.range_query(*BBOX)
-    if not cand_idx:
+    cand_sf = zsf.range_filter(*BBOX)
+    if cand_sf.engine.n == 0:
         return pl.DataFrame(
             schema={
                 "z_zonekey": pl.Int64,
@@ -43,8 +42,6 @@ def pycanopy(tables) -> pl.DataFrame:
                 "avg_duration": pl.Float64,
             }
         )
-    cand = zone[pl.Series(np.asarray(cand_idx, dtype=np.uint32))]
-    cand_sf = tables.polygon_frame(cand, "z_boundary")
 
     trip = tables.table("trip", _TRIP_COLS)
     qx, qy = wkb_points_to_xy(trip["t_pickuploc"])

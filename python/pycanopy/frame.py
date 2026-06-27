@@ -37,6 +37,8 @@ class SpatialFrame:
             df[y_col].to_numpy(),
         )
         self._engine.set_index_mode(index_mode)
+        self._wkb_col: str | None = None
+        self._wkb_series: pl.Series | None = None
 
     @classmethod
     def from_wkb_points(
@@ -134,6 +136,8 @@ class SpatialFrame:
         sf._x_col = x_col
         sf._y_col = y_col
         sf._engine = engine
+        sf._wkb_col = wkb_col
+        sf._wkb_series = df[wkb_col]
         return sf
 
     def lazy(self) -> SpatialLazyFrame:
@@ -143,6 +147,38 @@ class SpatialFrame:
             A SpatialLazyFrame for declarative plan construction.
         """
         return SpatialLazyFrame(self, [])
+
+    def range_filter(
+        self,
+        min_x: float,
+        min_y: float,
+        max_x: float,
+        max_y: float,
+    ) -> SpatialFrame:
+        """Return a new SpatialFrame containing only geometries that intersect the bounding box.
+
+        Args:
+            min_x: Left edge of the query rectangle.
+            min_y: Bottom edge of the query rectangle.
+            max_x: Right edge of the query rectangle.
+            max_y: Top edge of the query rectangle.
+
+        Returns:
+            New SpatialFrame with the matching rows and a freshly built index.
+        """
+        indices = self._engine.range_query(min_x, min_y, max_x, max_y)
+        if not indices:
+            if self._wkb_col is not None:
+                empty = self._df.clear().with_columns(pl.Series(self._wkb_col, [], dtype=pl.Binary))
+                return SpatialFrame.from_wkb_polygons(
+                    empty, self._wkb_col, self._x_col, self._y_col
+                )
+            return SpatialFrame(self._df.clear(), self._x_col, self._y_col)
+        idx_s = pl.Series(np.asarray(indices, dtype=np.uint32))
+        if self._wkb_col is not None:
+            filtered = self._df[idx_s].with_columns(self._wkb_series[idx_s].alias(self._wkb_col))
+            return SpatialFrame.from_wkb_polygons(filtered, self._wkb_col, self._x_col, self._y_col)
+        return SpatialFrame(self._df[idx_s], self._x_col, self._y_col)
 
     # Geometry aggregations and transforms (polygon datasets). These produce new
     # tables or scalar columns rather than filtering, so they live on the frame

@@ -11,10 +11,9 @@ on the divide.
 
 from __future__ import annotations
 
-import numpy as np
 import polars as pl
 
-from pycanopy import wkb_points_to_xy
+from pycanopy import wkb_point_distance
 
 id = "q7"
 title = "Route detour ratio (reported vs straight-line distance)"
@@ -29,9 +28,7 @@ compare = {
 
 def pycanopy(tables) -> pl.DataFrame:
     trip = tables.table("trip", ["t_tripkey", "t_distance", "t_pickuploc", "t_dropoffloc"])
-    px, py = wkb_points_to_xy(trip["t_pickuploc"])
-    dx, dy = wkb_points_to_xy(trip["t_dropoffloc"])
-    line_m = np.sqrt((px - dx) ** 2 + (py - dy) ** 2) / DEG_PER_M
+    line_m = wkb_point_distance(trip["t_pickuploc"], trip["t_dropoffloc"]) / DEG_PER_M
 
     df = trip.select("t_tripkey", "t_distance").with_columns(
         pl.Series("line_distance_m", line_m),

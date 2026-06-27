@@ -45,10 +45,7 @@ def pycanopy(tables) -> pl.DataFrame:
         .filter(pl.col("trip_count") > MIN_TRIPS)
     )
 
-    areas = [
-        Engine.convex_hull_area(dxs, dys)
-        for dxs, dys in zip(grouped["dxs"], grouped["dys"], strict=True)
-    ]
+    areas = Engine.group_convex_hull_areas(grouped["dxs"], grouped["dys"])
     grouped = grouped.with_columns(
         monthly_travel_hull_area=pl.Series("monthly_travel_hull_area", areas, dtype=pl.Float64)
     ).sort(["trip_count", "t_custkey"], descending=[True, False])

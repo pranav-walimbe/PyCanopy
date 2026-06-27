@@ -1567,6 +1567,68 @@ impl Engine {
         Ok(convex_hull_area(xs_sl, ys_sl))
     }
 
+    /// Convex hull area for each group defined by CSR offsets over flat xs/ys arrays
+    #[staticmethod]
+    fn group_convex_hull_areas(
+        py: Python<'_>,
+        xs: PyReadonlyArray1<f64>,
+        ys: PyReadonlyArray1<f64>,
+        offsets: PyReadonlyArray1<i64>,
+    ) -> PyResult<Py<PyArray1<f64>>> {
+        let xs = xs
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("xs must be a contiguous float64 array"))?;
+        let ys = ys
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("ys must be a contiguous float64 array"))?;
+        let offs = offsets
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("offsets must be a contiguous int64 array"))?;
+        let n = offs.len().saturating_sub(1);
+        let areas: Vec<f64> = (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let s = offs[i] as usize;
+                let e = offs[i + 1] as usize;
+                convex_hull_area(&xs[s..e], &ys[s..e])
+            })
+            .collect();
+        Ok(PyArray1::from_vec(py, areas).into())
+    }
+
+    /// Euclidean distance between two point sets given as four flat coordinate arrays
+    #[staticmethod]
+    fn euclidean_distance(
+        py: Python<'_>,
+        xs1: PyReadonlyArray1<f64>,
+        ys1: PyReadonlyArray1<f64>,
+        xs2: PyReadonlyArray1<f64>,
+        ys2: PyReadonlyArray1<f64>,
+    ) -> PyResult<Py<PyArray1<f64>>> {
+        let xs1 = xs1
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("xs1 must be a contiguous float64 array"))?;
+        let ys1 = ys1
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("ys1 must be a contiguous float64 array"))?;
+        let xs2 = xs2
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("xs2 must be a contiguous float64 array"))?;
+        let ys2 = ys2
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("ys2 must be a contiguous float64 array"))?;
+        let n = xs1.len();
+        let dists: Vec<f64> = (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let dx = xs1[i] - xs2[i];
+                let dy = ys1[i] - ys2[i];
+                (dx * dx + dy * dy).sqrt()
+            })
+            .collect();
+        Ok(PyArray1::from_vec(py, dists).into())
+    }
+
     /// Heap bytes of all currently-built indexes (excludes the always-present xs/ys arrays).
     /// 0 if none built. Sums every built index. Usually one but several can coexist.
     fn index_bytes(&self) -> usize {

@@ -125,6 +125,21 @@ def wkb_points_to_xy(points) -> tuple[np.ndarray, np.ndarray]:
     )
 
 
+def wkb_point_distance(series_a, series_b) -> np.ndarray:
+    """Compute the Euclidean distance between two WKB point columns in one parallel pass.
+
+    Args:
+        series_a: A column of WKB point geometries (first point set).
+        series_b: A column of WKB point geometries (second point set).
+
+    Returns:
+        Float64 numpy array of per-row distances.
+    """
+    xs1, ys1 = wkb_points_to_xy(series_a)
+    xs2, ys2 = wkb_points_to_xy(series_b)
+    return _CoreEngine.euclidean_distance(xs1, ys1, xs2, ys2)
+
+
 def _wkb_points_fast(arr: pa.Array) -> tuple[np.ndarray, np.ndarray] | None:
     # Read x/y from a uniformly 21-byte WKB point column via one numpy view, or None for
     # nulls or any non-uniform or non-point layout so the caller can fall back to shapely.
@@ -762,6 +777,24 @@ class Engine:
         return self._core.points_within_distance_of_polygon(
             poly_xs, poly_ys, ring_offsets, poly_offsets, distance
         )
+
+    @staticmethod
+    def group_convex_hull_areas(xs_series, ys_series) -> np.ndarray:
+        """Compute the convex hull area for each group in a pair of Polars list Series.
+
+        Args:
+            xs_series: A Polars List(Float64) Series of x coordinates, one list per group.
+            ys_series: A Polars List(Float64) Series of y coordinates, one list per group.
+
+        Returns:
+            Float64 numpy array of convex hull areas, one per group.
+        """
+        lengths = xs_series.list.len().to_numpy()
+        offsets = np.zeros(len(lengths) + 1, dtype=np.int64)
+        np.cumsum(lengths, out=offsets[1:])
+        xs_flat = xs_series.explode().to_numpy().astype(np.float64, copy=False)
+        ys_flat = ys_series.explode().to_numpy().astype(np.float64, copy=False)
+        return _CoreEngine.group_convex_hull_areas(xs_flat, ys_flat, offsets)
 
     @staticmethod
     def convex_hull_area(xs, ys) -> float:

@@ -10,9 +10,10 @@ from __future__ import annotations
 import numpy as np
 import polars as pl
 import pytest
+import shapely
 from shapely.geometry import box as shapely_box
 
-from pycanopy import Engine, SpatialFrame
+from pycanopy import Engine, SpatialFrame, wkb_point_distance
 
 
 def _poly_engine(boxes) -> Engine:
@@ -104,6 +105,37 @@ def test_convex_hull_area():
 
 def test_convex_hull_area_degenerate():
     assert Engine.convex_hull_area([0.0, 1.0], [0.0, 1.0]) == 0.0
+
+
+def test_group_convex_hull_areas():
+    # Two groups: a 2x2 square (area 4) and a degenerate group (<3 points, area 0)
+    xs = pl.Series([[0.0, 2.0, 2.0, 0.0], [0.0, 1.0]])
+    ys = pl.Series([[0.0, 0.0, 2.0, 2.0], [0.0, 1.0]])
+    areas = Engine.group_convex_hull_areas(xs, ys)
+    assert abs(areas[0] - 4.0) < 1e-9
+    assert areas[1] == 0.0
+
+
+def test_group_convex_hull_areas_matches_scalar():
+    # Batch result must match calling Engine.convex_hull_area per group
+    rng = np.random.default_rng(42)
+    groups_x = [rng.uniform(0, 10, size=rng.integers(3, 20)).tolist() for _ in range(50)]
+    groups_y = [rng.uniform(0, 10, size=len(g)).tolist() for g in groups_x]
+    xs = pl.Series(groups_x)
+    ys = pl.Series(groups_y)
+    batch = Engine.group_convex_hull_areas(xs, ys)
+    for i, (gx, gy) in enumerate(zip(groups_x, groups_y)):
+        expected = Engine.convex_hull_area(np.array(gx), np.array(gy))
+        assert abs(batch[i] - expected) < 1e-9, f"group {i}: batch={batch[i]} scalar={expected}"
+
+
+def test_wkb_point_distance():
+    # 3-4-5 right triangle: distance should be exactly 5.0
+    pts_a = pl.Series(shapely.to_wkb([shapely.Point(0.0, 0.0), shapely.Point(0.0, 0.0)]))
+    pts_b = pl.Series(shapely.to_wkb([shapely.Point(3.0, 4.0), shapely.Point(0.0, 0.0)]))
+    dists = wkb_point_distance(pts_a, pts_b)
+    assert abs(dists[0] - 5.0) < 1e-9
+    assert dists[1] == 0.0
 
 
 def test_within_distance_to_polygons_rejects_point_engine():
