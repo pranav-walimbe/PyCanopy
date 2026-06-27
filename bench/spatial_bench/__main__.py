@@ -87,6 +87,7 @@ def _launch(
         UserData=_user_data(cfg, run_id, scale_factor, index_mode, profile, n),
         InstanceInitiatedShutdownBehavior="terminate",
         IamInstanceProfile={"Name": cfg["instance_profile"]},
+        Placement={"Tenancy": "dedicated"},
         BlockDeviceMappings=[
             {
                 "DeviceName": "/dev/xvda",
