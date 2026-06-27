@@ -28,6 +28,8 @@ from pycanopy import wkb_points_to_xy
 id = "q12"
 title = "5 nearest buildings to each trip pickup"
 
+K = 5
+
 # Peak for sorted_output=True is ~2x this (triples + output vecs alive simultaneously)
 SORTED_BYTES_LIMIT = 2 * 1024**3
 
