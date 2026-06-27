@@ -2,11 +2,14 @@
 //! Each function crosses the Python/Rust boundary once and loops via rayon.
 //! Returns Vec<u64> or Vec<(u64, u64)> to avoid per-element Python int allocation.
 
-use std::cmp::Ordering;
+use std::cmp::{Ordering, Reverse};
+use std::collections::BinaryHeap;
 use std::sync::Arc;
 
 use rayon::prelude::*;
 use rdst::{RadixKey, RadixSort};
+
+const KNN_SORT_MORSEL: usize = 4096;
 
 use crate::index::kdtree::PackedKdTree;
 use crate::index::SpatialIndex;
@@ -505,11 +508,31 @@ impl RadixKey for KnnTriple {
     }
 }
 
+fn kway_merge(morsels: Vec<Vec<KnnTriple>>) -> Vec<KnnTriple> {
+    let total: usize = morsels.iter().map(|v| v.len()).sum();
+    let mut out = Vec::with_capacity(total);
+    let mut heap: BinaryHeap<Reverse<(u64, u64, usize, usize)>> = BinaryHeap::new();
+    for (mi, v) in morsels.iter().enumerate() {
+        if !v.is_empty() {
+            heap.push(Reverse((v[0].dist_bits, v[0].target_idx, mi, 0)));
+        }
+    }
+    while let Some(Reverse((_, _, mi, ei))) = heap.pop() {
+        out.push(morsels[mi][ei]);
+        let next = ei + 1;
+        if next < morsels[mi].len() {
+            let t = &morsels[mi][next];
+            heap.push(Reverse((t.dist_bits, t.target_idx, mi, next)));
+        }
+    }
+    out
+}
+
 /// Like `par_knn_to_polygons` but returns all valid pairs globally sorted by
 /// (distance ASC, target_idx ASC), matching `ORDER BY distance_to_building, b_buildingkey`.
 ///
 /// Returns `(query_indices, target_indices, distances)` as three flat Vecs with no padding.
-/// The full result is built in RAM and sorted with rayon before returning.
+/// Queries are processed in morsel-sized chunks to bound straggler impact under CPU contention.
 #[allow(clippy::too_many_arguments)]
 pub fn par_knn_to_polygons_sorted<I: SpatialIndex + Sync>(
     index: &I,
@@ -530,50 +553,56 @@ pub fn par_knn_to_polygons_sorted<I: SpatialIndex + Sync>(
     };
     let order = morton_order(qxs, qys);
 
-    let mut triples: Vec<KnnTriple> = order
-        .par_iter()
-        .flat_map_iter(|&qi| {
-            let qi_usize = qi as usize;
-            let (qx, qy) = (qxs[qi_usize], qys[qi_usize]);
-            let cands = match part_poly {
-                Some(pp) => knn_polys_multipart(
-                    index,
-                    qx,
-                    qy,
-                    fetch,
-                    k,
-                    xs,
-                    ys,
-                    ring_offsets,
-                    poly_offsets,
-                    pp,
-                ),
-                None => knn_polys_pruned(
-                    index,
-                    qx,
-                    qy,
-                    fetch,
-                    k,
-                    xs,
-                    ys,
-                    ring_offsets,
-                    poly_offsets,
-                    &bbox,
-                ),
-            };
-            cands
-                .into_iter()
-                .filter(|(t_idx, _)| *t_idx != u64::MAX)
-                .map(move |(t_idx, dist)| KnnTriple {
-                    dist_bits: dist.to_bits(),
-                    target_idx: t_idx,
-                    query_idx: qi as u64,
+    let sorted_morsels: Vec<Vec<KnnTriple>> = order
+        .par_chunks(KNN_SORT_MORSEL)
+        .map(|morsel| {
+            let mut triples: Vec<KnnTriple> = morsel
+                .iter()
+                .flat_map(|&qi| {
+                    let qi_usize = qi as usize;
+                    let (qx, qy) = (qxs[qi_usize], qys[qi_usize]);
+                    let cands = match part_poly {
+                        Some(pp) => knn_polys_multipart(
+                            index,
+                            qx,
+                            qy,
+                            fetch,
+                            k,
+                            xs,
+                            ys,
+                            ring_offsets,
+                            poly_offsets,
+                            pp,
+                        ),
+                        None => knn_polys_pruned(
+                            index,
+                            qx,
+                            qy,
+                            fetch,
+                            k,
+                            xs,
+                            ys,
+                            ring_offsets,
+                            poly_offsets,
+                            &bbox,
+                        ),
+                    };
+                    cands
+                        .into_iter()
+                        .filter(|(t_idx, _)| *t_idx != u64::MAX)
+                        .map(move |(t_idx, dist)| KnnTriple {
+                            dist_bits: dist.to_bits(),
+                            target_idx: t_idx,
+                            query_idx: qi as u64,
+                        })
                 })
+                .collect();
+            triples.radix_sort_unstable();
+            triples
         })
         .collect();
 
-    triples.radix_sort_unstable();
-
+    let triples = kway_merge(sorted_morsels);
     let n = triples.len();
     let mut q_idx = Vec::with_capacity(n);
     let mut t_idx = Vec::with_capacity(n);
