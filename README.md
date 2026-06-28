@@ -404,16 +404,13 @@ All times in seconds. **Bold** = fastest on that query. SedonaDB, DuckDB, and Ge
 
 ## How It Works
 
-PyCanopy plans a query in two layers, then hands the result to Polars to run.
+The engine has dedicated components for query planning / execution and ultimately returns a Polars DataFrame.
 
 ### Query flow
 
 ```mermaid
 flowchart LR
-    A[User chain] --> B[SpatialOptimizer] --> C[SpatialExecutor]
-    C -->|EXPR| D[PyCanopy + Polars]
-    C -->|IO| E[PyCanopy only]
-    D & E --> F[pl.DataFrame]
+    A[User chain] --> B[SpatialOptimizer] --> C[SpatialExecutor] --> F[pl.DataFrame]
 ```
 
 ### Logical planning
