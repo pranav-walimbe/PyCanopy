@@ -43,20 +43,24 @@ result = sf.lazy().filter(pl.col("population") > 100_000).range_query(-10.0, 35.
 
 ## Why PyCanopy
 
-No other spatial engine gives you all three at once:
+<table>
+<tr>
+  <td align="center" width="33%"><b>Polars-native API</b><br><br>No SQL, no conversion. Spatial ops compose directly with Polars expressions and lazy frames.</td>
+  <td align="center" width="33%"><b>Intelligent indexing</b><br><br>The engine selects index type and build timing from a cost model, not a fixed rule.</td>
+  <td align="center" width="33%"><b>Spatial query planner</b><br><br>Reorders predicates, fuses filters, flips join sides, and pushes projections into the join.</td>
+</tr>
+</table>
 
-- Polars-native API (no SQL, no conversion)
-- Intelligent spatial indexing (the engine decides index type and when to build it)
-- A query planner that understands spatial operations (reorders predicates, fuses filters, pushes projections)
+<br>
 
 How the options compare:
 
-|                                                   | PyCanopy | GeoPandas      | DuckDB spatial | SedonaDB | Spatial Polars |
-|:--------------------------------------------------|:--------:|:--------------:|:--------------:|:--------:|:--------------:|
-| Polars-native, no SQL or conversion               | ✓        | ✗              | ✗ (SQL)        | ✗ (SQL)       | ✓                    |
-| Spatial query planner (reorder, fuse, pushdown)   | ✓        | ✗              | ✗ (spatial join operator, no predicate reordering) | ✓ (SQL/Spark) | ✗ (Polars optimizer) |
-| Index vs scan decided by cost model               | ✓        | ✗              | ✗              | ✗             | ✗                    |
-| Adaptive index selection based on query profile   | ✓        | ✗ (STRtree)    | ✗ (R-tree)     | ✗ (Quadtree)  | ✗ (STRtree / KDTree) |
+|  | PyCanopy | GeoPandas | DuckDB | SedonaDB | Spatial Polars |
+|:--|:--------:|:---------:|:------:|:--------:|:--------------:|
+| Polars-native, no SQL or conversion             | ✓ | ✗ | ✗ (SQL) | ✗ (SQL) | ✓ |
+| Spatial query planner (reorder, fuse, pushdown) | ✓ | ✗ | ✗ | ✓ (SQL) | ✗ |
+| Index vs scan decided by cost model             | ✓ | ✗ | ✗ | ✗ | ✗ |
+| Adaptive index (KD-tree / R-tree / grid)        | ✓ | ✗ STRtree | ✗ R-tree | ✗ Quadtree | ✗ STRtree / KDTree |
 
 ---
 
@@ -414,17 +418,11 @@ PyCanopy plans a query in two layers, then hands the result to Polars to run.
 
 ### Query flow
 
-```
-sf.lazy().filter(...).range_query(...).knn_join(...).collect()
-         │
-         ▼  Logical plan — whole chain
-            order ops · fuse predicates · pick join side · pick execution path
-         │
-         ▼  Access path — per operation
-            index or scan, and which kind: cost model decides
-         │
-         ▼  Polars execution
-            emitted ops run natively → pl.DataFrame
+```mermaid
+flowchart LR
+    A["sf.lazy() chain"] --> B["Logical planner\norder · fuse · flip · IO/EXPR"]
+    B --> C["Access planner\ncost model → index or scan"]
+    C --> D["Polars execution\npl.DataFrame"]
 ```
 
 ### Logical planning
@@ -443,7 +441,7 @@ sf.lazy().filter(...).range_query(...).knn_join(...).collect()
 | Mode | Behaviour |
 |:-----|:----------|
 | `auto` (default) | build index when cost model allows it |
-| `eager` | always build index the selected index, skipping the cost check |
+| `eager` | always build the selected index type, skip the cost check |
 | `none` | always scan |
 
 When `index_mode="auto"`, the planner runs a heuristics-based comparison:
@@ -460,11 +458,13 @@ $$
 
 $$
 \text{sel} = \begin{cases}
-\text{hist}(\text{bbox}) / N & \text{range (summed from 32×32 load-time density histogram)} \\
+\text{hist}(\text{bbox}) / N & \text{range (query box summed over a 32x32 density histogram)} \\
 k / N & \text{kNN} \\
 1 / N & \text{contains}
 \end{cases}
 $$
+
+<br>
 
 **Probe cost** ($Q$ warm queries against a built index):
 
@@ -476,6 +476,8 @@ N \cdot c_{\text{scan}} & \text{brute force} \\
 \end{cases}
 $$
 
+<br>
+
 **Build cost** (paid once):
 
 $$
@@ -486,7 +488,9 @@ N \log_2 N \cdot c_{\text{build}} & \text{KD-tree or R-tree}
 \end{cases}
 $$
 
-The empirical constants ($c_{\text{scan}}$, $c_{\text{tree}}$, $c_{\text{grid}}$, $c_{\text{build}}$) are derived based on benchmark runs in `/bench/ops`.
+<br>
+
+The empirical constants ($c_{\text{scan}}$, $c_{\text{tree}}$, $c_{\text{grid}}$, $c_{\text{build}}$) are calibrated from benchmark runs in `bench/ops`.
 
 ### Index selection
 
