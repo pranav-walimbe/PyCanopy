@@ -437,41 +437,56 @@ sf.lazy().filter(...).range_query(...).knn_join(...).collect()
 
 ### Cost model
 
-For each operation, the planner compares a full scan against using an index:
-
-| | Scan | Index |
-|:--|:--|:--|
-| Setup | none | `N log N` (first use only) |
-| Per probe | `N` | `log N` |
-| **Total** | `Q × N` | `N log N + Q × log N` |
-
-`N` = indexed points. `Q` = probe points, derived from the left-frame row count after scalar filters run.
-
-[will do]
-
-`index_mode`, set per frame, controls how the estimate is applied:
+`index_mode` determines how we use the cost model:
 
 | Mode | Behaviour |
 |:-----|:----------|
-| `auto` (default) | build when the cost model justifies it. Once built, the index is treated as free and always reused for subsequent queries on the same frame |
-| `eager` | always build the selected index, skipping the cost check |
+| `auto` (default) | build index when cost model allows it |
+| `eager` | always build index the selected index, skipping the cost check |
 | `none` | always scan |
+
+When `index_mode="auto"`, the planner runs a three-way comparison:
+
+$$\text{winner} = \arg\min \begin{cases} \text{Cost}_{\text{probe}}(\text{built index}) & \text{build already paid} \\ \text{Cost}_{\text{build}} + \text{Cost}_{\text{probe}}(\text{best new index}) \\ \text{Cost}_{\text{probe}}(\text{brute force}) \end{cases}$$
+
+**Selectivity** — fraction of the dataset expected to match the query:
+
+$$\text{sel} = \begin{cases} \text{hist}(\text{bbox}) / N & \text{range — summed from 32×32 load-time density histogram} \\ k / N & \text{kNN} \\ 1 / N & \text{contains} \end{cases}$$
+
+**Probe cost** ($Q$ warm queries against a built index):
+
+$$\text{Cost}_{\text{probe}} = Q \times \begin{cases} N \cdot c_{\text{scan}} & \text{brute force} \\ (\log_2 N + \text{sel} \cdot N) \cdot c_{\text{tree}} & \text{KD-tree or R-tree} \\ \text{sel} \cdot N \cdot c_{\text{grid}} & \text{grid} \end{cases}$$
+
+**Build cost** (paid once):
+
+$$\text{Cost}_{\text{build}} = \begin{cases} 0 & \text{brute force} \\ N \cdot c_{\text{build}} & \text{grid} \\ N \log_2 N \cdot c_{\text{build}} & \text{KD-tree or R-tree} \end{cases}$$
+
+The empirical constants ($c_{\text{scan}}$, $c_{\text{tree}}$, $c_{\text{grid}}$, $c_{\text{build}}$) are derived based on benchmark runs.
 
 ### Index selection
 
-Indexes build lazily and are available after the first qualifying query. A 32×32 density histogram is computed once at load time to detect the spatial skew of the dataset, which informs the index selection decision below.
+`select_index` is a rule-based pre-filter that picks a candidate index type. In `auto` mode the cost model then decides whether to actually build it.
 
 ```mermaid
 flowchart TD
-    A[Query arrives] --> B{"N < 500, selectivity > 50%,\nor k/N > 10%?"}
+    A[Query arrives] --> B{N < 500?}
     B -- yes --> BF[Brute force]
-    B -- no --> C{Polygon dataset?}
-    C -- yes --> RT[R-tree]
-    C -- no --> D{Query type?}
-    D -- kNN or contains --> KD1[KD-tree]
-    D -- range --> E{Density histogram}
-    E -- "low skew\n(uniform spread)" --> UG[Uniform grid]
-    E -- "high skew\n(spatial hotspots)" --> KD2[KD-tree]
+    B -- no --> C{sel > 50%?}
+    C -- yes --> BF
+    C -- no --> D{Query type}
+    D -- kNN --> E{k / N > 10%?}
+    E -- yes --> BF
+    E -- no --> F{Polygon?}
+    F -- yes --> RT[R-tree]
+    F -- no --> KD[KD-tree]
+    D -- contains --> G{Polygon?}
+    G -- yes --> RT
+    G -- no --> KD
+    D -- range --> H{Polygon?}
+    H -- yes --> RT
+    H -- no --> I{Uniform distribution?}
+    I -- yes --> GR[Grid]
+    I -- no --> KD
 ```
 
 All index types share the same coordinate arrays with no duplication.
