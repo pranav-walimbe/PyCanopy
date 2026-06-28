@@ -154,7 +154,7 @@ def _emit_progress(s3, cfg: dict, run_id: str, seen: int) -> int:
     lines = [
         line.rstrip()
         for line in text.decode("utf-8", "replace").splitlines()
-        if line.startswith(("[testcase]", "[verification]", "[timing]", "[mem]"))
+        if line.startswith(("[testcase]", "[verification]", "[timing]"))
     ]
     for line in lines[seen:]:
         print(line, flush=True)

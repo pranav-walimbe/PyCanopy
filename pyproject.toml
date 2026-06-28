@@ -61,7 +61,6 @@ bench = [
     "s3fs>=2024.0",
     "boto3>=1.34",
     "pyyaml>=6.0",
-    "psutil>=5.9",
 ]
 
 [tool.pytest.ini_options]
