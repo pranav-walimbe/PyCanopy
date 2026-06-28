@@ -28,7 +28,7 @@ fn build_cost(kind: IndexKind, n: usize, factors: &CostFactors) -> f64 {
     }
 }
 
-fn probe_cost(
+pub fn probe_cost(
     kind: IndexKind,
     stats: &DatasetStats,
     query: &Query,

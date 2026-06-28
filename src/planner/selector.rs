@@ -1,5 +1,5 @@
 use crate::planner::calibration::CostFactors;
-use crate::planner::cost::{selectivity, total_cost, IndexKind, IndexMode};
+use crate::planner::cost::{probe_cost, selectivity, total_cost, IndexKind, IndexMode};
 use crate::query::types::Query;
 use crate::stats::types::{DatasetStats, Distribution, GeometryKind};
 
@@ -91,6 +91,41 @@ pub fn rtree_candidate(stats: &DatasetStats) -> IndexKind {
     } else {
         IndexKind::RTree
     }
+}
+
+/// Pick the cheapest strategy given a set of already-built indexes.
+///
+/// Compares probe-only cost of each built index (build already paid), full build+probe
+/// cost of the optimal new index, and brute-force probe cost. Returns the winner,
+/// which may be a kind not yet in `built` when building a new index beats reusing one.
+pub fn plan_best_available(
+    built: &[IndexKind],
+    stats: &DatasetStats,
+    query: &Query,
+    q_count: usize,
+    factors: &CostFactors,
+) -> IndexKind {
+    let brute_cost = probe_cost(IndexKind::BruteForce, stats, query, q_count, factors);
+    let mut best_kind = IndexKind::BruteForce;
+    let mut best_cost = brute_cost;
+
+    for &k in built {
+        let c = probe_cost(k, stats, query, q_count, factors);
+        if c < best_cost {
+            best_cost = c;
+            best_kind = k;
+        }
+    }
+
+    let candidate = select_index(stats, query);
+    if candidate != IndexKind::BruteForce {
+        let new_cost = total_cost(candidate, stats, query, q_count, factors);
+        if new_cost < best_cost {
+            best_kind = candidate;
+        }
+    }
+
+    best_kind
 }
 
 /// Plan the index kind for `query`, honouring the index mode. The candidate kind
@@ -241,6 +276,37 @@ mod tests {
         assert_eq!(
             plan_access(&s, &big_knn(), 1_000_000, IndexMode::Auto, &f),
             IndexKind::KdTree
+        );
+    }
+
+    #[test]
+    fn best_available_empty_falls_through_to_new_vs_brute() {
+        let s = stats(1_000_000, GeometryKind::Point, Distribution::Clustered);
+        let f = CostFactors::default();
+        assert_eq!(
+            plan_best_available(&[], &s, &big_knn(), 1_000_000, &f),
+            IndexKind::KdTree
+        );
+    }
+
+    #[test]
+    fn best_available_reuses_built_index_for_few_probes() {
+        // Build cost already paid, so even 1 probe uses the built index.
+        let s = stats(1_000_000, GeometryKind::Point, Distribution::Clustered);
+        let f = CostFactors::default();
+        assert_eq!(
+            plan_best_available(&[IndexKind::KdTree], &s, &big_knn(), 1, &f),
+            IndexKind::KdTree
+        );
+    }
+
+    #[test]
+    fn best_available_selects_optimal_new_index_when_none_built() {
+        let s = stats(1_000_000, GeometryKind::Polygon, Distribution::Unknown);
+        let f = CostFactors::default();
+        assert_eq!(
+            plan_best_available(&[], &s, &small_bbox(), 1_000_000, &f),
+            IndexKind::RTree
         );
     }
 }

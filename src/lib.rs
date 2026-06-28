@@ -22,7 +22,8 @@ use planner::{
     calibration::CostFactors,
     cost::{IndexKind, IndexMode},
     selector::{
-        plan_access, plan_access_with_kind, point_distance_candidate, rtree_candidate, select_index,
+        plan_access, plan_access_with_kind, plan_best_available, point_distance_candidate,
+        rtree_candidate, select_index,
     },
 };
 use query::{
@@ -252,6 +253,14 @@ impl Engine {
     }
 
     fn plan_index(&self, query: &Query, q_count: usize) -> IndexKind {
+        if self.index_mode == IndexMode::Auto {
+            let mut built = [IndexKind::BruteForce; 3];
+            let mut n = 0;
+            if self.rtree.is_some() { built[n] = IndexKind::RTree; n += 1; }
+            if self.kdtree.is_some() { built[n] = IndexKind::KdTree; n += 1; }
+            if self.grid.is_some() { built[n] = IndexKind::Grid; n += 1; }
+            return plan_best_available(&built[..n], &self.stats, query, q_count, &self.cost_factors);
+        }
         plan_access(
             &self.stats,
             query,
