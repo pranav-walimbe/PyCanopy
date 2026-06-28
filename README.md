@@ -447,19 +447,45 @@ sf.lazy().filter(...).range_query(...).knn_join(...).collect()
 
 When `index_mode="auto"`, the planner runs a three-way comparison:
 
-$$\text{winner} = \arg\min \begin{cases} \text{Cost}_{\text{probe}}(\text{built index}) & \text{build already paid} \\ \text{Cost}_{\text{build}} + \text{Cost}_{\text{probe}}(\text{best new index}) \\ \text{Cost}_{\text{probe}}(\text{brute force}) \end{cases}$$
+$$
+\text{winner} = \arg\min \begin{cases}
+\text{Cost}_{\text{probe}}(\text{built index}) & \text{build already paid} \\
+\text{Cost}_{\text{build}} + \text{Cost}_{\text{probe}}(\text{best new index}) \\
+\text{Cost}_{\text{probe}}(\text{brute force})
+\end{cases}
+$$
 
 **Selectivity** — fraction of the dataset expected to match the query:
 
-$$\text{sel} = \begin{cases} \text{hist}(\text{bbox}) / N & \text{range — summed from 32×32 load-time density histogram} \\ k / N & \text{kNN} \\ 1 / N & \text{contains} \end{cases}$$
+$$
+\text{sel} = \begin{cases}
+\text{hist}(\text{bbox}) / N & \text{range — summed from 32×32 load-time density histogram} \\
+k / N & \text{kNN} \\
+1 / N & \text{contains}
+\end{cases}
+$$
 
 **Probe cost** ($Q$ warm queries against a built index):
 
-$$\text{Cost}_{\text{probe}} = Q \times \begin{cases} N \cdot c_{\text{scan}} & \text{brute force} \\ (\log_2 N + \text{sel} \cdot N) \cdot c_{\text{tree}} & \text{KD-tree or R-tree} \\ \text{sel} \cdot N \cdot c_{\text{grid}} & \text{grid} \end{cases}$$
+$$
+\text{Cost}_{\text{probe}} = Q \times \begin{cases}
+N \cdot c_{\text{scan}} & \text{brute force} \\
+(\log_2 N + \text{sel} \cdot N) \cdot c_{\text{tree}} & \text{KD-tree or R-tree} \\
+\text{sel} \cdot N \cdot c_{\text{grid}} & \text{grid}
+\end{cases}
+$$
+
+Grid skips the $\log_2 N$ term — lookups go directly to the cell with no traversal. $c_{\text{tree}}$ differs by query kind (kNN vs range have different per-node costs).
 
 **Build cost** (paid once):
 
-$$\text{Cost}_{\text{build}} = \begin{cases} 0 & \text{brute force} \\ N \cdot c_{\text{build}} & \text{grid} \\ N \log_2 N \cdot c_{\text{build}} & \text{KD-tree or R-tree} \end{cases}$$
+$$
+\text{Cost}_{\text{build}} = \begin{cases}
+0 & \text{brute force} \\
+N \cdot c_{\text{build}} & \text{grid} \\
+N \log_2 N \cdot c_{\text{build}} & \text{KD-tree or R-tree}
+\end{cases}
+$$
 
 The empirical constants ($c_{\text{scan}}$, $c_{\text{tree}}$, $c_{\text{grid}}$, $c_{\text{build}}$) are derived based on benchmark runs.
 
@@ -473,20 +499,15 @@ flowchart TD
     B -- yes --> BF[Brute force]
     B -- no --> C{sel > 50%?}
     C -- yes --> BF
-    C -- no --> D{Query type}
-    D -- kNN --> E{k / N > 10%?}
-    E -- yes --> BF
-    E -- no --> F{Polygon?}
-    F -- yes --> RT[R-tree]
-    F -- no --> KD[KD-tree]
-    D -- contains --> G{Polygon?}
-    G -- yes --> RT
+    C -- no --> D{kNN and k/N > 10%?}
+    D -- yes --> BF
+    D -- no --> E{Polygon dataset?}
+    E -- yes --> RT[R-tree]
+    E -- no --> F{Query type}
+    F -- kNN or contains --> KD[KD-tree]
+    F -- range --> G{Uniform distribution?}
+    G -- yes --> GR[Grid]
     G -- no --> KD
-    D -- range --> H{Polygon?}
-    H -- yes --> RT
-    H -- no --> I{Uniform distribution?}
-    I -- yes --> GR[Grid]
-    I -- no --> KD
 ```
 
 All index types share the same coordinate arrays with no duplication.
