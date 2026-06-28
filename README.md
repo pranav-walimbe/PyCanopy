@@ -431,9 +431,9 @@ sf.lazy().filter(...).range_query(...).knn_join(...).collect()
 
 - **Predicate pushdown:** scalar filters run first, cheapest first, shrinking the row count before any spatial work.
 - **Fusion:** consecutive spatial predicates merge into one index build and pass.
-- **Join side:** symmetric joins index the smaller side; `knn_join` always indexes the engine side.
+- **Join side:** symmetric joins preserve the existing engine index unless the query frame exceeds half the engine size, in which case sides are flipped so the larger side is always probed rather than indexed.
 - **Projection pushdown:** a terminal `.select()` pushes into the join, gathering only the requested columns.
-- **Execution path:** very selective filters slice the prebuilt index directly (IO path), otherwise filters run first and a small index builds on survivors (EXPR path).
+- **Execution path:** very selective filters use the IO path, the global engine index is queried directly and the frame sliced. Otherwise the EXPR path runs scalar filters first, then queries the global engine index over survivors via `map_batches`.
 
 ### Cost model
 
