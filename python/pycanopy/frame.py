@@ -19,12 +19,12 @@ class SpatialFrame:
         df: Materialized Polars DataFrame.
         x_col: Name of the column holding x (longitude/easting) coordinates.
         y_col: Name of the column holding y (latitude/northing) coordinates.
-        index_mode: Index build policy fixed for this frame's engine. "eager"
-            (default) builds an index whenever a kind is selected, "none" always
-            scans brute-force, "auto" builds only when the cost model beats a scan.
+        index_mode: Index build policy fixed for this frame's engine. "auto"
+            (default) builds only when the cost model beats a scan, "eager" always
+            builds an index, "none" always scans brute-force.
     """
 
-    def __init__(self, df: pl.DataFrame, x_col: str, y_col: str, index_mode: str = "eager") -> None:
+    def __init__(self, df: pl.DataFrame, x_col: str, y_col: str, index_mode: str = "auto") -> None:
         if x_col not in df.columns:
             raise ValueError(f"x_col {x_col!r} not found in DataFrame")
         if y_col not in df.columns:
@@ -47,7 +47,7 @@ class SpatialFrame:
         wkb_col: str,
         x_col: str = "_x",
         y_col: str = "_y",
-        index_mode: str = "eager",
+        index_mode: str = "auto",
     ) -> SpatialFrame:
         """Construct a point SpatialFrame from a WKB point column of ``df``.
 
@@ -77,7 +77,7 @@ class SpatialFrame:
         geometry_col: str,
         x_col: str = "_x",
         y_col: str = "_y",
-        index_mode: str = "eager",
+        index_mode: str = "auto",
     ) -> SpatialFrame:
         """Construct from a DataFrame containing a shapely/GeoArrow geometry column.
 
@@ -110,7 +110,7 @@ class SpatialFrame:
         wkb_col: str,
         x_col: str = "_x",
         y_col: str = "_y",
-        index_mode: str = "eager",
+        index_mode: str = "auto",
     ) -> SpatialFrame:
         """Construct a polygon SpatialFrame from a WKB polygon column of ``df``.
 
