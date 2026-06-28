@@ -410,8 +410,10 @@ PyCanopy plans a query in two layers, then hands the result to Polars to run.
 
 ```mermaid
 flowchart LR
-    A["sf.lazy() chain\n.filter() · .range_query() · .collect()"] --> B["Logical planner\norder · fuse · flip · IO/EXPR"]
-    B --> C["Access planner\ncost model → index or scan"] --> D["Polars execution\nnative ops · pl.DataFrame"]
+    A[User chain] --> B[Logical planner] --> C[Access planner]
+    C --> D[PyCanopy executor]
+    C --> E[Polars executor]
+    D & E --> F[pl.DataFrame]
 ```
 
 ### Logical planning
@@ -433,31 +435,50 @@ flowchart LR
 | `eager` | always build the selected index type, skip the cost check |
 | `none` | always scan |
 
-When `index_mode="auto"`, the planner runs a cost-based comparison ($Q$ queries, $N$ items):
+When `index_mode="auto"`, the planner picks the minimum-cost option ($Q$ queries, $N$ items):
 
 $$
-\begin{align*}
-\text{winner} &= \arg\min &&\begin{cases}
+\text{winner} = \arg\min \begin{cases}
 \text{Cost}_{\text{probe}}(\text{built index}) & \text{build already paid} \\
 \text{Cost}_{\text{build}} + \text{Cost}_{\text{probe}}(\text{best new index}) \\
 \text{Cost}_{\text{probe}}(\text{brute force})
-\end{cases} \\[2em]
-\text{sel} &= &&\begin{cases}
-\text{hist}(\text{bbox}) / N & \text{range (32x32 density histogram)} \\
+\end{cases}
+$$
+
+<br>
+
+**Selectivity** (fraction of the dataset expected to match):
+
+$$
+\text{sel} = \begin{cases}
+\text{hist}(\text{bbox}) / N & \text{range (32×32 density histogram)} \\
 k / N & \text{kNN} \\
 1 / N & \text{contains}
-\end{cases} \\[2em]
-\text{Cost}_{\text{probe}} &= Q \times &&\begin{cases}
+\end{cases}
+$$
+
+<br>
+
+**Probe cost** ($Q$ warm queries against a built index):
+
+$$
+\text{Cost}_{\text{probe}} = Q \times \begin{cases}
 N \cdot c_{\text{scan}} & \text{brute force} \\
 (\log_2 N + \text{sel} \cdot N) \cdot c_{\text{tree}} & \text{KD-tree or R-tree} \\
 \text{sel} \cdot N \cdot c_{\text{grid}} & \text{grid}
-\end{cases} \\[2em]
-\text{Cost}_{\text{build}} &= &&\begin{cases}
+\end{cases}
+$$
+
+<br>
+
+**Build cost** (paid once):
+
+$$
+\text{Cost}_{\text{build}} = \begin{cases}
 0 & \text{brute force} \\
 N \cdot c_{\text{build}} & \text{grid} \\
 N \log_2 N \cdot c_{\text{build}} & \text{KD-tree or R-tree}
 \end{cases}
-\end{align*}
 $$
 
 The empirical constants ($c_{\text{scan}}$, $c_{\text{tree}}$, $c_{\text{grid}}$, $c_{\text{build}}$) are calibrated from benchmark runs in `bench/ops`.
