@@ -22,13 +22,13 @@ pub struct CostFactors {
 impl Default for CostFactors {
     fn default() -> Self {
         CostFactors {
-            scan_ns_per_item: 5.0,
-            build_ns_per_item: 25.0,
-            kdtree_knn_ns: 18.0,
-            kdtree_range_ns: 12.0,
-            rtree_knn_ns: 25.0,
-            rtree_range_ns: 18.0,
-            grid_range_ns: 10.0,
+            scan_ns_per_item: 1.0,
+            build_ns_per_item: 1.0,
+            kdtree_knn_ns: 30.0,
+            kdtree_range_ns: 1.0,
+            rtree_knn_ns: 930.0,
+            rtree_range_ns: 20.0,
+            grid_range_ns: 20.0,
         }
     }
 }

@@ -48,10 +48,10 @@ pub fn probe_cost(
         _ => {
             let results = (selectivity(stats, query) * n).max(1.0);
             let per = match (kind, is_knn) {
-                (IndexKind::KdTree, true)  => factors.kdtree_knn_ns,
+                (IndexKind::KdTree, true) => factors.kdtree_knn_ns,
                 (IndexKind::KdTree, false) => factors.kdtree_range_ns,
-                (IndexKind::RTree,  true)  => factors.rtree_knn_ns,
-                (IndexKind::RTree,  false) => factors.rtree_range_ns,
+                (IndexKind::RTree, true) => factors.rtree_knn_ns,
+                (IndexKind::RTree, false) => factors.rtree_range_ns,
                 _ => unreachable!(),
             };
             q * (n.log2().max(1.0) + results) * per

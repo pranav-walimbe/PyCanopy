@@ -1,37 +1,37 @@
-# Ops Benchmark
+# Ops Calibration Benchmark
 
-Per-primitive benchmark for PyCanopy's batch spatial join operations. Each operation is
-measured cold (SpatialFrame construction + index build + query) and warm (index cached,
-query only) against the best available indexed Python baseline.
+Measures warm probe time per `(index_kind, query_kind)` at multiple N values and derives
+the `per_ns` constants used in `CostFactors` (`src/planner/calibration.rs`).
 
-## Operations
+## What it measures
 
-| Operation | N | Competitor |
-|-----------|---|-----------|
-| knn\_join k=5 | 100 K × 100 K points | cKDTree (scipy) |
-| within\_distance\_join | 100 K × 100 K points | STRtree (shapely) |
-| polygon\_knn\_join k=5 | 100 K × 100 K polygons | cKDTree on centroids (scipy) |
-| within\_join | 100 K × 100 K polygons | STRtree (shapely) |
-| polygon\_within\_distance\_join | 100 K × 100 K polygons | STRtree (shapely) |
-| intersects self-join | 100 K polygons | STRtree (shapely) |
+| Constant | Index | Query kind | Dataset |
+|----------|-------|------------|---------|
+| `kdtree_knn_ns` | KDTree | kNN | clustered points |
+| `kdtree_range_ns` | KDTree | range | clustered points |
+| `rtree_knn_ns` | RTree | kNN | polygons |
+| `rtree_range_ns` | RTree | range | polygons |
+| `grid_range_ns` | Grid | range | uniform points |
+| `scan_ns_per_item` | BruteForce | kNN | uniform points |
+| `build_ns_per_item` | KDTree | — | clustered points |
 
-Data is uniformly random over `[0, 1]²`. Polygons are axis-aligned boxes of size 0.005.
+Brute-force scan is only measured up to `--brute-max-n` (default 100,000) since it grows
+as `Q×N` and becomes impractical at large N.
 
-GeoPandas STRtree does not support batch kNN with k > 1, so kNN joins use scipy cKDTree
-(the standard go-to for that case). All other joins use STRtree.
+All data is generated over `[0, 1]²`. Range queries use a `0.1 × 0.1` bbox (selectivity ≈ 0.01).
+kNN uses k=5. Each timing is the median of `--runs` repetitions.
 
-## Columns
+## How constants are derived
 
-| Column | Meaning |
-|--------|---------|
-| `cold ms` | PyCanopy: SpatialFrame construction + index build + query |
-| `warm ms` | PyCanopy: query only (index cached) |
-| `gp index` | Competitor index used for this operation |
-| `gp cold ms` | Competitor: index construction + query |
-| `gp ms` | Competitor: query only (index pre-built) |
-| `speedup` | `gp ms / warm ms` (warm vs warm) |
+Each measured warm time `T` (ms) is inverted through the cost model formula:
 
-Both sides are timed identically: cold includes index construction, warm uses the pre-built index.
+| Constant | Formula |
+|----------|---------|
+| `kd_knn_ns`, `rt_knn_ns` | `T × 1e6 / (Q × (log₂N + k))` |
+| `kd_range_ns`, `rt_range_ns` | `T × 1e6 / (Q × (log₂N + sel×N))` |
+| `grid_range_ns` | `T × 1e6 / (Q × sel×N)` |
+| `scan_ns_per_item` | `T × 1e6 / (Q × N)` |
+| `build_ns_per_item` | `T × 1e6 / (N × log₂N)` |
 
 ## Running
 
@@ -39,4 +39,11 @@ Both sides are timed identically: cold includes index construction, warm uses th
 uv run python -m bench.ops
 ```
 
-Results are written to `assets/ops.txt`.
+Optional flags:
+
+```
+--sizes N [N ...]     dataset sizes to sweep (default: 10000 100000 500000 1000000)
+--queries Q           queries per timing call (default: 500)
+--runs R              repetitions per measurement, median taken (default: 3)
+--brute-max-n N       skip brute-force above this N (default: 100000)
+```
