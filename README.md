@@ -43,17 +43,7 @@ result = sf.lazy().filter(pl.col("population") > 100_000).range_query(-10.0, 35.
 
 ## Why PyCanopy
 
-<table>
-<tr>
-  <td align="center" width="33%"><b>Polars-native API</b><br><br>No SQL, no conversion. Spatial ops compose directly with Polars expressions and lazy frames.</td>
-  <td align="center" width="33%"><b>Intelligent indexing</b><br><br>The engine selects index type and build timing from a cost model, not a fixed rule.</td>
-  <td align="center" width="33%"><b>Spatial query planner</b><br><br>Reorders predicates, fuses filters, flips join sides, and pushes projections into the join.</td>
-</tr>
-</table>
-
-<br>
-
-How the options compare:
+The only spatial engine with a Polars-native API, cost-model-driven index selection, and a full spatial query planner.
 
 |  | PyCanopy | GeoPandas | DuckDB | SedonaDB | Spatial Polars |
 |:--|:--------:|:---------:|:------:|:--------:|:--------------:|
@@ -420,19 +410,18 @@ PyCanopy plans a query in two layers, then hands the result to Polars to run.
 
 ```mermaid
 flowchart LR
-    A["sf.lazy() chain"] --> B["Logical planner\norder · fuse · flip · IO/EXPR"]
-    B --> C["Access planner\ncost model → index or scan"]
-    C --> D["Polars execution\npl.DataFrame"]
+    A["sf.lazy() chain\n.filter() · .range_query() · .collect()"] --> B["Logical planner\norder · fuse · flip · IO/EXPR"]
+    B --> C["Access planner\ncost model → index or scan"] --> D["Polars execution\nnative ops · pl.DataFrame"]
 ```
 
 ### Logical planning
 
-- **Predicate pushdown:** scalar filters run first (cheapest first), reducing rows before any spatial work.
-- **Fusion:** consecutive range/contains predicates merge into a single index pass.
-- **Join side:** the engine index is preserved unless the query frame exceeds half the engine size, in which case sides flip so the larger side is probed.
+- **Predicate pushdown:** scalar filters run first, reducing rows before any spatial work.
+- **Fusion:** consecutive range/contains predicates merge into a single operation.
+- **Join side:** indexes on the side that makes the join most efficient.
 - **Projection pushdown:** a terminal `.select()` narrows both join sides before the gather.
-- **IO path:** highly selective filters (sel < 5%) query the global engine index directly and slice the frame.
-- **EXPR path:** otherwise, scalar filters run first via `map_batches`, then the global engine index is queried over survivors.
+- **IO path:** low-selectivity queries return results as a direct slice, bypassing the Polars expression pipeline.
+- **EXPR path:** runs the spatial engine as a Polars `map_batches` expression over the query set.
 
 ### Cost model
 
@@ -444,51 +433,32 @@ flowchart LR
 | `eager` | always build the selected index type, skip the cost check |
 | `none` | always scan |
 
-When `index_mode="auto"`, the planner runs a heuristics-based comparison:
+When `index_mode="auto"`, the planner runs a cost-based comparison ($Q$ queries, $N$ items):
 
 $$
-\text{winner} = \arg\min \begin{cases}
+\begin{align*}
+\text{winner} &= \arg\min &&\begin{cases}
 \text{Cost}_{\text{probe}}(\text{built index}) & \text{build already paid} \\
 \text{Cost}_{\text{build}} + \text{Cost}_{\text{probe}}(\text{best new index}) \\
 \text{Cost}_{\text{probe}}(\text{brute force})
-\end{cases}
-$$
-
-**Selectivity** (fraction of the dataset expected to match the query):
-
-$$
-\text{sel} = \begin{cases}
-\text{hist}(\text{bbox}) / N & \text{range (query box summed over a 32x32 density histogram)} \\
+\end{cases} \\[2em]
+\text{sel} &= &&\begin{cases}
+\text{hist}(\text{bbox}) / N & \text{range (32x32 density histogram)} \\
 k / N & \text{kNN} \\
 1 / N & \text{contains}
-\end{cases}
-$$
-
-<br>
-
-**Probe cost** ($Q$ warm queries against a built index):
-
-$$
-\text{Cost}_{\text{probe}} = Q \times \begin{cases}
+\end{cases} \\[2em]
+\text{Cost}_{\text{probe}} &= Q \times &&\begin{cases}
 N \cdot c_{\text{scan}} & \text{brute force} \\
 (\log_2 N + \text{sel} \cdot N) \cdot c_{\text{tree}} & \text{KD-tree or R-tree} \\
 \text{sel} \cdot N \cdot c_{\text{grid}} & \text{grid}
-\end{cases}
-$$
-
-<br>
-
-**Build cost** (paid once):
-
-$$
-\text{Cost}_{\text{build}} = \begin{cases}
+\end{cases} \\[2em]
+\text{Cost}_{\text{build}} &= &&\begin{cases}
 0 & \text{brute force} \\
 N \cdot c_{\text{build}} & \text{grid} \\
 N \log_2 N \cdot c_{\text{build}} & \text{KD-tree or R-tree}
 \end{cases}
+\end{align*}
 $$
-
-<br>
 
 The empirical constants ($c_{\text{scan}}$, $c_{\text{tree}}$, $c_{\text{grid}}$, $c_{\text{build}}$) are calibrated from benchmark runs in `bench/ops`.
 
@@ -497,20 +467,18 @@ The empirical constants ($c_{\text{scan}}$, $c_{\text{tree}}$, $c_{\text{grid}}$
 `select_index` is a rule-based pre-filter that picks a candidate index type:
 
 ```mermaid
-flowchart TD
-    A[Query arrives] --> B{N < 500?}
+flowchart LR
+    A[Query arrives] --> B{N < 500\nor sel > 50%?}
     B -- yes --> BF[Brute force]
-    B -- no --> C{sel > 50%?}
+    B -- no --> C{kNN and\nk/N > 10%?}
     C -- yes --> BF
-    C -- no --> D{kNN and k/N > 10%?}
-    D -- yes --> BF
-    D -- no --> E{Polygon dataset?}
-    E -- yes --> RT[R-tree]
-    E -- no --> F{Query type}
-    F -- kNN or contains --> KD[KD-tree]
-    F -- range --> G{Uniform distribution?}
-    G -- yes --> GR[Grid]
-    G -- no --> KD
+    C -- no --> D{Polygon\ndataset?}
+    D -- yes --> RT[R-tree]
+    D -- no --> E{Query type}
+    E -- kNN / contains --> KD[KD-tree]
+    E -- range --> F{Uniform?}
+    F -- yes --> GR[Grid]
+    F -- no --> KD
 ```
 
 All index types share the same coordinate arrays with no duplication.
