@@ -15,7 +15,7 @@ pub struct CostFactors {
     pub rtree_knn_ns: f64,
     /// R-tree probe cost per unit for range queries
     pub rtree_range_ns: f64,
-    /// Grid probe cost per result (range only; kNN always routes to KD-tree or R-tree)
+    /// Grid probe cost per result (range only, kNN always routes to KD-tree or R-tree)
     pub grid_range_ns: f64,
 }
 

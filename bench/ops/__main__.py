@@ -1,10 +1,6 @@
 """Cost model calibration benchmark.
 
-Measures warm probe time per (index_kind, query_kind) at multiple N values and
-derives the per_ns constants used in CostFactors. Brute-force scan is skipped
-above --brute-max-n since it grows as Q*N and becomes impractical at large N.
-
-Run: uv run python -m bench.ops [--sizes N ...] [--queries Q] [--runs R]
+Measures warm probe time per (index_kind, query_kind) across N values and derives the CostFactors constants.
 """
 
 from __future__ import annotations
@@ -35,6 +31,7 @@ _RANGE_BOX = (0.0, 0.0, 0.1, 0.1)
 
 
 def _query_pts(q: int) -> tuple[np.ndarray, np.ndarray]:
+    # Return q random query points uniform over [0, 1]^2
     rng = np.random.default_rng(99)
     return rng.uniform(0.0, 1.0, q), rng.uniform(0.0, 1.0, q)
 
@@ -50,6 +47,7 @@ def _build_time_ms(df: pl.DataFrame, x_col: str, y_col: str, runs: int) -> float
 
 
 def _measure_n(n: int, q: int, runs: int, brute_max_n: int) -> dict[str, float | None]:
+    # Measure warm probe and build times for all index/query combinations at dataset size n
     pts_u = generate_points(n, seed=42)
     pts_c = generate_clustered_points(n, seed=42)
     polys = generate_polygons(n, seed=42)
@@ -58,8 +56,7 @@ def _measure_n(n: int, q: int, runs: int, brute_max_n: int) -> dict[str, float |
     df_c = pl.DataFrame({"x": pts_c[:, 0], "y": pts_c[:, 1]})
     df_p = pl.DataFrame({"geom": polys.tolist()})
 
-    # eager builds the index selected by the cost model for each dataset type:
-    # uniform points → Grid, clustered points → KDTree, polygons → RTree
+    # eager builds the selected index: uniform → Grid, clustered → KDTree, polygons → RTree
     sf_u = SpatialFrame(df_u, "x", "y", index_mode="eager")
     sf_c = SpatialFrame(df_c, "x", "y", index_mode="eager")
     sf_p = SpatialFrame.from_polygons(df_p, "geom", index_mode="eager")
@@ -110,6 +107,7 @@ def _measure_n(n: int, q: int, runs: int, brute_max_n: int) -> dict[str, float |
 
 
 def _derive_ns(ms: dict[str, float | None], n: int, q: int) -> dict[str, float | None]:
+    # Invert measured times through the cost model formulas to derive per_ns constants
     log2n = math.log2(n)
     sel_n = _SEL * n
     return {

@@ -1,8 +1,6 @@
 """High-level Python engine wrapping the Rust core.
 
-Normalizes varied point input (GeoArrow, WKB columns, geopandas, shapely, numpy,
-coordinate sequences) to contiguous float64 arrays crossing the Rust boundary zero-copy.
-Standard 2D little-endian WKB points decode via a single strided numpy view.
+Normalizes varied point input to contiguous float64 arrays, with standard 2D LE WKB decoding via a strided numpy view.
 """
 
 from __future__ import annotations

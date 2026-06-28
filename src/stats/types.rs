@@ -6,10 +6,15 @@ pub const HISTOGRAM_RESOLUTION: usize = 32;
 /// Fixed 32x32 spatial histogram of geometry counts built at load time
 #[derive(Debug, Clone)]
 pub struct SpatialHistogram {
+    /// Flat row-major count array of length HISTOGRAM_RESOLUTION^2
     pub counts: Vec<u32>,
+    /// X coordinate of the histogram's left edge
     pub min_x: f64,
+    /// Y coordinate of the histogram's bottom edge
     pub min_y: f64,
+    /// Width of one cell in dataset coordinates
     pub cell_w: f64,
+    /// Height of one cell in dataset coordinates
     pub cell_h: f64,
 }
 
@@ -84,20 +89,28 @@ impl SpatialHistogram {
 /// Dataset statistics used by the query planner to select a spatial index
 #[derive(Debug, Clone)]
 pub struct DatasetStats {
+    /// Number of geometries in the dataset
     pub n: usize,
+    /// Dominant geometry type
     pub kind: GeometryKind,
+    /// Bounding rectangle of all geometries, or None if the dataset is empty
     pub extent: Option<Rect<f64>>,
+    /// Spatial distribution of point data estimated at load time
     pub distribution: Distribution,
     /// N / extent_area
     pub mean_density: f64,
+    /// Spatial histogram for selectivity estimation, built at load time
     pub histogram: Option<SpatialHistogram>,
 }
 
 /// Dominant geometry type in the dataset
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GeometryKind {
+    /// Dataset contains only point geometries
     Point,
+    /// Dataset contains only line-string geometries
     LineString,
+    /// Dataset contains only polygon geometries
     Polygon,
     /// More than one geometry type present
     Mixed,
@@ -108,7 +121,9 @@ pub enum GeometryKind {
 /// Spatial distribution of point geometries estimated via grid CV test
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Distribution {
+    /// Points are approximately uniformly distributed
     Uniform,
+    /// Points form clusters denser than a uniform distribution
     Clustered,
     /// Not enough data to classify or geometry kind is not Point
     Unknown,

@@ -116,8 +116,7 @@ class SpatialLazyFrame:
     """Builds a spatial query plan declaratively. Declaration order is not execution order.
 
     All methods return a new SpatialLazyFrame with the node appended without mutation.
-    The optimizer reorders filter nodes by cost when .collect() is called.
-    Join nodes (knn_join, within_join) act as barriers and are never reordered.
+    Join and kNN nodes act as barriers and are never reordered by the cost sort.
 
     Args:
         sf: The SpatialFrame that owns the Engine and DataFrame.

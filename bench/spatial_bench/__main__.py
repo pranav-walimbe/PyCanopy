@@ -1,14 +1,6 @@
 """Launch an ephemeral EC2 box that runs SpatialBench, then fetch the comparison chart.
 
-The whole flow is one command:
-
-    python -m bench.spatial_bench --scale-factor 1
-
-Reads config.yaml, launches an m7i.2xlarge whose user-data (bootstrap.sh) builds
-PyCanopy and measures it against the published SedonaDB / DuckDB / GeoPandas /
-Spatial Polars baseline, then renders the chart and self-terminates while this
-process polls S3 and downloads the PNG into assets/. With --profile instead, it
-runs the SF1 diagnostic and downloads profile.txt.
+Reads config.yaml, launches an m7i.2xlarge, measures PyCanopy against published baselines, and downloads the result PNG.
 """
 
 from __future__ import annotations

@@ -291,7 +291,7 @@ mod tests {
 
     #[test]
     fn best_available_reuses_built_index_for_few_probes() {
-        // Build cost already paid, so even 1 probe uses the built index.
+        // Build cost already paid, so even 1 probe uses the built index
         let s = stats(1_000_000, GeometryKind::Point, Distribution::Clustered);
         let f = CostFactors::default();
         assert_eq!(

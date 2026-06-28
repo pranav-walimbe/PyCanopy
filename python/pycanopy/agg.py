@@ -1,8 +1,6 @@
 """Aggregation specs for the fused aggregate-join (SpatialGroupBy.agg).
 
-Each spec is associative: a morsel reduces to per-group partials and the partials
-combine exactly into the single-pass result, so a streamed join never materialises
-the full pair frame. mean is carried as a sum and a count and divided at the end.
+Specs are associative so partials fold over the streamed join without materialising the full pair frame.
 """
 
 from __future__ import annotations

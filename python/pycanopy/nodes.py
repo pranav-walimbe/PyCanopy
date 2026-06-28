@@ -1,7 +1,6 @@
 """Plan node types for the SpatialOptimizer.
 
-Declaration order is not execution order. The optimizer reorders nodes by cost
-using selectivity estimates before emitting the final Polars chain.
+Declaration order is not execution order, the optimizer reorders by selectivity before emitting the final chain.
 """
 
 from __future__ import annotations

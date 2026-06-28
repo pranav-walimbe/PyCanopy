@@ -9,7 +9,7 @@ use std::sync::Arc;
 use rayon::prelude::*;
 use rdst::{RadixKey, RadixSort};
 
-// Spatial tile grid dimension; each cell's polygon vertex working set targets L3 cache.
+// Spatial tile grid dimension, each cell's polygon vertex working set targets L3 cache
 const TILE_GRID: usize = 16;
 
 /// Per-tile kNN results: each entry is (query_idx, candidate (target_idx, dist) list)
@@ -509,7 +509,7 @@ impl RadixKey for KnnTriple {
     }
 }
 
-// Partition queries into a grid_n×grid_n spatial grid; nearby queries share polygon vertex cache lines
+// Partition queries into a grid_n×grid_n spatial grid, nearby queries share polygon vertex cache lines
 fn build_query_tiles(qxs: &[f64], qys: &[f64], order: &[u32], grid_n: usize) -> Vec<Vec<u32>> {
     let (mut min_x, mut min_y, mut max_x, mut max_y) = (
         f64::INFINITY,
