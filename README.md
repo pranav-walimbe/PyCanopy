@@ -410,9 +410,9 @@ PyCanopy plans a query in two layers, then hands the result to Polars to run.
 
 ```mermaid
 flowchart LR
-    A[User chain] --> B[Logical planner] --> C[Access planner]
-    C --> D[PyCanopy executor]
-    C --> E[Polars executor]
+    A[User chain] --> B[SpatialOptimizer] --> C[SpatialExecutor]
+    C --> D[PyCanopy engine]
+    C --> E[Polars engine]
     D & E --> F[pl.DataFrame]
 ```
 
