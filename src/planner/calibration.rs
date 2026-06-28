@@ -7,12 +7,16 @@ pub struct CostFactors {
     pub scan_ns_per_item: f64,
     /// Index build cost per item (multiplied by log2(n) for tree indexes)
     pub build_ns_per_item: f64,
-    /// R-tree probe cost per node visited or result reported
-    pub rtree_ns_per_result: f64,
-    /// KD-tree probe cost per node visited or result reported
-    pub kdtree_ns_per_result: f64,
-    /// Grid probe cost per cell visited or result reported
-    pub grid_ns_per_result: f64,
+    /// KD-tree probe cost per unit for kNN queries
+    pub kdtree_knn_ns: f64,
+    /// KD-tree probe cost per unit for range queries
+    pub kdtree_range_ns: f64,
+    /// R-tree probe cost per unit for kNN queries
+    pub rtree_knn_ns: f64,
+    /// R-tree probe cost per unit for range queries
+    pub rtree_range_ns: f64,
+    /// Grid probe cost per result (range only; kNN always routes to KD-tree or R-tree)
+    pub grid_range_ns: f64,
 }
 
 impl Default for CostFactors {
@@ -20,9 +24,11 @@ impl Default for CostFactors {
         CostFactors {
             scan_ns_per_item: 5.0,
             build_ns_per_item: 25.0,
-            rtree_ns_per_result: 20.0,
-            kdtree_ns_per_result: 15.0,
-            grid_ns_per_result: 10.0,
+            kdtree_knn_ns: 18.0,
+            kdtree_range_ns: 12.0,
+            rtree_knn_ns: 25.0,
+            rtree_range_ns: 18.0,
+            grid_range_ns: 10.0,
         }
     }
 }

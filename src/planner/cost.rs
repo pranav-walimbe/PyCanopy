@@ -37,19 +37,22 @@ pub fn probe_cost(
 ) -> f64 {
     let n = stats.n as f64;
     let q = q_count as f64;
+    let is_knn = matches!(query, Query::Knn { .. });
     match kind {
         IndexKind::BruteForce => q * n * factors.scan_ns_per_item,
-        // Grid does a direct cell lookup — no tree traversal, so no log₂N term.
+        // Grid is a direct cell lookup with no tree traversal
         IndexKind::Grid => {
             let results = (selectivity(stats, query) * n).max(1.0);
-            q * results * factors.grid_ns_per_result
+            q * results * factors.grid_range_ns
         }
         _ => {
             let results = (selectivity(stats, query) * n).max(1.0);
-            let per = match kind {
-                IndexKind::RTree => factors.rtree_ns_per_result,
-                IndexKind::KdTree => factors.kdtree_ns_per_result,
-                IndexKind::Grid | IndexKind::BruteForce => unreachable!(),
+            let per = match (kind, is_knn) {
+                (IndexKind::KdTree, true)  => factors.kdtree_knn_ns,
+                (IndexKind::KdTree, false) => factors.kdtree_range_ns,
+                (IndexKind::RTree,  true)  => factors.rtree_knn_ns,
+                (IndexKind::RTree,  false) => factors.rtree_range_ns,
+                _ => unreachable!(),
             };
             q * (n.log2().max(1.0) + results) * per
         }
@@ -191,7 +194,7 @@ mod tests {
             bbox: Rect::new(coord! { x: 0.0, y: 0.0 }, coord! { x: 50.0, y: 50.0 }),
         };
         let sel = 0.25_f64;
-        let expected = 10.0 * (sel * 1000.0) * f.grid_ns_per_result;
+        let expected = 10.0 * (sel * 1000.0) * f.grid_range_ns;
         assert!((probe_cost(IndexKind::Grid, &stats, &q, 10, &f) - expected).abs() < 1e-6);
     }
 }
