@@ -14,7 +14,7 @@
 ---
 
 > [!NOTE]
-> Highly competitive on [Apache SpatialBench](https://github.com/apache/sedona-spatialbench) (single node spatial query benchmark): fastest on 6 of 12 queries at SF1 and 4 of 12 at SF10 despite never leaving Polars-like syntax
+> Highly competitive on [Apache SpatialBench](https://github.com/apache/sedona-spatialbench) (single node spatial query benchmark): fastest on 7/12 queries at SF1 and 5/12 at SF10 despite never leaving Polars-like syntax
 
 <p align="center">
   <img src="assets/spatialbench_sf1_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1" width="100%"/>
@@ -43,23 +43,24 @@ result = sf.lazy().filter(pl.col("population") > 100_000).range_query(-10.0, 35.
 
 ## Why PyCanopy
 
-Every spatial ops engine available to Polars users have their benefits but also lack at least 1 of the following:
+No other spatial engine gives you all three at once:
 
-- Polars-native API
-- Intelligent spatial indexing
-- A query planner that understands spatial operations
+- Polars-native API (no SQL, no conversion)
+- Intelligent spatial indexing (the engine decides index type and when to build it)
+- A query planner that understands spatial operations (reorders predicates, fuses filters, pushes projections)
 
 How the options compare:
 
 |                                                   | PyCanopy | GeoPandas      | DuckDB spatial | SedonaDB | Spatial Polars |
 |:--------------------------------------------------|:--------:|:--------------:|:--------------:|:--------:|:--------------:|
 | Polars-native, no SQL or conversion               | ✓        | ✗              | ✗ (SQL)        | ✗ (SQL)  | ✓              |
-| Spatial query planner (reorder, fuse, push)       | ✓        | ✗              | ✗              | ✓        | ✗              |
+| Spatial query planner (reorder, fuse, push)       | ✓        | ✗              | ✗              | ✓ (SQL/Spark) | ✗         |
 | Cost-based index vs scan, per query               | ✓        | ✗              | ✗              | ✗        | ✗              |
-| Multi-index types, auto-selected per query        | ✓        | ✗ (STRtree)    | ✗ (R-tree)     | ✗ (R-tree) | ✗ (STRtree)  |
+| Multiple index types, auto-selected per data distribution | ✓   | ✗ (STRtree)    | ✗ (R-tree)     | ✗ (R-tree) | ✗ (STRtree) |
 | kNN join                                          | ✓        | ✓ (nearest)    | ✗              | ✓        | ✓ (centroid)   |
 | Aggregate-join without materialising pairs        | ✓        | ✗              | ✗              | ✗        | ✗              |
 | Larger-than-RAM joins                             | ✓        | ✗              | ✓              | ✓        | ✗              |
+| Live point ingestion without index rebuild        | ✓        | ✗              | ✗              | ✗        | ✗              |
 
 ---
 
@@ -70,10 +71,13 @@ How the options compare:
 | Operation              | Call                                                  | Returns                                          |
 |:-----------------------|:------------------------------------------------------|:-------------------------------------------------|
 | Range query            | `.range_query(min_x, min_y, max_x, max_y)`            | Rows inside the bounding box                      |
+| Range filter           | `.range_filter(min_x, min_y, max_x, max_y)`           | New SpatialFrame with only rows inside the bounding box |
 | k-nearest neighbours   | `.knn(x, y, k)`                                        | The `k` rows nearest a point                      |
 | kNN join               | `.knn_join(df, x_col, y_col, k)`                       | The `k` nearest rows for each query point         |
 | Within-distance join   | `.within_distance_join(df, x_col, y_col, distance)`   | Rows within `distance` of each query point        |
 | Convex-hull area       | `SpatialFrame.convex_hull_area(xs, ys)`               | Area of the convex hull of a point set            |
+| Batch convex-hull area | `Engine.group_convex_hull_areas(xs_series, ys_series)` | Convex hull area for each group, given Polars `List[Float64]` columns |
+| WKB point distance     | `wkb_point_distance(series_a, series_b)`              | Euclidean distance between two WKB point columns  |
 
 **Polygon datasets**
 
@@ -81,10 +85,11 @@ How the options compare:
 |:------------------------------|:-------------------------------------------------------------|:--------------------------------------------------------|
 | Point in polygon              | `.contains(x, y)`                                            | Polygons that contain the point                         |
 | MBR range                     | `.range_query(min_x, min_y, max_x, max_y)`                  | Polygons whose bounding box meets the query box         |
+| Range filter                  | `.range_filter(min_x, min_y, max_x, max_y)`                 | New SpatialFrame with only polygons intersecting the bounding box |
 | Within join                   | `.within_join(df, x_col, y_col)`                            | Polygons that contain each query point                  |
 | Point-to-polygon distance join   | `.polygon_within_distance_join(df, x_col, y_col, distance)` | Polygons within `distance` of each query point          |
 | Point-to-polygon kNN join        | `.polygon_knn_join(df, x_col, y_col, k)`                    | The `k` nearest polygons for each query point           |
-| Intersects self-join          | `.intersects_pairs()`                                       | Intersecting polygon pairs with overlap area and IoU    |
+| Intersects self-join          | `.intersects_pairs(key_col=None)`                           | Intersecting polygon pairs with overlap area and IoU; `key_col` replaces positional indices with values from that column |
 | Area                          | `.polygon_areas()`                                          | Area of each polygon                                    |
 | Points near a polygon         | `.points_within_distance_of_polygon(polygon, distance)`     | Points within `distance` of a single polygon            |
 
@@ -342,14 +347,14 @@ sf.engine.flush()
 
 Run on a single `m7i.2xlarge` (8 vCPU, 32 GB), the same hardware used by [Apache SpatialBench](https://github.com/apache/sedona-spatialbench). PyCanopy is measured live with `index_mode="auto"`.
 
-**SF1** (~6M trips). PyCanopy wins 6 of 12 testcases.
+**SF1** (~6M trips). PyCanopy wins 7/12 testcases.
 
 <p align="center">
   <img src="assets/spatialbench_sf1_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1" width="100%"/>
 </p>
 <p align="center"><sub>Apache SpatialBench SF1 · lower is better · linear axis, bars past the cap truncated with their value · TIMEOUT / ERROR annotated</sub></p>
 
-**SF10** (~60M trips). PyCanopy wins 4 of 12 testcases.
+**SF10** (~60M trips). PyCanopy wins 5/12 testcases.
 
 <p align="center">
   <img src="assets/spatialbench_sf10_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF10" width="100%"/>
@@ -368,7 +373,7 @@ PyCanopy plans a query in two layers, then hands the result to Polars to run.
 sf.lazy().filter(...).range_query(...).knn_join(...).collect()
          │
          ▼  Logical plan — whole chain
-            order ops · fuse predicates · pick join side · EXPR vs IO
+            order ops · fuse predicates · pick join side · pick execution path
          │
          ▼  Access path — per operation
             index or scan, and which kind: cost model decides
@@ -383,7 +388,7 @@ sf.lazy().filter(...).range_query(...).knn_join(...).collect()
 - **Fusion:** consecutive spatial predicates merge into one index build and pass.
 - **Join side:** symmetric joins index the smaller side; `knn_join` always indexes the engine side.
 - **Projection pushdown:** a terminal `.select()` pushes into the join, gathering only the requested columns.
-- **Execution path:** very selective filters slice the prebuilt index directly (IO path); otherwise filters run first and a small index builds on survivors (EXPR path).
+- **Execution path:** very selective filters slice the prebuilt index directly (IO path), otherwise filters run first and a small index builds on survivors (EXPR path).
 
 ### Cost model
 
@@ -423,7 +428,7 @@ All index types share the same coordinate arrays with no duplication.
 
 ### Why Rust
 
-The hot paths need packed immutable index structures, zero-copy array slices at the Python boundary, and loop-level parallelism. C++ would require a separate FFI layer and loses the native Polars plugin integration that PyO3/Maturin provides for free.
+The hot paths need packed immutable index structures, zero-copy array slices at the Python boundary, and loop-level parallelism. C++ would require a separate FFI layer and would lose the native Polars plugin integration that PyO3/Maturin provides for free.
 
 ---
 
