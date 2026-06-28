@@ -53,14 +53,10 @@ How the options compare:
 
 |                                                   | PyCanopy | GeoPandas      | DuckDB spatial | SedonaDB | Spatial Polars |
 |:--------------------------------------------------|:--------:|:--------------:|:--------------:|:--------:|:--------------:|
-| Polars-native, no SQL or conversion               | ✓        | ✗              | ✗ (SQL)        | ✗ (SQL)  | ✓              |
-| Spatial query planner (reorder, fuse, push)       | ✓        | ✗              | ✗              | ✓ (SQL/Spark) | ✗         |
-| Cost-based index vs scan, per query               | ✓        | ✗              | ✗              | ✗        | ✗              |
-| Multiple index types, auto-selected per data distribution | ✓   | ✗ (STRtree)    | ✗ (R-tree)     | ✗ (R-tree) | ✗ (STRtree) |
-| kNN join                                          | ✓        | ✓ (nearest)    | ✗              | ✓        | ✓ (centroid)   |
-| Aggregate-join without materialising pairs        | ✓        | ✗              | ✗              | ✗        | ✗              |
-| Larger-than-RAM joins                             | ✓        | ✗              | ✓              | ✓        | ✗              |
-| Live point ingestion without index rebuild        | ✓        | ✗              | ✗              | ✗        | ✗              |
+| Polars-native, no SQL or conversion               | ✓        | ✗              | ✗ (SQL)        | ✗ (SQL)       | ✓                    |
+| Spatial query planner (reorder, fuse, pushdown)   | ✓        | ✗              | ✗ (spatial join operator, no predicate reordering) | ✓ (SQL/Spark) | ✗ (Polars optimizer) |
+| Index vs scan decided by cost model               | ✓        | ✗              | ✗              | ✗             | ✗                    |
+| Adaptive index selection based on query profile   | ✓        | ✗ (STRtree)    | ✗ (R-tree)     | ✗ (Quadtree)  | ✗ (STRtree / KDTree) |
 
 ---
 
@@ -300,7 +296,7 @@ area = SpatialFrame.convex_hull_area(np.array([0.0, 1.0, 0.5]), np.array([0.0, 0
 
 ```python
 # Fixed per frame. "auto" lets the cost model choose index vs scan per query;
-# "none" always scans; "eager" (default) always builds the selected index.
+# "auto" (default) builds when justified and reuses for free after. "eager" always builds. "none" always scans.
 sf = SpatialFrame(df, x_col="lon", y_col="lat", index_mode="auto")
 ```
 
@@ -392,37 +388,42 @@ sf.lazy().filter(...).range_query(...).knn_join(...).collect()
 
 ### Cost model
 
-For each operation, the planner picks the cheaper of two paths:
+For each operation, the planner compares a full scan against using an index:
 
 | | Scan | Index |
 |:--|:--|:--|
-| Setup | none | build once: `N log N` |
-| Per probe | `N` (full scan) | `log N` |
+| Setup | none | `N log N` (first use only) |
+| Per probe | `N` | `log N` |
 | **Total** | `Q × N` | `N log N + Q × log N` |
 
 `N` = indexed points. `Q` = probe points, derived from the left-frame row count after scalar filters run.
 
-The index pays off once `Q > log N`. For a single-point lookup (`Q = 1`) that bar is high; for a join where the left frame has millions of rows, it is cleared within the operation itself. Selectivity refines this further: a tree that prunes little of the data loses to a plain scan regardless.
+[will do]
 
 `index_mode`, set per frame, controls how the estimate is applied:
 
 | Mode | Behaviour |
 |:-----|:----------|
-| `eager` (default) | always build the selected index |
-| `auto` | build only when the estimate beats a scan |
+| `auto` (default) | build when the cost model justifies it. Once built, the index is treated as free and always reused for subsequent queries on the same frame |
+| `eager` | always build the selected index, skipping the cost check |
 | `none` | always scan |
 
 ### Index selection
 
-Indexes build lazily and are cached after the first query. Stats (extent, distribution, a 32×32 density histogram) are computed once at load time to guide the choice:
+Indexes build lazily and are available after the first qualifying query. A 32×32 density histogram is computed once at load time to detect the spatial skew of the dataset, which informs the index selection decision below.
 
-| Condition                                     | Index        |
-|:----------------------------------------------|:-------------|
-| N < 500, selectivity > 50%, or k/N > 10%     | Brute force  |
-| Point range, uniform distribution             | Uniform grid |
-| Point range, clustered distribution           | KD-tree      |
-| Point kNN or contains                         | KD-tree      |
-| Polygons, any query                           | R-tree       |
+```mermaid
+flowchart TD
+    A[Query arrives] --> B{"N < 500, selectivity > 50%,\nor k/N > 10%?"}
+    B -- yes --> BF[Brute force]
+    B -- no --> C{Polygon dataset?}
+    C -- yes --> RT[R-tree]
+    C -- no --> D{Query type?}
+    D -- kNN or contains --> KD1[KD-tree]
+    D -- range --> E{Density histogram}
+    E -- "low skew\n(uniform spread)" --> UG[Uniform grid]
+    E -- "high skew\n(spatial hotspots)" --> KD2[KD-tree]
+```
 
 All index types share the same coordinate arrays with no duplication.
 
