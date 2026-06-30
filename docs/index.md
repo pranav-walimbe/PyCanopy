@@ -1,41 +1,33 @@
-# Getting Started
+# PyCanopy
 
-PyCanopy is a declarative spatial query layer for Polars with a Rust core.
+A declarative spatial query layer for Polars. Rust core, Python API.
 
-## Installation
+## What is PyCanopy
 
-```bash
-pip install pycanopy
-```
-
-Pre-built wheels for Linux, macOS, and Windows. No Rust toolchain required.
-
-## Quick start
-
-```python
-import polars as pl
-from pycanopy import SpatialFrame
-
-sf = SpatialFrame(pl.read_parquet("cities.parquet"), x_col="lon", y_col="lat")
-
-result = (
-    sf.lazy()
-    .filter(pl.col("population") > 100_000)
-    .range_query(-10.0, 35.0, 40.0, 70.0)
-    .collect()
-)
-```
+PyCanopy brings spatial queries — range, kNN, joins, polygon containment — into the Polars ecosystem without leaving Python. You declare operations in any order; the query planner reorders, fuses, and pushes them down before execution. The index type (KD-tree, R-tree, grid, or brute force) is selected automatically by a cost model calibrated to your hardware.
 
 ## Why PyCanopy
-
-The only spatial engine with a Polars-native API, cost-model-driven index selection, and a full spatial query planner.
 
 |  | PyCanopy | GeoPandas | DuckDB | SedonaDB | Spatial Polars |
 |:--|:--------:|:---------:|:------:|:--------:|:--------------:|
 | Polars-native, no SQL or conversion             | ✓ | ✗ | ✗ (SQL) | ✗ (SQL) | ✓ |
 | Spatial query planner (reorder, fuse, pushdown) | ✓ | ✗ | ✗ | ✓ (SQL) | ✗ |
 | Index vs scan decided by cost model             | ✓ | ✗ | ✗ | ✗ | ✗ |
-| Adaptive index (KD-tree / R-tree / grid)        | ✓ | ✗ STRtree | ✗ R-tree | ✗ Quadtree | ✗ STRtree / KDTree |
+| Adaptive index (KD-tree / R-tree / grid)        | ✓ | ✗ | ✗ | ✗ | ✗ |
+
+## Benchmarks
+
+[Apache SpatialBench](https://github.com/apache/sedona-spatialbench) is the industry-standard single-node spatial query benchmark, maintained by the Apache Sedona project. Results below are from a single `m7i.2xlarge` (8 vCPU, 32 GB), the same instance type used in the published baseline.
+
+**SF1 (~6M trips):** PyCanopy wins 7/12 queries.
+
+![Apache SpatialBench SF1](assets/spatialbench_sf1_auto.png)
+
+**SF10 (~60M trips):** PyCanopy wins 5/12 queries.
+
+![Apache SpatialBench SF10](assets/spatialbench_sf10_auto.png)
+
+Full results tables with per-query times are on the [Benchmarks](benchmarks.md) page.
 
 ## Accepted input formats
 

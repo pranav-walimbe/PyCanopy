@@ -6,10 +6,14 @@ repo_name: pranav-walimbe/PyCanopy
 theme:
   name: material
   palette:
-    scheme: slate
+    scheme: default
     primary: custom
-    accent: deep-orange
+    accent: custom
+  logo: assets/pycanopy_logo3.png
+  favicon: assets/pycanopy_logo3.png
   features:
+    - navigation.tabs
+    - navigation.tabs.sticky
     - navigation.sections
     - navigation.top
     - content.code.copy
@@ -21,11 +25,21 @@ hooks:
   - hooks.py
 
 nav:
-  - Getting Started: index.md
-  - Operations Reference: operations.md
-  - How It Works: how-it-works.md
-  - Benchmarks: benchmarks.md
-  - API Reference: api-reference.md
+  - Introduction:
+    - Overview: index.md
+    - Benchmarks: benchmarks.md
+  - Quick Start: quickstart.md
+  - API Reference:
+    - SpatialFrame: api/spatial-frame.md
+    - SpatialLazyFrame: api/lazy-frame.md
+    - Aggregations: api/aggregations.md
+    - Engine & Utilities: api/engine.md
+  - How It Works:
+    - Query Planner: how-it-works/query-planner.md
+    - Cost Model & Index Selection: how-it-works/cost-model.md
+    - Execution Paths: how-it-works/execution-paths.md
+    - Streaming Architecture: how-it-works/streaming.md
+  - Contributing: contributing.md
 
 plugins:
   - search
