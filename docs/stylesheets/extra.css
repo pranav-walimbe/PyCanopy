@@ -1,3 +1,11 @@
+.md-header__button.md-logo img {
+  height: 48px;
+}
+
+.md-header__title {
+  display: none;
+}
+
 :root {
   /* Dark slate header matching HTTPx style */
   --md-primary-fg-color: #1e2b3a;
