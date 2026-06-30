@@ -6,23 +6,19 @@ repo_name: pranav-walimbe/PyCanopy
 theme:
   name: material
   palette:
-    - scheme: default
-      primary: green
-      accent: green
-      toggle:
-        icon: material/brightness-7
-        name: Switch to dark mode
-    - scheme: slate
-      primary: green
-      accent: green
-      toggle:
-        icon: material/brightness-4
-        name: Switch to light mode
+    scheme: slate
+    primary: custom
+    accent: deep-orange
   features:
-    - navigation.tabs
     - navigation.sections
     - navigation.top
     - content.code.copy
+
+extra_css:
+  - stylesheets/extra.css
+
+hooks:
+  - hooks.py
 
 nav:
   - Getting Started: index.md

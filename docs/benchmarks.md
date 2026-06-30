@@ -12,24 +12,6 @@ PyCanopy wins 7/12 queries.
 
 *Apache SpatialBench SF1 · lower is better · bars past the cap truncated with their value · TIMEOUT / ERROR annotated*
 
-### SF10 (~60M trips)
-
-PyCanopy wins 5/12 queries.
-
-![PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF10](assets/spatialbench_sf10_auto.png)
-
-*Apache SpatialBench SF10 · lower is better · bars past the cap truncated with their value · TIMEOUT / ERROR annotated*
-
-### Results
-
-All times in seconds. **Bold** = fastest on that query. SedonaDB, DuckDB, and GeoPandas baselines from published SpatialBench results.
-
-<table>
-<tr>
-<td valign="top">
-
-**SF1**
-
 | Query | PyCanopy | SedonaDB | DuckDB | GeoPandas |
 |:------|:--------:|:--------:|:------:|:---------:|
 | q1  | 1.41 | **0.66** | 0.96 | 12.78 |
@@ -45,10 +27,13 @@ All times in seconds. **Bold** = fastest on that query. SedonaDB, DuckDB, and Ge
 | q11 | **12.43** | 32.98 | TIMEOUT | 51.01 |
 | q12 | **14.00** | 14.55 | ERROR | TIMEOUT |
 
-</td>
-<td valign="top">
+### SF10 (~60M trips)
 
-**SF10**
+PyCanopy wins 5/12 queries.
+
+![PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF10](assets/spatialbench_sf10_auto.png)
+
+*Apache SpatialBench SF10 · lower is better · bars past the cap truncated with their value · TIMEOUT / ERROR annotated*
 
 | Query | PyCanopy | SedonaDB | DuckDB | GeoPandas |
 |:------|:--------:|:--------:|:------:|:---------:|
@@ -65,6 +50,4 @@ All times in seconds. **Bold** = fastest on that query. SedonaDB, DuckDB, and Ge
 | q11 | **37.30** | 97.52 | ERROR | ERROR |
 | q12 | 147.67 | **145.66** | ERROR | TIMEOUT |
 
-</td>
-</tr>
-</table>
+All times in seconds. **Bold** = fastest on that query. SedonaDB, DuckDB, and GeoPandas baselines from published SpatialBench results.

@@ -29,6 +29,9 @@ env/
 # ruff
 .ruff_cache/
 
+# mkdocs (assets copied here by hooks.py at build time)
+docs/assets/
+
 # IDE
 .vscode/
 .idea/
