@@ -18,8 +18,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install docs dependencies
-        run: pip install "mkdocs-material>=9.0" "mkdocstrings[python]>=0.25"
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: pip install "maturin>=1.0,<2.0" numpy pyarrow polars shapely "mkdocs-material>=9.0" "mkdocstrings[python]>=0.25"
+
+      - name: Build pycanopy extension
+        run: maturin develop
 
       - name: Build and deploy
         run: mkdocs gh-deploy --force
