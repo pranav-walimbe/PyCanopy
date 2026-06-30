@@ -27,14 +27,13 @@ dependencies = ["pyarrow>=12.0", "numpy>=1.24", "polars>=0.20"]
 [project.urls]
 Repository = "https://github.com/pranav-walimbe/PyCanopy"
 Issues = "https://github.com/pranav-walimbe/PyCanopy/issues"
+Documentation = "https://pranav-walimbe.github.io/PyCanopy"
 
 [tool.maturin]
 python-source = "python"
 module-name = "pycanopy._core"
 features = ["pyo3/extension-module"]
-# Development-only trees that are tracked in git but must never ship in the
-# published wheel/sdist. The wheel already only packages python-source; these
-# excludes additionally keep them out of the source distribution.
+# Keeps bench/ and tests/ out of the sdist, not covered by python-source
 exclude = ["bench/**/*", "tests/**/*", "bench", "tests"]
 
 [dependency-groups]
@@ -47,18 +46,14 @@ dev = [
     "ruff>=0.4",
     "shapely>=2.0",
 ]
-# Everything bench/ needs. Core deps (numpy, polars, pyarrow) are already required.
-# SedonaDB is the spatial_bench verification + timing oracle; geopandas + scipy are the
-# indexed competitors in the ops bench.
+docs = [
+    "mkdocs-material>=9.0",
+    "mkdocstrings[python]>=0.25",
+]
 bench = [
     "sedonadb>=0.3",
-    "geoarrow-pyarrow>=0.2",
-    "pyproj>=3.6",
-    "geopandas>=1.0",
     "shapely>=2.0",
-    "scipy>=1.15.3",
     "matplotlib>=3.7",
-    "s3fs>=2024.0",
     "boto3>=1.34",
     "pyyaml>=6.0",
 ]
