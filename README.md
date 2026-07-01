@@ -56,9 +56,65 @@ The only spatial engine with a Polars-native API, cost-model-driven index select
 
 ---
 
-## API Reference Docs
+## Example Operations
 
-The full API reference, operation catalogue, and technical deep dive into the planner and cost model live at **[pranav-walimbe.github.io/PyCanopy](https://pranav-walimbe.github.io/PyCanopy)**.
+### Inspecting the query plan
+
+```python
+lf = (
+    sf.lazy()
+    .range_query(min_x=-10.0, min_y=35.0, max_x=40.0, max_y=70.0)
+    .filter(pl.col("population") > 100_000)
+)
+print(lf.explain())
+# RANGE_QUERY [(-10, 35) → (40, 70)]
+# FROM
+#   FILTER [(col("population")) > (dyn int: 100000)]
+#   FROM
+#     DF [N=100,000; path: EXPR]
+```
+
+The optimizer moved the scalar filter below the range query. It runs first on all rows, then the spatial index is probed on the smaller survivor set.
+
+### kNN join
+
+```python
+query_df = pl.DataFrame({"qx": [2.35, 13.4], "qy": [48.85, 52.5]})
+
+result = sf.lazy().knn_join(query_df, x_col="qx", y_col="qy", k=3).collect()
+```
+
+For each row in `query_df`, returns the 3 nearest rows in the `SpatialFrame`. Large probes are streamed in morsels automatically.
+
+### Proximity join with aggregation
+
+```python
+import pycanopy as pc
+
+stats = (
+    sf.lazy()
+    .within_distance_join(landmarks, x_col="lon", y_col="lat", distance=0.5)
+    .group_by(["landmark"])
+    .agg(count=pc.agg.count(), avg_fare=pc.agg.mean("fare"))
+)
+```
+
+The full pair frame is never materialised. Each probe morsel folds into per-group partials and combines at the end.
+
+### Polygon intersects self-join
+
+```python
+from shapely.geometry import box
+
+polygons = [box(i, 0, i + 1.5, 1.0) for i in range(10_000)]
+sf = SpatialFrame.from_polygons(pl.DataFrame({"id": range(10_000), "geom": polygons}), geometry_col="geom")
+
+overlaps = sf.intersects_pairs(key_col="id")
+```
+
+Returns all intersecting polygon pairs with overlap area and IoU. `key_col` replaces positional indices with values from that column.
+
+For the full operation catalogue, index modes, streaming joins, and API reference see the **[docs site](https://pranav-walimbe.github.io/PyCanopy)**.
 
 ---
 
@@ -66,7 +122,7 @@ The full API reference, operation catalogue, and technical deep dive into the pl
 
 ### Apache SpatialBench
 
-Run on a single `m7i.2xlarge` (8 vCPU, 32 GB), the same hardware used by [Apache SpatialBench](https://github.com/apache/sedona-spatialbench). PyCanopy is measured live with `index_mode="auto"`.
+Run on a single `m7i.2xlarge` (8 vCPU, 32 GB), the same hardware used by [Apache SpatialBench](https://github.com/apache/sedona-spatialbench). PyCanopy is measured live with `index_mode="auto"`. Results were produced using the benchmark harness in `bench/spatial_bench`.
 
 **SF1** (~6M trips). PyCanopy wins 7/12 testcases.
 
