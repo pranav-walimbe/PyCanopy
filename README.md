@@ -114,7 +114,8 @@ overlaps = sf.intersects_pairs(key_col="id")
 
 Returns all intersecting polygon pairs with overlap area and IoU. `key_col` replaces positional indices with values from that column.
 
-For the full operation catalogue, index modes, streaming joins, and API reference see the **[docs site](https://pranav-walimbe.github.io/PyCanopy)**.
+> [!NOTE]
+> For the full operation catalogue, index modes, streaming joins, and API reference see the **[docs site](https://pranav-walimbe.github.io/PyCanopy)**.
 
 ---
 
