@@ -1,4 +1,6 @@
-"""Define SpatialExecutor which walks the optimised plan and emits a Polars LazyFrame chain."""
+"""
+Define SpatialExecutor which walks the optimised plan and emits a Polars LazyFrame chain.
+"""
 
 from __future__ import annotations
 
@@ -39,7 +41,7 @@ _JOIN_TYPES = (
     PolygonKnnJoinNode,
 )
 
-# Probe rows per morsel for a streamed join. Conservative fixed cap (bounds rows not pairs), overridable via batch_size
+# Probe rows per morsel for a streamed join
 MORSEL_ROWS = 262_144
 
 
@@ -185,24 +187,21 @@ class SpatialExecutor:
     ) -> pl.DataFrame:
         # Run the optimised plan, dispatching scalar / IO / EXPR / streamed-join paths
 
-        # Scalar-only fast path with no spatial ops. Feed filters straight to Polars as a
-        # zero-copy lazy chain (no _ROW_IDX, no dispatch, no bitmap).
+        # Scalar-only fast path with no spatial ops
         if all(isinstance(n, ScalarNode) for n in plan):
             lf = sf.df.lazy()
             for node in plan:
                 lf = lf.filter(node.expr)
             return lf.collect()
 
-        # Intersects self-join is terminal and produces a pair frame, not a row
-        # subset, so it is handled directly rather than through the filter chain.
+        # Intersects self-join is terminal and produces a pair frame
         if any(isinstance(n, IntersectsSelfJoinNode) for n in plan):
             return self._execute_intersects(plan, sf)
 
         has_joins = any(isinstance(n, _JOIN_TYPES) for n in plan)
 
         # Large-probe joins stream the probe in morsels and concatenate, so the join
-        # intermediate is bounded by one morsel rather than the full result. Small
-        # probes fall through to the single-shot path below (no slicing overhead).
+        # intermediate is bounded by one morsel rather than the full result.
         if has_joins:
             morsel = batch_size if batch_size is not None else MORSEL_ROWS
             join_node = next(n for n in plan if isinstance(n, _JOIN_TYPES))
@@ -213,8 +212,7 @@ class SpatialExecutor:
                 return pl.concat(frames, how="vertical", rechunk=False)
 
         # EXPR needs x_col/y_col as real columns (point datasets). Polygon frames use
-        # synthetic coord names absent from df and degrade to IO. Joins bypass the plugin
-        # machinery and stay on EXPR.
+        # synthetic coord names absent from df and degrade to IO.
         if plugin_path == PluginPath.EXPR and sf.x_col not in sf.df.columns and not has_joins:
             plugin_path = PluginPath.IO
 
@@ -262,8 +260,8 @@ class SpatialExecutor:
         join_pos = next(i for i, n in enumerate(plan) if isinstance(n, _JOIN_TYPES))
         join_node = plan[join_pos]
         post_nodes = plan[join_pos + 1 :]
-        # Join emitters ignore the incoming lf (they gather from sf.df directly), so a
-        # placeholder is fine, post-join nodes receive the real joined lf.
+
+        # Join emitters ignore the incoming lf (they gather from sf.df directly)
         placeholder = sf.df.lazy()
         for chunk in join_node.query_df.iter_slices(morsel_rows):
             sub = dataclasses.replace(join_node, query_df=chunk)
@@ -322,7 +320,6 @@ class SpatialExecutor:
 
     def _execute_intersects(self, plan: Plan, sf) -> pl.DataFrame:
         # Build the polygon intersects pair frame, then apply any trailing scalar filters.
-        # The self-join takes no probe side, so only scalar nodes after it constrain the result.
         pos = next(i for i, n in enumerate(plan) if isinstance(n, IntersectsSelfJoinNode))
         lf = sf.intersects_pairs().lazy()
         for node in plan[pos + 1 :]:

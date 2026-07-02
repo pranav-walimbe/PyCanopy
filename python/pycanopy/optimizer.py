@@ -1,4 +1,5 @@
-"""SpatialOptimizer: cost-based plan transformer.
+"""
+SpatialOptimizer: cost-based plan transformer.
 
 Passes (in order):
   1. _assign_selectivity: estimate selectivity for each node from engine stats
@@ -6,7 +7,6 @@ Passes (in order):
   3. _fusion_pass: merge consecutive fusable spatial nodes
   4. _join_side_pass: set flip=True on symmetric joins where query side is larger
   5. _detect_fanout: find the longest shared plan prefix across branches
-     (used by collect_all to insert a Polars .cache() barrier).
 """
 
 from __future__ import annotations
@@ -31,17 +31,13 @@ from pycanopy.nodes import (
     WithinJoinNode,
 )
 
-# Spatial nodes with selectivity below this threshold are too selective to fuse. Polars'
-# cascade leaves so few rows that a fresh index build on survivors beats the full M rows.
+# Spatial nodes with selectivity below this threshold are too selective to fuse
 _FUSION_SELECTIVITY_FLOOR = 0.05
 
-# Datasets smaller than this always use BruteForce, fusion overhead isn't worth it
+# Datasets smaller than this always use BruteForce
 _FUSION_MIN_N = 500
 
-# Spatial selectivity below this threshold means the spatial filter is tighter than
-# 5% of the dataset. The pre-built Engine index on N rows returns so few candidates
-# that slicing sf.df directly (IO path) is cheaper than rebuilding a local index on
-# M post-scalar rows and running a map_batches expression (EXPR path).
+# Spatial selectivity threshold where slicing sf.df directly (IO path) is cheaper
 _IO_SELECTIVITY_THRESHOLD = 0.05
 
 
@@ -152,8 +148,7 @@ class SpatialOptimizer:
         return plan
 
     def _assign_selectivity(self, plan: Plan, engine) -> Plan:
-        # Estimate and attach selectivity to each node. Spatial nodes use area-ratio or k/N
-        # estimates from engine stats, and scalar nodes default to 1.0.
+        # Estimate and attach selectivity to each node
         n = engine.n
         extent = engine.extent
         result = []

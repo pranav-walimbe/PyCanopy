@@ -5,24 +5,17 @@ use crate::stats::types::DatasetStats;
 /// Spatial index variant selected by the query planner
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexKind {
-    /// Linear scan over all items, zero build cost
     BruteForce,
-    /// Packed Hilbert-sorted R-tree, best for polygon datasets
     RTree,
-    /// Packed KD-tree, best for clustered point datasets
     KdTree,
-    /// Uniform grid, best for uniformly distributed point datasets
     Grid,
 }
 
 /// How aggressively the planner builds spatial indexes
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexMode {
-    /// Always brute-force scan, never build an index
     None,
-    /// Build an index whenever a kind is selected
     Eager,
-    /// Build an index only when the cost model predicts it beats a scan
     Auto,
 }
 

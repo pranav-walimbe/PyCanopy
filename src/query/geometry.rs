@@ -2,9 +2,7 @@
 //!
 //! These operate on the flat coordinate storage used by the polygon Engine
 //! (xs/ys plus ring_offsets/poly_offsets, exterior ring first then holes). A
-//! `geo::Polygon` is materialised per geometry on demand. The heavy correctness
-//! sensitive operations (boolean intersection, convex hull) are delegated to
-//! `geo` rather than hand rolled.
+//! `geo::Polygon` is materialised per geometry on demand.
 
 use geo::{Area, BooleanOps, ConvexHull, Intersects};
 use geo::{Coord, LineString, MultiPoint, Point, Polygon};

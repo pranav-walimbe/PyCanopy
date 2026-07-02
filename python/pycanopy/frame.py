@@ -180,9 +180,7 @@ class SpatialFrame:
             return SpatialFrame.from_wkb_polygons(filtered, self._wkb_col, self._x_col, self._y_col)
         return SpatialFrame(self._df[idx_s], self._x_col, self._y_col)
 
-    # Geometry aggregations and transforms (polygon datasets). These produce new
-    # tables or scalar columns rather than filtering, so they live on the frame
-    # rather than the lazy plan.
+    # Geometry aggregations and transforms (polygon datasets)
 
     def polygon_areas(self) -> pl.DataFrame:
         """Append an unsigned 'area' column to this frame's DataFrame (polygon datasets).

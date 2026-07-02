@@ -1,4 +1,5 @@
-"""Plan node types for the SpatialOptimizer.
+"""
+Plan node types for the SpatialOptimizer.
 
 Declaration order is not execution order, the optimizer reorders by selectivity before emitting the final chain.
 """

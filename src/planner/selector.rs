@@ -45,11 +45,7 @@ pub fn select_index(stats: &DatasetStats, query: &Query) -> IndexKind {
     }
 }
 
-/// Apply the index mode to a candidate kind, returning the kind to actually use.
-/// None always scans. Eager keeps the candidate. Auto keeps it only when its
-/// estimated cost beats brute force over `q_count` probes. Kernels that require a
-/// specific index (e.g. an R-tree) pass that as the candidate, the standard path
-/// gets the candidate from `select_index` via `plan_access`.
+/// Apply the index mode to a candidate kind, returning the kind to actually use
 pub fn plan_access_with_kind(
     stats: &DatasetStats,
     query: &Query,
@@ -128,8 +124,7 @@ pub fn plan_best_available(
     best_kind
 }
 
-/// Plan the index kind for `query`, honouring the index mode. The candidate kind
-/// comes from `select_index`.
+/// Plan the index kind for `query`, honouring the index mode
 pub fn plan_access(
     stats: &DatasetStats,
     query: &Query,

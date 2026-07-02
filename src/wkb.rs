@@ -1,7 +1,5 @@
 //! Decode a WKB Polygon / MultiPolygon column straight into the engine's flat ring
-//! arrays, with no per-geometry object allocation (the polygon analogue of the
-//! vectorised WKB point reader). Falls back to shapely on the Python side for any
-//! variant this does not recognise (returned here as an Err).
+//! arrays, with no per-geometry object allocation.
 
 use std::mem::MaybeUninit;
 

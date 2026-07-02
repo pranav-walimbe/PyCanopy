@@ -9,10 +9,10 @@ use std::sync::Arc;
 use rayon::prelude::*;
 use rdst::{RadixKey, RadixSort};
 
-// Spatial tile grid dimension, each cell's polygon vertex working set targets L3 cache
+// Spatial tile grid dimension
 const TILE_GRID: usize = 16;
 
-/// Per-tile kNN results: each entry is (query_idx, candidate (target_idx, dist) list)
+/// Per-tile kNN results
 type TileResults = Vec<Vec<(u32, Vec<(u64, f64)>)>>;
 
 use crate::index::kdtree::PackedKdTree;

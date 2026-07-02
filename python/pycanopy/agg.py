@@ -1,5 +1,5 @@
-"""Aggregation specs for the fused aggregate-join (SpatialGroupBy.agg).
-
+"""
+Aggregation specs for the fused aggregate-join (SpatialGroupBy.agg).
 Specs are associative so partials fold over the streamed join without materialising the full pair frame.
 """
 
@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import polars as pl
 
-# Prefix for intermediate (partial) columns, kept distinct from user output names
+# Prefix for intermediate (partial) columns
 _P = "__pc_agg__"
 
 

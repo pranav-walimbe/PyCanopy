@@ -45,7 +45,9 @@ result = sf.lazy().filter(pl.col("population") > 100_000).range_query(-10.0, 35.
 
 ## Why PyCanopy
 
-The only spatial engine with a Polars-native API, cost-model-driven index selection, and a full spatial query planner. The driving motivator behind creating this library was to provide the optimizations of relational DBs (query planning, indexing) in a performant dataframe interface that abstracts away the complexity of doing so from users working with spatial data. 
+PyCanopy is the only spatial engine with a Polars-native API, cost-model-driven index selection, and a full spatial query planner.
+
+The driving motivator behind creating this library was to provide the optimizations of relational DBs (query planning, indexing, etc) in a performant dataframe interface that abstracts away the complexity of doing so from users working with spatial data.
 
 |  | PyCanopy | GeoPandas | DuckDB | SedonaDB | Spatial Polars |
 |:--|:--------:|:---------:|:------:|:--------:|:--------------:|

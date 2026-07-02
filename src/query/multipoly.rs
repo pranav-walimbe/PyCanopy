@@ -1,10 +1,4 @@
-//! Map index-part results to logical polygons for MultiPolygon support.
-//!
-//! The spatial index is built over parts (single-exterior polygons), so a kernel
-//! emits part indices. These helpers fold those parts into the logical polygons
-//! recorded by `part_poly`, deduplicating where one polygon owns several parts. All
-//! are no-ops conceptually when a dataset has one part per polygon (part_poly is None
-//! at the call site, so they are simply not called).
+//! Map index-part results to logical polygons for MultiPolygon support
 
 /// Map self-join part pairs to unique logical polygon pairs (i < j).
 ///

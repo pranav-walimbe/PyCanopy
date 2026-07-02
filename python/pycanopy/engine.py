@@ -1,4 +1,5 @@
-"""High-level Python engine wrapping the Rust core.
+"""
+High-level Python engine wrapping the Rust core.
 
 Normalizes varied point input to contiguous float64 arrays, with standard 2D LE WKB decoding via a strided numpy view.
 """
@@ -201,8 +202,7 @@ def _wkb_binary_buffers(column) -> tuple[np.ndarray, np.ndarray] | None:
 def _extract_polygon_rings(
     geometries,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
-    # Return (xs, ys, ring_offsets, poly_offsets, part_poly) from Polygons/MultiPolygons via
-    # two-level GeoArrow-compatible offsets, with part_poly mapping parts to logical polygons.
+    # Return (xs, ys, ring_offsets, poly_offsets, part_poly) from Polygons/MultiPolygons
     geoms = np.asarray(geometries)
     type_ids = shapely.get_type_id(geoms)
     invalid = (type_ids != _SHAPELY_POLYGON_TYPE_ID) & (type_ids != _SHAPELY_MULTIPOLYGON_TYPE_ID)
@@ -296,7 +296,7 @@ class Engine:
                 as one logical polygon spanning all of its parts.
 
         Returns:
-            Engine ready to answer range and contains queries over polygon data.
+            Engine object over polygon data.
         """
         xs, ys, ring_offsets, poly_offsets, part_poly = _extract_polygon_rings(geometries)
         eng = cls.__new__(cls)
@@ -312,8 +312,7 @@ class Engine:
                 Polygon / MultiPolygon geometries.
 
         Returns:
-            Engine over the polygon data. Falls back to the shapely path for nulls or
-            WKB variants the fast decoder does not recognise.
+            Engine object over polygon data.
         """
         eng = cls.__new__(cls)
         buffers = _wkb_binary_buffers(column)
@@ -338,7 +337,7 @@ class Engine:
                 numpy object array of WKB byte strings.
 
         Returns:
-            Engine ready to answer point queries.
+            Engine object over coord data.
         """
         xs, ys = wkb_points_to_xy(points)
         return cls.from_coords(xs, ys)
@@ -352,7 +351,7 @@ class Engine:
             ys: Sequence of y coordinates.
 
         Returns:
-            Engine ready to answer point queries.
+            Engine object over coord data.
         """
         eng = cls.__new__(cls)
         eng._core = _CoreEngine.from_points(
@@ -375,7 +374,7 @@ class Engine:
             mode: "auto", "eager", or "none".
 
         Returns:
-            The mode in effect before this call.
+            The previous index mode.
         """
         return self._core.set_index_mode(mode)
 

@@ -1,4 +1,6 @@
-"""Define SpatialLazyFrame, an immutable plan builder that does not execute until .collect()."""
+"""
+Define SpatialLazyFrame, an immutable plan builder that does not execute until .collect().
+"""
 
 from __future__ import annotations
 
@@ -527,7 +529,7 @@ class SpatialLazyFrame:
         if prefix_len == 0:
             return [f.collect() for f in frames]
 
-        # Optimise the shared prefix as a standalone plan and cache its Polars chain
+        # Optimize the shared prefix as a standalone plan and cache its Polars chain
         prefix_plan = plans[0][:prefix_len]
         optimized_prefix = optimizer.optimize(prefix_plan, sf.engine)
         base_lf = sf.df.with_row_index(_ROW_IDX).lazy()

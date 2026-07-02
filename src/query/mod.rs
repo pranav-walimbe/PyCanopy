@@ -1,4 +1,4 @@
-//! Spatial query kernels: range, kNN, polygon, batch joins, and result types.
+//! Spatial query kernels: range, kNN, polygon, batch joins, and result types
 
 pub mod batch;
 pub mod geometry;

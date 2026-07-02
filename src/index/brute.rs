@@ -78,7 +78,6 @@ impl BruteForce {
 
     /// Build from two-level polygon ring arrays. Computes per-polygon MBRs and centroids
     /// from exterior rings only. Holes do not expand the MBR.
-    /// These are derived allocations (N = n_polygons, not N = n_ring_vertices).
     pub fn build_polygons(
         xs: &[f64],
         ys: &[f64],
