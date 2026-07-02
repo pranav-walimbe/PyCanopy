@@ -1,0 +1,38 @@
+.md-header__button.md-logo img {
+  height: 80px;
+}
+
+.md-header__button.md-logo {
+  padding: 0.1rem 0.2rem 0rem 0.2rem;
+}
+
+.md-header__inner {
+  padding: 0 0.3rem;
+}
+
+.md-header__title {
+  flex: 1;
+  visibility: hidden;
+  overflow: hidden;
+}
+
+.md-footer {
+  background-color: #1e2b3a;
+}
+
+.md-footer-meta {
+  background-color: #141d26;
+}
+
+:root {
+  /* Dark slate header matching HTTPx style */
+  --md-primary-fg-color: #1e2b3a;
+  --md-primary-fg-color--light: #2d3f52;
+  --md-primary-fg-color--dark: #141d26;
+  --md-primary-bg-color: #ffffff;
+  --md-primary-bg-color--light: rgba(255, 255, 255, 0.7);
+
+  /* Pine blue accent */
+  --md-accent-fg-color: #38726c;
+  --md-accent-fg-color--transparent: rgba(56, 114, 108, 0.1);
+}
