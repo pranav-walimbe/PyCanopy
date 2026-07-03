@@ -556,6 +556,7 @@ class Engine:
         query_xs: np.ndarray,
         query_ys: np.ndarray,
         k: int,
+        total_q_count: int | None = None,
     ) -> np.ndarray:
         """For each query point, return the k nearest neighbours in the dataset.
 
@@ -563,6 +564,7 @@ class Engine:
             query_xs: Contiguous float64 array of query x coordinates, shape (N,).
             query_ys: Contiguous float64 array of query y coordinates, shape (N,).
             k: Number of neighbours per query point.
+            total_q_count: True probe count to plan against, if this is one streamed morsel.
 
         Returns:
             uint64 array of shape (N * k,). Block i holds k result indices for query i.
@@ -571,6 +573,7 @@ class Engine:
             np.ascontiguousarray(query_xs, dtype=np.float64),
             np.ascontiguousarray(query_ys, dtype=np.float64),
             k,
+            total_q_count,
         )
 
     def batch_within_distance(
@@ -579,6 +582,7 @@ class Engine:
         query_ys,
         distance: float,
         flipped: bool = False,
+        total_q_count: int | None = None,
     ) -> np.ndarray:
         """For each query point return (query_idx, engine_idx) pairs within distance.
 
@@ -588,6 +592,7 @@ class Engine:
             distance: Maximum Euclidean distance for a match.
             flipped: Index query side and iterate engine points (faster when
                 len(query) >> engine.n).
+            total_q_count: True probe count to plan against, if this is one streamed morsel.
 
         Returns:
             Flat uint64 array of shape (M * 2,) interleaved [q0, e0, q1, e1, ...].
@@ -597,6 +602,7 @@ class Engine:
             np.ascontiguousarray(query_ys, dtype=np.float64),
             distance,
             flipped,
+            total_q_count,
         )
 
     def batch_within(
@@ -634,12 +640,14 @@ class Engine:
         self,
         query_xs: np.ndarray,
         query_ys: np.ndarray,
+        total_q_count: int | None = None,
     ) -> np.ndarray:
         """For each query point, (query_idx, engine_idx) for every containing Engine polygon.
 
         Args:
             query_xs: Contiguous float64 array of query x coordinates, shape (N,).
             query_ys: Contiguous float64 array of query y coordinates, shape (N,).
+            total_q_count: True probe count to plan against, if this is one streamed morsel.
 
         Returns:
             uint64 array of shape (M * 2,) where M is the total number of matches.
@@ -648,6 +656,7 @@ class Engine:
         return self._core.batch_contains(
             np.ascontiguousarray(query_xs, dtype=np.float64),
             np.ascontiguousarray(query_ys, dtype=np.float64),
+            total_q_count,
         )
 
     def batch_within_distance_to_polygons(
@@ -655,6 +664,7 @@ class Engine:
         query_xs: np.ndarray,
         query_ys: np.ndarray,
         distance: float,
+        total_q_count: int | None = None,
     ) -> np.ndarray:
         """For each query point, return (query_idx, polygon_idx) pairs within distance.
 
@@ -665,6 +675,7 @@ class Engine:
             query_xs: Contiguous float64 array of query x coordinates.
             query_ys: Contiguous float64 array of query y coordinates.
             distance: Maximum Euclidean point-to-polygon distance for a match.
+            total_q_count: True probe count to plan against, if this is one streamed morsel.
 
         Returns:
             uint64 array of shape (M * 2,) interleaved [q0, e0, q1, e1, ...].
@@ -673,6 +684,7 @@ class Engine:
             np.ascontiguousarray(query_xs, dtype=np.float64),
             np.ascontiguousarray(query_ys, dtype=np.float64),
             distance,
+            total_q_count,
         )
 
     def batch_knn_to_polygons(
@@ -680,6 +692,7 @@ class Engine:
         query_xs: np.ndarray,
         query_ys: np.ndarray,
         k: int,
+        total_q_count: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """For each query point, return the k nearest polygons by point-to-polygon distance.
 
@@ -687,6 +700,7 @@ class Engine:
             query_xs: Contiguous float64 array of query x coordinates.
             query_ys: Contiguous float64 array of query y coordinates.
             k: Number of nearest polygons per query point.
+            total_q_count: True probe count to plan against, if this is one streamed morsel.
 
         Returns:
             Pair (engine_indices, distances), each a flat array of shape (N * k,) in
@@ -696,6 +710,7 @@ class Engine:
             np.ascontiguousarray(query_xs, dtype=np.float64),
             np.ascontiguousarray(query_ys, dtype=np.float64),
             k,
+            total_q_count,
         )
 
     def batch_knn_to_polygons_sorted(

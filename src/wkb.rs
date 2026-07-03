@@ -8,7 +8,7 @@ use rayon::prelude::*;
 const WKB_POLYGON: u32 = 3;
 const WKB_MULTIPOLYGON: u32 = 6;
 
-// Below this geometry count the decode stays single chunk, since rayon overhead would not pay off
+// Below this geometry count the decode stays single chunk
 const MIN_DECODE_CHUNK: usize = 256;
 
 /// Flat ring representation parsed from a WKB column (see Engine::from_polygon_rings).

@@ -94,6 +94,7 @@ class KnnJoinNode:
     y_col: str
     k: int
     keep_columns: tuple[str, ...] | None = None
+    total_probe_rows: int | None = None
 
 
 @dataclass
@@ -109,6 +110,7 @@ class WithinJoinNode:
     y_col: str
     flip: bool = False
     keep_columns: tuple[str, ...] | None = None
+    total_probe_rows: int | None = None
 
 
 @dataclass
@@ -125,6 +127,7 @@ class WithinDistanceJoinNode:
     distance: float
     flip: bool = False
     keep_columns: tuple[str, ...] | None = None
+    total_probe_rows: int | None = None
 
 
 @dataclass
@@ -140,6 +143,7 @@ class PolygonWithinDistanceJoinNode:
     y_col: str
     distance: float
     keep_columns: tuple[str, ...] | None = None
+    total_probe_rows: int | None = None
 
 
 @dataclass
@@ -179,6 +183,7 @@ class PolygonKnnJoinNode:
     k: int
     keep_columns: tuple[str, ...] | None = None
     sorted_output: bool = False
+    total_probe_rows: int | None = None
 
 
 # Type alias for a complete plan

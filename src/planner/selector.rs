@@ -12,15 +12,18 @@ pub fn select_index(stats: &DatasetStats, query: &Query) -> IndexKind {
     if stats.n < BRUTE_FORCE_N {
         return IndexKind::BruteForce;
     }
-
     let sel = selectivity(stats, query);
     if sel > FULL_SCAN_SELECTIVITY {
         return IndexKind::BruteForce;
     }
+    select_index_from_selectivity(stats, query, sel)
+}
 
+/// Route to an index kind given an already-computed `sel`, skipping the gates `select_index` already applied
+fn select_index_from_selectivity(stats: &DatasetStats, query: &Query, sel: f64) -> IndexKind {
     match query {
-        Query::Knn { k, .. } => {
-            if *k as f64 / stats.n as f64 > KNN_FRACTION_THRESHOLD {
+        Query::Knn { .. } => {
+            if sel > KNN_FRACTION_THRESHOLD {
                 return IndexKind::BruteForce;
             }
             match stats.kind {
@@ -60,8 +63,9 @@ pub fn plan_access_with_kind(
     if mode == IndexMode::Eager {
         return candidate;
     }
-    let indexed = total_cost(candidate, stats, query, q_count, factors);
-    let brute = total_cost(IndexKind::BruteForce, stats, query, q_count, factors);
+    let sel = selectivity(stats, query);
+    let indexed = total_cost(candidate, stats, query, sel, q_count, factors);
+    let brute = total_cost(IndexKind::BruteForce, stats, query, sel, q_count, factors);
     if indexed < brute {
         candidate
     } else {
@@ -101,23 +105,33 @@ pub fn plan_best_available(
     q_count: usize,
     factors: &CostFactors,
 ) -> IndexKind {
-    let brute_cost = probe_cost(IndexKind::BruteForce, stats, query, q_count, factors);
+    // Computed once, only if actually needed, and reused for every call below
+    let needs_sel = stats.n >= BRUTE_FORCE_N || built.iter().any(|&k| k != IndexKind::BruteForce);
+    let sel = if needs_sel {
+        selectivity(stats, query)
+    } else {
+        0.0
+    };
+
+    let brute_cost = probe_cost(IndexKind::BruteForce, stats, query, sel, q_count, factors);
     let mut best_kind = IndexKind::BruteForce;
     let mut best_cost = brute_cost;
 
     for &k in built {
-        let c = probe_cost(k, stats, query, q_count, factors);
+        let c = probe_cost(k, stats, query, sel, q_count, factors);
         if c < best_cost {
             best_cost = c;
             best_kind = k;
         }
     }
 
-    let candidate = select_index(stats, query);
-    if candidate != IndexKind::BruteForce {
-        let new_cost = total_cost(candidate, stats, query, q_count, factors);
-        if new_cost < best_cost {
-            best_kind = candidate;
+    if stats.n >= BRUTE_FORCE_N && sel <= FULL_SCAN_SELECTIVITY {
+        let candidate = select_index_from_selectivity(stats, query, sel);
+        if candidate != IndexKind::BruteForce {
+            let new_cost = total_cost(candidate, stats, query, sel, q_count, factors);
+            if new_cost < best_cost {
+                best_kind = candidate;
+            }
         }
     }
 

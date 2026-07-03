@@ -909,12 +909,14 @@ impl Engine {
 
     /// For each query point, return its k nearest neighbours in the Engine's dataset,
     /// nearest-first.
+    #[pyo3(signature = (query_xs, query_ys, k, total_q_count=None))]
     fn batch_knn_join<'py>(
         &mut self,
         py: Python<'py>,
         query_xs: PyReadonlyArray1<f64>,
         query_ys: PyReadonlyArray1<f64>,
         k: usize,
+        total_q_count: Option<usize>,
     ) -> PyResult<Bound<'py, PyArray1<u64>>> {
         let qxs = query_xs
             .as_slice()
@@ -933,7 +935,7 @@ impl Engine {
                 point: Point::new(0.0, 0.0),
                 k,
             },
-            qxs.len(),
+            total_q_count.unwrap_or(qxs.len()),
         );
         self.build_index_if_needed(kind);
 
@@ -999,6 +1001,7 @@ impl Engine {
     ///
     /// `flipped` indexes the query side and iterates engine points instead. Same results
     /// and cheaper when len(query) >> engine.n.
+    #[pyo3(signature = (query_xs, query_ys, distance, flipped, total_q_count=None))]
     fn batch_within_distance<'py>(
         &mut self,
         py: Python<'py>,
@@ -1006,6 +1009,7 @@ impl Engine {
         query_ys: PyReadonlyArray1<f64>,
         distance: f64,
         flipped: bool,
+        total_q_count: Option<usize>,
     ) -> PyResult<Bound<'py, PyArray1<u64>>> {
         if self.ring_offsets.is_some() {
             return Err(PyValueError::new_err(
@@ -1032,7 +1036,11 @@ impl Engine {
             coord! { x: 0.0, y: 0.0 },
             coord! { x: 2.0 * distance, y: 2.0 * distance },
         );
-        let kind = self.plan_index_kind(&Query::Range { bbox }, qxs.len(), candidate);
+        let kind = self.plan_index_kind(
+            &Query::Range { bbox },
+            total_q_count.unwrap_or(qxs.len()),
+            candidate,
+        );
         self.build_index_if_needed(kind);
         let pairs = match kind {
             IndexKind::BruteForce => par_within_distance(
@@ -1100,11 +1108,13 @@ impl Engine {
 
     /// For each query point, return (query_idx, engine_idx) pairs for every polygon that
     /// contains it. Polygon dataset only.
+    #[pyo3(signature = (query_xs, query_ys, total_q_count=None))]
     fn batch_contains<'py>(
         &mut self,
         py: Python<'py>,
         query_xs: PyReadonlyArray1<f64>,
         query_ys: PyReadonlyArray1<f64>,
+        total_q_count: Option<usize>,
     ) -> PyResult<Bound<'py, PyArray1<u64>>> {
         let qxs = query_xs
             .as_slice()
@@ -1126,7 +1136,7 @@ impl Engine {
             &Query::Contains {
                 point: Point::new(0.0, 0.0),
             },
-            qxs.len(),
+            total_q_count.unwrap_or(qxs.len()),
             IndexKind::RTree,
         );
         self.build_index_if_needed(kind);
@@ -1166,12 +1176,14 @@ impl Engine {
     /// polygon within `distance` of it. Engine must be a polygon dataset.
     ///
     /// Returns a flat u64 array interleaved [q0, e0, q1, e1, ...] for reshaping to (-1, 2).
+    #[pyo3(signature = (query_xs, query_ys, distance, total_q_count=None))]
     fn batch_within_distance_to_polygons<'py>(
         &mut self,
         py: Python<'py>,
         query_xs: PyReadonlyArray1<f64>,
         query_ys: PyReadonlyArray1<f64>,
         distance: f64,
+        total_q_count: Option<usize>,
     ) -> PyResult<Bound<'py, PyArray1<u64>>> {
         let qxs = query_xs
             .as_slice()
@@ -1193,7 +1205,11 @@ impl Engine {
             coord! { x: 0.0, y: 0.0 },
             coord! { x: 2.0 * distance, y: 2.0 * distance },
         );
-        let kind = self.plan_index_kind(&Query::Range { bbox }, qxs.len(), IndexKind::RTree);
+        let kind = self.plan_index_kind(
+            &Query::Range { bbox },
+            total_q_count.unwrap_or(qxs.len()),
+            IndexKind::RTree,
+        );
         self.build_index_if_needed(kind);
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
@@ -1231,12 +1247,14 @@ impl Engine {
     /// Returns (engine_indices, distances), each a flat array of shape (n_queries * k,)
     /// in per-query blocks. Padding slots (fewer than k candidates) use u64::MAX and inf.
     #[allow(clippy::type_complexity)]
+    #[pyo3(signature = (query_xs, query_ys, k, total_q_count=None))]
     fn batch_knn_to_polygons<'py>(
         &mut self,
         py: Python<'py>,
         query_xs: PyReadonlyArray1<f64>,
         query_ys: PyReadonlyArray1<f64>,
         k: usize,
+        total_q_count: Option<usize>,
     ) -> PyResult<(Bound<'py, PyArray1<u64>>, Bound<'py, PyArray1<f64>>)> {
         let qxs = query_xs
             .as_slice()
@@ -1259,7 +1277,7 @@ impl Engine {
                 point: Point::new(0.0, 0.0),
                 k,
             },
-            qxs.len(),
+            total_q_count.unwrap_or(qxs.len()),
             IndexKind::RTree,
         );
         self.build_index_if_needed(kind);

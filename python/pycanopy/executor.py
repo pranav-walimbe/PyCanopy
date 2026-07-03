@@ -263,8 +263,9 @@ class SpatialExecutor:
 
         # Join emitters ignore the incoming lf (they gather from sf.df directly)
         placeholder = sf.df.lazy()
+        total_probe_rows = join_node.query_df.height
         for chunk in join_node.query_df.iter_slices(morsel_rows):
-            sub = dataclasses.replace(join_node, query_df=chunk)
+            sub = dataclasses.replace(join_node, query_df=chunk, total_probe_rows=total_probe_rows)
             lf = self._emit_node(sub, sf, placeholder, PluginPath.EXPR)
             for node in post_nodes:
                 lf = self._emit_node(node, sf, lf, PluginPath.EXPR)
@@ -461,8 +462,9 @@ class SpatialExecutor:
         query_ys = node.query_df[node.y_col].to_numpy()
         n_queries = len(node.query_df)
 
+        total_q = n_queries if node.total_probe_rows is None else node.total_probe_rows
         # batch_knn_join returns a flat (n_queries * k,) array, each query row repeats k times
-        match_indices = sf.engine.batch_knn_join(query_xs, query_ys, node.k)
+        match_indices = sf.engine.batch_knn_join(query_xs, query_ys, node.k, total_q)
         q_idx = pl.Series("", np.repeat(np.arange(n_queries, dtype=np.uint32), node.k))
         t_idx = pl.Series("", match_indices.astype(np.uint32))
         return self._assemble_join(node, sf, q_idx, t_idx).lazy()
@@ -471,9 +473,10 @@ class SpatialExecutor:
         # For each point in query_df, find the Engine polygons that contain it
         query_xs = node.query_df[node.x_col].to_numpy()
         query_ys = node.query_df[node.y_col].to_numpy()
+        total_q = len(node.query_df) if node.total_probe_rows is None else node.total_probe_rows
 
         # batch_contains returns flat (M * 2,) array: [q0, e0, q1, e1, ...].
-        pairs = sf.engine.batch_contains(query_xs, query_ys).reshape(-1, 2)
+        pairs = sf.engine.batch_contains(query_xs, query_ys, total_q).reshape(-1, 2)
         q_idx = pl.Series("", pairs[:, 0].astype(np.uint32))
         t_idx = pl.Series("", pairs[:, 1].astype(np.uint32))
         return self._assemble_join(node, sf, q_idx, t_idx).lazy()
@@ -484,9 +487,10 @@ class SpatialExecutor:
         # For each query point, find Engine points within node.distance
         query_xs = node.query_df[node.x_col].to_numpy()
         query_ys = node.query_df[node.y_col].to_numpy()
+        total_q = len(node.query_df) if node.total_probe_rows is None else node.total_probe_rows
 
         pairs = sf.engine.batch_within_distance(
-            query_xs, query_ys, node.distance, node.flip
+            query_xs, query_ys, node.distance, node.flip, total_q
         ).reshape(-1, 2)
         q_idx = pl.Series("", pairs[:, 0].astype(np.uint32))
         t_idx = pl.Series("", pairs[:, 1].astype(np.uint32))
@@ -498,9 +502,10 @@ class SpatialExecutor:
         # For each query point find Engine polygons within node.distance
         query_xs = node.query_df[node.x_col].to_numpy()
         query_ys = node.query_df[node.y_col].to_numpy()
+        total_q = len(node.query_df) if node.total_probe_rows is None else node.total_probe_rows
 
         pairs = sf.engine.batch_within_distance_to_polygons(
-            query_xs, query_ys, node.distance
+            query_xs, query_ys, node.distance, total_q
         ).reshape(-1, 2)
         q_idx = pl.Series("", pairs[:, 0].astype(np.uint32))
         t_idx = pl.Series("", pairs[:, 1].astype(np.uint32))
@@ -513,8 +518,9 @@ class SpatialExecutor:
         query_xs = node.query_df[node.x_col].to_numpy()
         query_ys = node.query_df[node.y_col].to_numpy()
         n_queries = len(node.query_df)
+        total_q = n_queries if node.total_probe_rows is None else node.total_probe_rows
 
-        indices, dists = sf.engine.batch_knn_to_polygons(query_xs, query_ys, node.k)
+        indices, dists = sf.engine.batch_knn_to_polygons(query_xs, query_ys, node.k, total_q)
 
         q_idx_full = np.repeat(np.arange(n_queries, dtype=np.uint64), node.k)
         # Drop padding slots (no polygon for that rank)

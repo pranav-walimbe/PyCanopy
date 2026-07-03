@@ -28,11 +28,12 @@ fn build_cost(kind: IndexKind, n: usize, factors: &CostFactors) -> f64 {
     }
 }
 
-/// Estimated probe cost for `q_count` queries against an already-built `kind` index.
+/// Estimated probe cost for `q_count` queries against an already-built `kind` index, given a precomputed `sel`
 pub fn probe_cost(
     kind: IndexKind,
     stats: &DatasetStats,
     query: &Query,
+    sel: f64,
     q_count: usize,
     factors: &CostFactors,
 ) -> f64 {
@@ -43,11 +44,11 @@ pub fn probe_cost(
         IndexKind::BruteForce => q * n * factors.scan_ns_per_item,
         // Grid is a direct cell lookup with no tree traversal
         IndexKind::Grid => {
-            let results = (selectivity(stats, query) * n).max(1.0);
+            let results = (sel * n).max(1.0);
             q * results * factors.grid_range_ns
         }
         _ => {
-            let results = (selectivity(stats, query) * n).max(1.0);
+            let results = (sel * n).max(1.0);
             let per = match (kind, is_knn) {
                 (IndexKind::KdTree, true) => factors.kdtree_knn_ns,
                 (IndexKind::KdTree, false) => factors.kdtree_range_ns,
@@ -60,16 +61,16 @@ pub fn probe_cost(
     }
 }
 
-/// Total estimated cost of `q_count` probes via `kind`, with the one-time build
-/// amortised across them. Lower wins when the planner compares candidates.
+/// Total estimated cost of `q_count` probes via `kind`
 pub fn total_cost(
     kind: IndexKind,
     stats: &DatasetStats,
     query: &Query,
+    sel: f64,
     q_count: usize,
     factors: &CostFactors,
 ) -> f64 {
-    build_cost(kind, stats.n, factors) + probe_cost(kind, stats, query, q_count, factors)
+    build_cost(kind, stats.n, factors) + probe_cost(kind, stats, query, sel, q_count, factors)
 }
 
 /// Fraction of the dataset expected to match the query (0..=1)
@@ -196,6 +197,6 @@ mod tests {
         };
         let sel = 0.25_f64;
         let expected = 10.0 * (sel * 1000.0) * f.grid_range_ns;
-        assert!((probe_cost(IndexKind::Grid, &stats, &q, 10, &f) - expected).abs() < 1e-6);
+        assert!((probe_cost(IndexKind::Grid, &stats, &q, sel, 10, &f) - expected).abs() < 1e-6);
     }
 }
