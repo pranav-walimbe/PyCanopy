@@ -1,8 +1,13 @@
-"""Timing and data-generation utilities for the calibration benchmark."""
+"""
+Data generation and timing primitives for the calibration benchmark.
+"""
 
 from __future__ import annotations
 
+import resource
+import sys
 import time
+from collections.abc import Callable
 
 import numpy as np
 import shapely
@@ -82,19 +87,34 @@ def generate_polygons(
     return shapely.box(anchors[:, 0], anchors[:, 1], anchors[:, 0] + pw, anchors[:, 1] + ph)
 
 
-def time_ms(fn, runs: int = 3) -> float:
-    """Run fn `runs` times and return the median elapsed time in milliseconds.
+def time_min(fn: Callable[[], object], runs: int = 3) -> float:
+    """Run fn `runs` times and return the minimum elapsed time in milliseconds.
+
+    The floor is the least noisy estimate of a warm CPU bound cost, so the fixed
+    scheduling and allocation jitter that only ever inflates a sample is discarded.
 
     Args:
         fn: Zero-argument callable.
         runs: Number of repetitions.
 
     Returns:
-        Median elapsed time in milliseconds.
+        Minimum elapsed time in milliseconds.
     """
-    times = []
+    best = float("inf")
     for _ in range(runs):
         t0 = time.perf_counter()
         fn()
-        times.append((time.perf_counter() - t0) * 1_000)
-    return float(np.median(times))
+        best = min(best, (time.perf_counter() - t0) * 1_000)
+    return best
+
+
+def peak_rss_mb() -> float:
+    """Return the peak resident set size of this process in mebibytes.
+
+    Returns:
+        Peak RSS in MiB.
+    """
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    # ru_maxrss is bytes on macOS and kilobytes on Linux
+    divisor = 1024 * 1024 if sys.platform == "darwin" else 1024
+    return peak / divisor
