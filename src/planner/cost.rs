@@ -23,8 +23,9 @@ fn build_cost(kind: IndexKind, n: usize, factors: &CostFactors) -> f64 {
     let n = n as f64;
     match kind {
         IndexKind::BruteForce => 0.0,
-        IndexKind::Grid => n * factors.build_ns_per_item,
-        IndexKind::KdTree | IndexKind::RTree => n * n.log2().max(1.0) * factors.build_ns_per_item,
+        IndexKind::Grid => n * factors.grid_build_ns_per_item,
+        IndexKind::KdTree => n * n.log2().max(1.0) * factors.kdtree_build_ns_per_item,
+        IndexKind::RTree => n * n.log2().max(1.0) * factors.rtree_build_ns_per_item,
     }
 }
 

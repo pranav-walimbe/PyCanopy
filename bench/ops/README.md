@@ -21,9 +21,9 @@ Measures the 9 `CostFactors` ns/op constants used by the query planner's cost mo
 | `grid_build_ns_per_item` | build | uniform points | `N` |
 | `kdtree_build_ns_per_item` | build | clustered points | `N * log2(N)` |
 | `rtree_build_ns_per_item` | build | polygons | `N * log2(N)` |
-| `grid_range_ns` | range probe | uniform points | true hit total |
-| `kdtree_range_ns` | range probe | clustered points | `Q * log2(N)` + true hit total |
-| `rtree_range_ns` | range probe | polygons | `Q * log2(N)` + true hit total |
+| `grid_range_ns` | range probe | uniform points | materialized row count |
+| `kdtree_range_ns` | range probe | clustered points | `Q * log2(N)` + materialized row count |
+| `rtree_range_ns` | range probe | polygons | `Q * log2(N)` + materialized row count |
 | `kdtree_knn_ns` | kNN probe | clustered points | `Q * (log2(N) + k)` |
 | `rtree_knn_ns` | kNN probe | polygons | `Q * (log2(N) + k)` |
 

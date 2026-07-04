@@ -26,7 +26,6 @@ from pycanopy import SpatialFrame
 _POINT_SIZES = [10_000, 100_000, 500_000, 1_000_000]
 _POLY_SIZES = [10_000, 40_000, 100_000]
 
-# scan cost is flat per item, so a small ladder resolves the ratio at a fraction of the Q*N runtime
 _SCAN_SIZES = [10_000, 50_000, 100_000]
 
 _Q = 200
@@ -34,7 +33,7 @@ _K = 5
 _RUNS = 3
 _BOX_SIDE = 0.1
 
-# Floor for measured constants so timing noise can never yield a zero or negative cost
+# Floor for measured constants
 _MIN_NS = 0.1
 
 # Default destination for the written report
