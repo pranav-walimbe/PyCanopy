@@ -39,7 +39,7 @@ _MIN_NS = 0.1
 # Default destination for the written report
 _OUTPUT_PATH = Path(__file__).resolve().parents[2] / "assets" / "ops.txt"
 
-_SCAN_FIELDS = ["scan_ns_per_item"]
+_SCAN_FIELDS = ["knn_scan_ns_per_item", "bbox_scan_ns_per_item"]
 _POINT_FIELDS = [
     "grid_build_ns_per_item",
     "kdtree_build_ns_per_item",
@@ -135,6 +135,14 @@ def _scan_probe(
     return t, _Q * n
 
 
+def _bbox_scan_probe(n: int, runs: int, seed: int) -> tuple[float, float]:
+    # Time one no-index range scan over an empty box, isolating the per-item box test in a single call
+    sf = _point_frame(generate_points(n, seed), "none")
+    empty_box = (2.0, 2.0, 3.0, 3.0)
+    t = time_min(lambda: sf.engine.range_query(*empty_box), runs)
+    return t, n
+
+
 def _range_probe(
     n: int,
     runs: int,
@@ -198,8 +206,11 @@ def run(runs: int, seed: int) -> None:
     boxes = _query_boxes(_Q, seed, _BOX_SIDE)
 
     fits: dict[str, float] = {
-        "scan_ns_per_item": _measure_median(
+        "knn_scan_ns_per_item": _measure_median(
             lambda n: _scan_probe(n, runs, seed, qxs, qys), _SCAN_SIZES
+        ),
+        "bbox_scan_ns_per_item": _measure_median(
+            lambda n: _bbox_scan_probe(n, runs, seed), _SCAN_SIZES
         ),
         "grid_build_ns_per_item": _measure_median(
             lambda n: _build_probe(n, runs, seed, clustered=False), _POINT_SIZES

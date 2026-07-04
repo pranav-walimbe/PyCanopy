@@ -160,6 +160,20 @@ class PointsWithinDistanceOfPolygonNode:
 
 
 @dataclass
+class WithinDistanceOfPointNode:
+    """Spatial filter: keep points within `distance` of a single center (point dataset).
+
+    Distance is Euclidean. Returns a subset of the frame's rows, so it behaves like
+    range / contains.
+    """
+
+    cx: float
+    cy: float
+    distance: float
+    selectivity: float = 1.0
+
+
+@dataclass
 class IntersectsSelfJoinNode:
     """Spatial self-join: all intersecting polygon pairs with overlap area and IoU.
 

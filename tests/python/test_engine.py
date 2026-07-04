@@ -172,6 +172,14 @@ def test_range_empty_returns_empty(engine):
     assert engine.range_query(5.0, 5.0, 10.0, 10.0) == []
 
 
+# radius_query (points)
+
+
+def test_radius_refines_to_circle(engine):
+    # (0,0),(1,0),(0,1) are within 1.0; (1,1) is in the bbox but sqrt(2) away, so dropped
+    assert sorted(engine.radius_query(0.0, 0.0, 1.0).tolist()) == [0, 1, 3]
+
+
 # contains (points)
 
 

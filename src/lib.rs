@@ -30,7 +30,8 @@ use query::{
     batch::{
         par_bbox_filter, par_contains, par_knn, par_knn_to_polygons, par_knn_to_polygons_sorted,
         par_knn_with_delta, par_points_within_distance_of_polygon, par_polygon_intersects_join,
-        par_within_distance, par_within_distance_flipped, par_within_distance_to_polygons,
+        par_radius, par_within_distance, par_within_distance_flipped,
+        par_within_distance_to_polygons,
     },
     geometry::{convex_hull_area, polygon_area, polygon_intersection_area},
     multipoly::{dedup_indices, dedup_self_pairs, polygon_parts_csr, sum_part_areas},
@@ -641,6 +642,85 @@ impl Engine {
             result = dedup_indices(result, pp);
         }
         Ok(result)
+    }
+
+    /// Engine point indices within `distance` (Euclidean) of the center (cx, cy)
+    fn radius_query<'py>(
+        &mut self,
+        py: Python<'py>,
+        cx: f64,
+        cy: f64,
+        distance: f64,
+    ) -> PyResult<Bound<'py, PyArray1<u64>>> {
+        if self.ring_offsets.is_some() {
+            return Err(PyValueError::new_err(
+                "radius_query requires a point dataset",
+            ));
+        }
+        let bbox = Rect::new(
+            coord! { x: cx - distance, y: cy - distance },
+            coord! { x: cx + distance, y: cy + distance },
+        );
+        // Skip histogram early-exit when delta is non-empty: delta points are not in the histogram
+        if self.delta_xs.is_empty() {
+            if let Some(hist) = &self.stats.histogram {
+                if !hist.has_any_in_bbox(&bbox) {
+                    let empty: Vec<u64> = Vec::new();
+                    return Ok(PyArray1::from_vec(py, empty));
+                }
+            }
+        }
+        let kind = self.plan_index(&Query::Range { bbox }, 1);
+        self.build_index_if_needed(kind);
+        let mut result = match kind {
+            IndexKind::BruteForce => par_radius(
+                self.brute.as_ref().unwrap(),
+                &self.xs,
+                &self.ys,
+                cx,
+                cy,
+                distance,
+            ),
+            IndexKind::RTree => par_radius(
+                self.rtree.as_ref().unwrap(),
+                &self.xs,
+                &self.ys,
+                cx,
+                cy,
+                distance,
+            ),
+            IndexKind::KdTree => par_radius(
+                self.kdtree.as_ref().unwrap(),
+                &self.xs,
+                &self.ys,
+                cx,
+                cy,
+                distance,
+            ),
+            IndexKind::Grid => par_radius(
+                self.grid.as_ref().unwrap(),
+                &self.xs,
+                &self.ys,
+                cx,
+                cy,
+                distance,
+            ),
+        };
+        // Refine delta points by exact distance and address them in the combined index space
+        if !self.delta_xs.is_empty() {
+            let d2 = distance * distance;
+            let n_main = self.xs.len();
+            for (i, (&x, &y)) in self.delta_xs.iter().zip(self.delta_ys.iter()).enumerate() {
+                let dx = x - cx;
+                let dy = y - cy;
+                if dx * dx + dy * dy <= d2 {
+                    result.push((n_main + i) as u64);
+                }
+            }
+            self.delta_query_cost += self.delta_xs.len() as u64;
+            self.maybe_flush_on_cost(kind);
+        }
+        Ok(PyArray1::from_vec(py, result))
     }
 
     /// Intersect multiple bbox queries via two-pointer sorted merge on the hit arrays.

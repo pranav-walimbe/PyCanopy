@@ -28,6 +28,7 @@ from pycanopy.nodes import (
     ScalarNode,
     SelectNode,
     WithinDistanceJoinNode,
+    WithinDistanceOfPointNode,
     WithinJoinNode,
 )
 from pycanopy.optimizer import SpatialOptimizer
@@ -82,6 +83,11 @@ def _fmt_node(node) -> str:
         return f"POLY_KNN_JOIN [k={node.k}, query_rows={len(node.query_df):,}, barrier]"
     if isinstance(node, PointsWithinDistanceOfPolygonNode):
         return f"POINTS_WITHIN_DIST_OF_POLY [dist={node.distance:.4g}]"
+    if isinstance(node, WithinDistanceOfPointNode):
+        return (
+            f"WITHIN_DIST_OF_POINT [center=({node.cx:.4g}, {node.cy:.4g}), "
+            f"dist={node.distance:.4g}, sel={node.selectivity:.3g}]"
+        )
     if isinstance(node, IntersectsSelfJoinNode):
         return "INTERSECTS_SELF_JOIN [pairs, barrier]"
     return f"UNKNOWN [{type(node).__name__}]"
@@ -378,6 +384,25 @@ class SpatialLazyFrame:
         return SpatialLazyFrame(
             self._sf,
             [*self._plan, PointsWithinDistanceOfPolygonNode(polygon, distance)],
+        )
+
+    def within_distance_of_point(self, cx: float, cy: float, distance: float) -> SpatialLazyFrame:
+        """Keep points within `distance` of a single center (point dataset).
+
+        Distance is Euclidean. The result is a subset of this frame's rows like a spatial
+        filter.
+
+        Args:
+            cx: Center x coordinate.
+            cy: Center y coordinate.
+            distance: Maximum Euclidean distance for a row to be kept.
+
+        Returns:
+            New SpatialLazyFrame with the within-distance-of-point node appended.
+        """
+        return SpatialLazyFrame(
+            self._sf,
+            [*self._plan, WithinDistanceOfPointNode(cx, cy, distance)],
         )
 
     def intersects_pairs(self) -> SpatialLazyFrame:

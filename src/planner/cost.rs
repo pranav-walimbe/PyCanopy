@@ -42,7 +42,15 @@ pub fn probe_cost(
     let q = q_count as f64;
     let is_knn = matches!(query, Query::Knn { .. });
     match kind {
-        IndexKind::BruteForce => q * n * factors.scan_ns_per_item,
+        IndexKind::BruteForce => {
+            // kNN scans compute distance and keep a top-k heap while range and radius only box-test
+            let per = if is_knn {
+                factors.knn_scan_ns_per_item
+            } else {
+                factors.bbox_scan_ns_per_item
+            };
+            q * n * per
+        }
         // Grid is a direct cell lookup with no tree traversal
         IndexKind::Grid => {
             let results = (sel * n).max(1.0);

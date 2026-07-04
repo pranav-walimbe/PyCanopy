@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 
 from pycanopy.nodes import (
     ContainsNode,
@@ -28,6 +29,7 @@ from pycanopy.nodes import (
     ScalarNode,
     SelectNode,
     WithinDistanceJoinNode,
+    WithinDistanceOfPointNode,
     WithinJoinNode,
 )
 
@@ -160,6 +162,8 @@ class SpatialOptimizer:
                 node = dataclasses.replace(node, selectivity=1.0 / max(n, 1))
             elif isinstance(node, KnnNode):
                 node = dataclasses.replace(node, selectivity=min(1.0, node.k / max(n, 1)))
+            elif isinstance(node, WithinDistanceOfPointNode):
+                node = dataclasses.replace(node, selectivity=self._disk_selectivity(node, extent))
             elif isinstance(node, ScalarNode):
                 node = dataclasses.replace(node, cost=_scalar_cost(node.expr))
             # join nodes have no selectivity field
@@ -180,6 +184,20 @@ class SpatialOptimizer:
             return 1.0
         query_area = max(0.0, node.max_x - node.min_x) * max(0.0, node.max_y - node.min_y)
         return min(1.0, query_area / total_area)
+
+    def _disk_selectivity(
+        self,
+        node: WithinDistanceOfPointNode,
+        extent: tuple[float, float, float, float] | None,
+    ) -> float:
+        # Selectivity of a radius query as its disk area divided by the dataset extent area
+        if extent is None:
+            return 1.0
+        min_x, min_y, max_x, max_y = extent
+        total_area = (max_x - min_x) * (max_y - min_y)
+        if total_area <= 0.0:
+            return 1.0
+        return min(1.0, math.pi * node.distance * node.distance / total_area)
 
     def _cost_sort(self, plan: Plan) -> Plan:
         # Reorder nodes so cheaper operations run first. Joins and KNN are barriers, and within

@@ -258,3 +258,17 @@ def test_range_filter_polygon_frame_empty_bbox():
     sf = SpatialFrame.from_wkb_polygons(_wkb_polygon_frame(), "geom")
     result = sf.range_filter(5.0, 5.0, 6.0, 6.0)
     assert result.engine.n == 0
+
+
+# radius_query tests
+
+
+def test_radius_query_returns_matching_rows(sf):
+    # Center (0,0) radius 1.0 keeps (0,0),(1,0),(0,1); (1,1) is dropped by the circle refine
+    result = sf.radius_query(0.0, 0.0, 1.0)
+    assert sorted(result["v"].to_list()) == [10, 20, 40]
+
+
+def test_within_distance_of_point_lazy_matches_eager(sf):
+    result = sf.lazy().within_distance_of_point(0.0, 0.0, 1.0).collect()
+    assert sorted(result["v"].to_list()) == [10, 20, 40]

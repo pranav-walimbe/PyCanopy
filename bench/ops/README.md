@@ -9,7 +9,7 @@ Measures the 9 `CostFactors` ns/op constants used by the query planner's cost mo
   `shapely.box` (polygons), then wraps it in a `SpatialFrame`/`Engine`.
 - Build cost times only `engine.build_index()` on a fresh engine. Probe cost times the repeated queries against a pre-built index.
 - The constant is `time / workload_term`, where the term is read directly off the cost
-  model formula in `cost.rs` (e.g. `Q * N` for `scan_ns_per_item`).
+  model formula in `cost.rs` (e.g. `Q * N` for `knn_scan_ns_per_item`).
 - This ratio is computed at multiple dataset sizes and we return the median as the suggested value. 
 
 
@@ -17,7 +17,8 @@ Measures the 9 `CostFactors` ns/op constants used by the query planner's cost mo
 
 | Constant | Op timed | Dataset | Term |
 |---|---|---|---|
-| `scan_ns_per_item` | brute-force kNN, no index | uniform points | `Q * N` |
+| `knn_scan_ns_per_item` | brute-force kNN, no index | uniform points | `Q * N` |
+| `bbox_scan_ns_per_item` | brute-force range, no index | uniform points | `Q * N` |
 | `grid_build_ns_per_item` | build | uniform points | `N` |
 | `kdtree_build_ns_per_item` | build | clustered points | `N * log2(N)` |
 | `rtree_build_ns_per_item` | build | polygons | `N * log2(N)` |
@@ -46,19 +47,20 @@ Flags:
 Suggested CostFactors (copy into src/planner/calibration.rs):
 
 Brute Force
-    scan_ns_per_item:            100.80,
+    knn_scan_ns_per_item:        3.07,
+    bbox_scan_ns_per_item:       0.59,
 
 Points
-    grid_build_ns_per_item:      84.74,
-    kdtree_build_ns_per_item:    4.36,
-    grid_range_ns:               211.38,
-    kdtree_range_ns:             81.19,
-    kdtree_knn_ns:               148.71,
+    grid_build_ns_per_item:      10.33,
+    kdtree_build_ns_per_item:    0.47,
+    grid_range_ns:               34.40,
+    kdtree_range_ns:             17.56,
+    kdtree_knn_ns:               24.92,
 
 Polygons
-    rtree_build_ns_per_item:     74.17,
-    rtree_range_ns:              176.16,
-    rtree_knn_ns:                1299.75,
+    rtree_build_ns_per_item:     60.08,
+    rtree_range_ns:              24.69,
+    rtree_knn_ns:                132.17,
 
-elapsed: 20.3 s   peak RSS: 268.9 MiB
+elapsed: 2.9 s   peak RSS: 281.2 MiB
 ```

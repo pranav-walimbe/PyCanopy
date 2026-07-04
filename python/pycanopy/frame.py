@@ -273,6 +273,20 @@ class SpatialFrame:
             },
         )
 
+    def radius_query(self, cx: float, cy: float, distance: float) -> pl.DataFrame:
+        """Return the rows whose point lies within `distance` of the center (cx, cy).
+
+        Args:
+            cx: Center x coordinate.
+            cy: Center y coordinate.
+            distance: Maximum Euclidean distance for a match.
+
+        Returns:
+            The subset of this frame's DataFrame within the radius.
+        """
+        idx = self._engine.radius_query(cx, cy, distance)
+        return self._df[pl.Series(idx.astype(np.uint32))]
+
     def points_within_distance_of_polygon(self, polygon, distance: float) -> pl.DataFrame:
         """Return the rows whose point lies within `distance` of a polygon boundary (zero inside).
 

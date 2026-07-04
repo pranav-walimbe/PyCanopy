@@ -25,6 +25,7 @@ from pycanopy.nodes import (
     ScalarNode,
     SelectNode,
     WithinDistanceJoinNode,
+    WithinDistanceOfPointNode,
     WithinJoinNode,
 )
 
@@ -366,6 +367,8 @@ class SpatialExecutor:
             return self._emit_polygon_knn_join(node, sf, lf)
         if isinstance(node, PointsWithinDistanceOfPolygonNode):
             return self._emit_points_within_distance_of_polygon(node, sf, lf)
+        if isinstance(node, WithinDistanceOfPointNode):
+            return self._emit_within_distance_of_point(node, sf, lf)
         raise TypeError(f"Unknown plan node type: {type(node)}")
 
     # filter nodes
@@ -417,6 +420,13 @@ class SpatialExecutor:
         # Keep points within node.distance of the query polygon. The polygon is queried
         # against all points, so indices resolve once and the lf filters by original row.
         indices = sf.engine.points_within_distance_of_polygon(node.polygon, node.distance)
+        return self._filter_by_indices(lf, indices)
+
+    def _emit_within_distance_of_point(
+        self, node: WithinDistanceOfPointNode, sf, lf: pl.LazyFrame
+    ) -> pl.LazyFrame:
+        # One radius query resolves the indices, then the lf filters by original row
+        indices = sf.engine.radius_query(node.cx, node.cy, node.distance)
         return self._filter_by_indices(lf, indices)
 
     def _filter_by_indices(self, lf: pl.LazyFrame, indices) -> pl.LazyFrame:

@@ -774,6 +774,19 @@ class Engine:
             np.ascontiguousarray(j_idx, dtype=np.uint64),
         )
 
+    def radius_query(self, cx: float, cy: float, distance: float) -> np.ndarray:
+        """Return indices of engine points within `distance` of the center (cx, cy).
+
+        Args:
+            cx: Center x coordinate.
+            cy: Center y coordinate.
+            distance: Maximum Euclidean distance for a match.
+
+        Returns:
+            uint64 array of matching point indices.
+        """
+        return self._core.radius_query(cx, cy, distance)
+
     def points_within_distance_of_polygon(self, polygon, distance: float) -> np.ndarray:
         """Return indices of engine points within `distance` of a query polygon.
 

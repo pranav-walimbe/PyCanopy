@@ -117,6 +117,29 @@ pub fn par_contains<I: SpatialIndex + Sync>(
         .collect()
 }
 
+/// Bare engine point indices within `distance` of a single center. Dilated-box candidates
+/// refined in parallel by exact squared distance.
+pub fn par_radius<I: SpatialIndex + Sync>(
+    index: &I,
+    xs: &[f64],
+    ys: &[f64],
+    cx: f64,
+    cy: f64,
+    distance: f64,
+) -> Vec<u64> {
+    let d2 = distance * distance;
+    index
+        .range(cx - distance, cy - distance, cx + distance, cy + distance)
+        .into_par_iter()
+        .filter(move |&ei| {
+            let dx = xs[ei] - cx;
+            let dy = ys[ei] - cy;
+            dx * dx + dy * dy <= d2
+        })
+        .map(|ei| ei as u64)
+        .collect()
+}
+
 /// For each query point, (query_idx, engine_idx) for every engine point within `distance`.
 /// Bbox pre-filter then exact Euclidean check.
 pub fn par_within_distance<I: SpatialIndex + Sync>(
