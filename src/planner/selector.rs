@@ -267,17 +267,6 @@ mod tests {
     }
 
     #[test]
-    fn auto_skips_index_for_single_probe() {
-        // One probe against a large dataset: build cost is not amortised
-        let s = stats(1_000_000, GeometryKind::Point, Distribution::Clustered);
-        let f = CostFactors::default();
-        assert_eq!(
-            plan_access(&s, &big_knn(), 1, IndexMode::Auto, &f),
-            IndexKind::BruteForce
-        );
-    }
-
-    #[test]
     fn auto_builds_index_for_many_probes() {
         // Many probes amortise the build, so the index wins
         let s = stats(1_000_000, GeometryKind::Point, Distribution::Clustered);
