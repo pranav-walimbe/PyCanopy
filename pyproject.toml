@@ -52,6 +52,7 @@ docs = [
 ]
 bench = [
     "sedonadb>=0.3",
+    "geoarrow-pyarrow>=0.1",
     "shapely>=2.0",
     "matplotlib>=3.7",
     "boto3>=1.34",
