@@ -1,7 +1,7 @@
 """Q4: Zone distribution of the top 1000 trips by tip amount.
 
-PyCanopy: parallel fetch of trip and zone, sort+head the trip DataFrame in memory
-to find the top-1000 rows, then decode WKB only for those 1000.
+PyCanopy: parallel fetch of trip and zone, sort a narrow (key, tip) projection to
+find the top-1000 keys, gather WKB geometry for only those rows and decode it.
 The within-join then maps each pickup point to its zone.
 """
 
@@ -29,7 +29,14 @@ def pycanopy(tables) -> pl.DataFrame:
     tables.parallel_fetch(TABLES_NEEDED)
 
     trip = tables.table("trip", ["t_tripkey", "t_tip", "t_pickuploc"])
-    top = trip.sort(["t_tip", "t_tripkey"], descending=[True, False]).head(TOP_N)
+
+    top_keys = (
+        trip.select(["t_tripkey", "t_tip"])
+        .sort(["t_tip", "t_tripkey"], descending=[True, False])
+        .head(TOP_N)
+        .select("t_tripkey")
+    )
+    top = top_keys.join(trip.select(["t_tripkey", "t_pickuploc"]), on="t_tripkey", how="left")
 
     qx, qy = wkb_points_to_xy(top["t_pickuploc"])
     query_df = top.select("t_tripkey").with_columns(pl.Series("qx", qx), pl.Series("qy", qy))

@@ -1,10 +1,6 @@
-//! Per-polygon Y-slab edge index for sub-linear point-in-polygon.
-//!
-//! A ray cast at height y only crosses edges spanning y, so bucketing each polygon's
-//! edges into horizontal bands lets a containment test scan one band instead of every
-//! edge. Even-odd over all rings handles holes, matching `pip_raw` for valid polygons.
-//! Each band stores its edges as a contiguous interleaved run so the probe is a single
-//! sequential scan.
+//! Per-polygon Y-slab edge index for sub-linear point-in-polygon. A ray at height y only
+//! crosses edges spanning y, so bands bucket edges by height and a test scans one band,
+//! referencing a single shared edge list. Even-odd over rings matches `pip_raw` for holes.
 
 use rayon::prelude::*;
 
@@ -19,18 +15,18 @@ const STRIDE: usize = 4;
 pub struct PreparedPolygons {
     min_y: Vec<f64>,
     inv_band_h: Vec<f64>,
-    /// `band_base[p]..band_base[p + 1]` are polygon p's band slots in `band_ptr`
-    band_base: Vec<usize>,
-    /// CSR into `band_coords` in edge units (length total_bands + 1)
-    band_ptr: Vec<u32>,
-    /// Band edges, interleaved [x0, y0, x1, y1] and grouped by band
-    band_coords: Vec<f64>,
+    band_base: Vec<usize>, // polygon p -> its band slots band_base[p]..band_base[p+1] in band_ptr
+    band_ptr: Vec<u32>,    // CSR into band_edges, length total_bands + 1
+    band_edges: Vec<u32>,  // per-band edge indices, local to the owning polygon
+    edge_base: Vec<u32>,   // polygon p -> its first edge in edge_coords, in edge units
+    edge_coords: Vec<f64>, // each polygon edge stored once, interleaved [x0, y0, x1, y1]
 }
 
 struct PolyPrep {
     min_y: f64,
     inv_band_h: f64,
-    bands: Vec<Vec<f64>>,
+    edges: Vec<[f64; 4]>,
+    bands: Vec<Vec<u32>>,
 }
 
 impl PreparedPolygons {
@@ -46,17 +42,24 @@ impl PreparedPolygons {
         let mut inv_band_h = Vec::with_capacity(n_polys);
         let mut band_base = Vec::with_capacity(n_polys + 1);
         let mut band_ptr: Vec<u32> = vec![0];
-        let mut band_coords: Vec<f64> = Vec::new();
+        let mut band_edges: Vec<u32> = Vec::new();
+        let mut edge_base: Vec<u32> = Vec::with_capacity(n_polys + 1);
+        let mut edge_coords: Vec<f64> = Vec::new();
 
         band_base.push(0);
+        edge_base.push(0);
         for prep in &preps {
             min_y.push(prep.min_y);
             inv_band_h.push(prep.inv_band_h);
             for band in &prep.bands {
-                band_coords.extend_from_slice(band);
-                band_ptr.push((band_coords.len() / STRIDE) as u32);
+                band_edges.extend_from_slice(band);
+                band_ptr.push(band_edges.len() as u32);
             }
             band_base.push(band_ptr.len() - 1);
+            for e in &prep.edges {
+                edge_coords.extend_from_slice(e);
+            }
+            edge_base.push((edge_coords.len() / STRIDE) as u32);
         }
 
         PreparedPolygons {
@@ -64,7 +67,9 @@ impl PreparedPolygons {
             inv_band_h,
             band_base,
             band_ptr,
-            band_coords,
+            band_edges,
+            edge_base,
+            edge_coords,
         }
     }
 
@@ -77,11 +82,18 @@ impl PreparedPolygons {
             return false;
         }
         let slot = bstart + band_of(qy, self.min_y[p], self.inv_band_h[p], nbands);
-        let lo = self.band_ptr[slot] as usize * STRIDE;
-        let hi = self.band_ptr[slot + 1] as usize * STRIDE;
+        let lo = self.band_ptr[slot] as usize;
+        let hi = self.band_ptr[slot + 1] as usize;
+        let ebase = self.edge_base[p] as usize;
         let mut inside = false;
-        for e in self.band_coords[lo..hi].chunks_exact(STRIDE) {
-            let (x0, y0, x1, y1) = (e[0], e[1], e[2], e[3]);
+        for &ei in &self.band_edges[lo..hi] {
+            let o = (ebase + ei as usize) * STRIDE;
+            let (x0, y0, x1, y1) = (
+                self.edge_coords[o],
+                self.edge_coords[o + 1],
+                self.edge_coords[o + 2],
+                self.edge_coords[o + 3],
+            );
             if (y0 > qy) != (y1 > qy) && qx < (x1 - x0) * (qy - y0) / (y1 - y0) + x0 {
                 inside = !inside;
             }
@@ -127,19 +139,20 @@ fn prepare_one(
     };
     let min_y = if pmin_y.is_finite() { pmin_y } else { 0.0 };
 
-    // Append each edge to every band its y-span overlaps
-    let mut bands: Vec<Vec<f64>> = vec![Vec::new(); nbands];
-    for e in &edges {
+    // File each edge index into every band its y-span overlaps, storing the edge itself once
+    let mut bands: Vec<Vec<u32>> = vec![Vec::new(); nbands];
+    for (ei, e) in edges.iter().enumerate() {
         let b_lo = band_of(e[1].min(e[3]), min_y, inv, nbands);
         let b_hi = band_of(e[1].max(e[3]), min_y, inv, nbands);
         for band in bands.iter_mut().take(b_hi + 1).skip(b_lo) {
-            band.extend_from_slice(e);
+            band.push(ei as u32);
         }
     }
 
     PolyPrep {
         min_y,
         inv_band_h: inv,
+        edges,
         bands,
     }
 }
