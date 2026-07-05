@@ -16,7 +16,7 @@
 ---
 
 > [!NOTE]
-> Highly competitive on [Apache SpatialBench](https://github.com/apache/sedona-spatialbench) (single node spatial query benchmark): fastest on 7/12 queries at SF1 and 3/12 at SF10 despite never leaving Polars-like syntax
+> Highly competitive on [Apache SpatialBench](https://github.com/apache/sedona-spatialbench) (single node spatial query benchmark): fastest on 11/24 testcases, within 5% of winning on 14/24 testcases
 
 <p align="center">
   <img src="assets/spatialbench_sf1_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1" width="100%"/>
@@ -130,14 +130,16 @@ Returns all intersecting polygon pairs with overlap area and IoU. `key_col` repl
 
 Run on a single `m7i.2xlarge` (8 vCPU, 32 GB), the same hardware used by [Apache SpatialBench](https://github.com/apache/sedona-spatialbench). PyCanopy is measured live with `index_mode="auto"`. Results were produced using the benchmark harness in `bench/spatial_bench`.
 
-**SF1** (~6M trips). PyCanopy wins 7/12 testcases.
+PyCanopy wins a total of 11/24 testcases and lands within 5% of winning 14/24 testcases (there is some variance among benchmark runs).
+
+**SF1** (~6M trips)
 
 <p align="center">
   <img src="assets/spatialbench_sf1_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1" width="100%"/>
 </p>
 <p align="center"><sub>Apache SpatialBench SF1 · lower is better · linear axis, bars past the cap truncated with their value · TIMEOUT / ERROR annotated</sub></p>
 
-**SF10** (~60M trips). PyCanopy wins 3/12 testcases.
+**SF10** (~60M trips)
 
 <p align="center">
   <img src="assets/spatialbench_sf10_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF10" width="100%"/>
