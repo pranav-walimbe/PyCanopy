@@ -1,4 +1,6 @@
-"""Tests for Python-level input conversion helpers."""
+"""
+Tests for Python-level input conversion helpers.
+"""
 
 import numpy as np
 import polars as pl

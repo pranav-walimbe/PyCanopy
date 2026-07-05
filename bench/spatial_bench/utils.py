@@ -1,4 +1,6 @@
-"""Shared machinery for the SpatialBench suite: data, oracle, verify, measure, chart."""
+"""
+Shared machinery for the SpatialBench suite: data, oracle, verify, measure, chart.
+"""
 
 from __future__ import annotations
 

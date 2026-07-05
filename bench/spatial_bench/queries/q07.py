@@ -1,12 +1,5 @@
-"""Q7: Detect route detours by comparing reported vs straight-line trip distance.
-
-This query is not spatial-index bound: the straight-line distance is the Euclidean
-distance between pickup and dropoff, computed directly in Polars. Kept for full suite
-coverage and to show where PyCanopy adds no index value.
-
-Every trip is kept, matching the canonical SpatialBench query: detour_ratio is null
-where the straight-line distance is zero (pickup equals dropoff), mirroring its NULLIF
-on the divide.
+"""
+Q7: Detect route detours by comparing reported vs straight-line trip distance.
 """
 
 from __future__ import annotations

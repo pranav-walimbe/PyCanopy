@@ -1,6 +1,4 @@
-//! Per-polygon Y-slab edge index for sub-linear point-in-polygon. A ray at height y only
-//! crosses edges spanning y, so bands bucket edges by height and a test scans one band,
-//! referencing the engine's shared vertex arrays. Even-odd over rings matches `pip_raw`.
+//! Per-polygon Y-slab edge index for sub-linear point-in-polygon testing.
 
 use rayon::prelude::*;
 

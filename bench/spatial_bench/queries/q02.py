@@ -1,7 +1,5 @@
-"""Q2: Count trips whose pickup point falls within the Coconino County zone.
-
-PyCanopy: filter the trip points to those within (distance 0 of) the single named
-zone polygon.
+"""
+Q2: Count trips whose pickup point falls within the Coconino County zone.
 """
 
 from __future__ import annotations

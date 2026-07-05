@@ -1,8 +1,4 @@
-//! Geometry kernels backed by the `geo` crate.
-//!
-//! These operate on the flat coordinate storage used by the polygon Engine
-//! (xs/ys plus ring_offsets/poly_offsets, exterior ring first then holes). A
-//! `geo::Polygon` is materialised per geometry on demand.
+//! Geometry kernels backed by the `geo` crate, operating on the Engine's flat polygon coordinate storage.
 
 use geo::{Area, BooleanOps, ConvexHull, Intersects};
 use geo::{Coord, LineString, MultiPoint, Point, Polygon};

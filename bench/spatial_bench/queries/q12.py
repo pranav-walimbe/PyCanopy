@@ -1,4 +1,6 @@
-"""Q12: The 5 nearest buildings to each trip pickup location."""
+"""
+Q12: The 5 nearest buildings to each trip pickup location.
+"""
 
 from __future__ import annotations
 

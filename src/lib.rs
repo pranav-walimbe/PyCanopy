@@ -47,31 +47,21 @@ use stats::{collector, types::GeometryKind};
 struct Engine {
     xs: Arc<[f64]>,
     ys: Arc<[f64]>,
-    /// None for point datasets.
-    /// ring_offsets[r]..ring_offsets[r+1] gives the coord range of ring r.
-    ring_offsets: Option<Arc<[i64]>>,
-    /// poly_offsets[i]..poly_offsets[i+1] gives polygon i's ring range. First ring is exterior,
-    /// remainder are holes. Set alongside ring_offsets.
-    poly_offsets: Option<Arc<[i64]>>,
+    ring_offsets: Option<Arc<[i64]>>, // coord range per ring, None for point datasets
+    poly_offsets: Option<Arc<[i64]>>, // ring range per polygon, first ring exterior, rest holes
     stats: stats::types::DatasetStats,
     brute: Option<BruteForce>,
     rtree: Option<PackedRTree>,
     kdtree: Option<PackedKdTree>,
     grid: Option<UniformGrid>,
-    /// Points appended since last flush, scanned alongside the main index on every query
-    delta_xs: Vec<f64>,
+    delta_xs: Vec<f64>, // points appended since last flush, scanned alongside the main index
     delta_ys: Vec<f64>,
-    /// Accumulated delta-scan cost that drives the cost-based flush
-    delta_query_cost: u64,
-    /// Index build policy: Eager (default) / None / Auto
-    index_mode: IndexMode,
+    delta_query_cost: u64, // accumulated delta-scan cost that drives the cost-based flush
+    index_mode: IndexMode, // index build policy: Eager (default) / None / Auto
     cost_factors: CostFactors,
-    /// Sub-linear PIP edge index, built lazily on first containment join
-    prepared_polys: Option<PreparedPolygons>,
-    /// Maps each index part to its logical polygon, or None when no MultiPolygons exist
-    part_poly: Option<Arc<[u32]>>,
-    /// Count of logical polygons, equal to the part count when part_poly is None
-    n_polygons: usize,
+    prepared_polys: Option<PreparedPolygons>, // sub-linear PIP edge index, built lazily
+    part_poly: Option<Arc<[u32]>>, // logical polygon per index part, None if no MultiPolygons
+    n_polygons: usize, // count of logical polygons, equals part count when part_poly is None
 }
 
 const DELTA_FLUSH_FRACTION: f64 = 0.1;

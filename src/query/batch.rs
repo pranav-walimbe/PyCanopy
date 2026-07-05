@@ -1,6 +1,4 @@
-//! Batch spatial operations used by Engine's PyO3-exposed batch methods.
-//! Each function crosses the Python/Rust boundary once and loops via rayon.
-//! Returns Vec<u64> or Vec<(u64, u64)> to avoid per-element Python int allocation.
+//! Batch spatial operations exposed by Engine's PyO3 methods, each crossing the Python/Rust boundary once.
 
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;

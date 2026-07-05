@@ -1,7 +1,5 @@
-"""Integration tests for SpatialFrame / SpatialLazyFrame.
-
-Covers Phase 4: EXPR plugin path (map_batches barrier), IO plugin path
-(pre-built Engine index), scalar+spatial ordering, path selection, and joins.
+"""
+Integration tests for SpatialFrame / SpatialLazyFrame.
 """
 
 from __future__ import annotations

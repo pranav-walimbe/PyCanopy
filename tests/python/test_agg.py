@@ -1,4 +1,5 @@
-"""Tests for the fused aggregate-join (SpatialLazyFrame.group_by().agg()).
+"""
+Tests for the fused aggregate-join (SpatialLazyFrame.group_by().agg()).
 
 The reduced result must equal a single-shot join followed by an equivalent Polars
 group_by/agg, including when the join is streamed in small morsels.

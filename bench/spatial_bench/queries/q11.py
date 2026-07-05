@@ -1,8 +1,5 @@
-"""Q11: Count trips that start and end in different zones.
-
-PyCanopy: within-join trip pickups and dropoffs against zones, streamed in aligned morsels;
-per morsel join the assignments on trip key and count pairs whose pickup and dropoff zones
-differ. Streaming bounds the assignment-join transient instead of materialising two full frames.
+"""
+Q11: Count trips that start and end in different zones.
 """
 
 from __future__ import annotations

@@ -33,8 +33,7 @@ from pycanopy.nodes import (
 # are indices into the original dataset and must correlate with post-filter rows.
 _ROW_IDX = "__orig_row__"
 
-# Join node types. All carry a `query_df` probe side, which is what gets streamed
-_JOIN_TYPES = (
+_JOIN_TYPES = (  # all carry a `query_df` probe side, which is what gets streamed
     KnnJoinNode,
     WithinJoinNode,
     WithinDistanceJoinNode,

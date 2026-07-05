@@ -1,7 +1,5 @@
-"""Tests for spatial join operations.
-
-Uses a 1000-point dataset (10x100 grid) so real indexes are exercised.
-A single engine and SpatialFrame are shared across the module.
+"""
+Tests for spatial join operations.
 """
 
 from __future__ import annotations

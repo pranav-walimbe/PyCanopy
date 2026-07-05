@@ -1,3 +1,5 @@
+//! Dataset statistics and spatial histogram types used for selectivity estimation.
+
 use geo::Rect;
 
 /// Per-axis cell count of the spatial histogram, giving a 32x32 grid
@@ -84,18 +86,12 @@ impl SpatialHistogram {
 /// Dataset statistics used by the query planner to select a spatial index
 #[derive(Debug, Clone)]
 pub struct DatasetStats {
-    /// Number of geometries in the dataset
-    pub n: usize,
-    /// Dominant geometry type
-    pub kind: GeometryKind,
-    /// Bounding rectangle of all geometries, or None if the dataset is empty
-    pub extent: Option<Rect<f64>>,
-    /// Spatial distribution of point data estimated at load time
-    pub distribution: Distribution,
-    /// N / extent_area
-    pub mean_density: f64,
-    /// Spatial histogram for selectivity estimation, built at load time
-    pub histogram: Option<SpatialHistogram>,
+    pub n: usize,                            // number of geometries in the dataset
+    pub kind: GeometryKind,                  // dominant geometry type
+    pub extent: Option<Rect<f64>>,           // bounding rectangle, None if the dataset is empty
+    pub distribution: Distribution,          // spatial distribution estimated at load time
+    pub mean_density: f64,                   // N / extent_area
+    pub histogram: Option<SpatialHistogram>, // selectivity histogram, built at load time
 }
 
 /// Dominant geometry type in the dataset

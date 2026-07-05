@@ -1,4 +1,5 @@
-"""Tests for the Engine delta buffer.
+"""
+Tests for the Engine delta buffer.
 
 Uses a 25x25 uniform grid (625 points) so the selector picks real indexes
 (Grid for range, KD-tree for KNN) rather than brute force. A single engine

@@ -33,14 +33,9 @@ from pycanopy.nodes import (
     WithinJoinNode,
 )
 
-# Spatial nodes with selectivity below this threshold are too selective to fuse
-_FUSION_SELECTIVITY_FLOOR = 0.05
-
-# Datasets smaller than this always use BruteForce
-_FUSION_MIN_N = 500
-
-# Spatial selectivity threshold where slicing sf.df directly (IO path) is cheaper
-_IO_SELECTIVITY_THRESHOLD = 0.05
+_FUSION_SELECTIVITY_FLOOR = 0.05  # nodes below this threshold are too selective to fuse
+_FUSION_MIN_N = 500  # datasets smaller than this always use BruteForce
+_IO_SELECTIVITY_THRESHOLD = 0.05  # selectivity where slicing sf.df directly (IO path) is cheaper
 
 
 _BINARY_OP_COST: dict[str, int] = {

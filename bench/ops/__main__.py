@@ -33,11 +33,8 @@ _K = 5
 _RUNS = 3
 _BOX_SIDE = 0.1
 
-# Floor for measured constants
-_MIN_NS = 0.1
-
-# Default destination for the written report
-_OUTPUT_PATH = Path(__file__).resolve().parents[2] / "assets" / "ops.txt"
+_MIN_NS = 0.1  # floor for measured constants
+_OUTPUT_PATH = Path(__file__).resolve().parents[2] / "assets" / "ops.txt"  # written report
 
 _SCAN_FIELDS = ["knn_scan_ns_per_item", "bbox_scan_ns_per_item"]
 _POINT_FIELDS = [

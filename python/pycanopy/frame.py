@@ -1,4 +1,6 @@
-"""Define SpatialFrame which is the entry point for spatial query planning."""
+"""
+Define SpatialFrame which is the entry point for spatial query planning.
+"""
 
 from __future__ import annotations
 

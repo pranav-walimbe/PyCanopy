@@ -1,7 +1,5 @@
-"""Q5: Monthly travel spread of repeat customers (convex hull of dropoff points).
-
-PyCanopy: join trips to customers, group by customer and month, and compute the
-convex hull area of each group's dropoff points for groups with more than five trips.
+"""
+Q5: Monthly travel spread of repeat customers (convex hull of dropoff points).
 """
 
 from __future__ import annotations

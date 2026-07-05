@@ -1,12 +1,5 @@
-"""Tests for fan-out detection and cache insertion (Phase 5 step 12).
-
-SpatialLazyFrame builds plans via [*self._plan, new_node], which reuses existing
-node references rather than copying them. Two branches from the same base therefore
-share the same Python objects for their common prefix nodes.
-
-_detect_fanout exploits object identity to find the longest shared prefix.
-collect_all emits the prefix once with .cache(), builds each suffix from the cached
-result, and calls pl.collect_all() to execute all branches together.
+"""
+Tests for fan-out detection and cache insertion.
 """
 
 from __future__ import annotations

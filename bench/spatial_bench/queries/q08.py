@@ -1,9 +1,5 @@
-"""Q8: Count trip pickups within ~500m of each building.
-
-PyCanopy: a polygon within-distance aggregate-join of building footprints against trip
-pickup points, counted per building. The join is high fanout (each pickup can fall near
-many buildings), so the aggregate-join reduces each morsel to per-building partial counts
-rather than materialising the full pair frame.
+"""
+Q8: Count trip pickups within ~500m of each building.
 """
 
 from __future__ import annotations

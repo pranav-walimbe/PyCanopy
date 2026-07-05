@@ -1,3 +1,5 @@
+//! k-nearest-neighbour query dispatch over a spatial index.
+
 use crate::index::SpatialIndex;
 
 /// k nearest neighbours in the index, sorted nearest-first

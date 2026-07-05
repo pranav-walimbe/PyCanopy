@@ -1,3 +1,5 @@
+//! Uniform grid index with CSR cell storage for large, uniformly distributed datasets.
+
 use std::sync::Arc;
 
 use rayon::prelude::*;

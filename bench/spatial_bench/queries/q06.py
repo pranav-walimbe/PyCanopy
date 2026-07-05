@@ -1,9 +1,5 @@
-"""Q6: Zone statistics for trips whose pickup falls in zones intersecting a bbox.
-
-PyCanopy: a polygon range query finds zones whose exterior boundary truly intersects the
-bounding box (the Engine performs exact ring intersection, not just an MBR overlap check),
-then a within aggregate-join counts and averages trip pickups per zone without materialising
-the pair frame.
+"""
+Q6: Zone statistics for trips whose pickup falls in zones intersecting a bbox.
 """
 
 from __future__ import annotations

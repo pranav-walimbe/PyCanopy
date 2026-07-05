@@ -1,4 +1,5 @@
-"""SedonaDB-dialect SpatialBench queries: the live verification + timing oracle.
+"""
+SedonaDB-dialect SpatialBench queries: the live verification + timing oracle.
 
 Generated verbatim from Apache SpatialBench's own query generator:
     spatialbench-queries/print_queries.py SedonaDB

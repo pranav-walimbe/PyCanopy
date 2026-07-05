@@ -1,3 +1,5 @@
+//! Packed immutable KD-tree index optimised for point datasets.
+
 use std::f64::consts::PI;
 use std::sync::Arc;
 

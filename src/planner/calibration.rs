@@ -1,3 +1,5 @@
+//! Empirical cost factors used to calibrate the auto-mode cost model.
+
 /// Empirical cost factors (ns per operation) for the auto-mode cost model
 #[derive(Debug, Clone)]
 pub struct CostFactors {

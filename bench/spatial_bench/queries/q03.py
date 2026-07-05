@@ -1,7 +1,5 @@
-"""Q3: Monthly trip stats within ~5km of a 10km bounding box around Sedona.
-
-PyCanopy: filter trip points to those within 0.045 degrees of the bounding-box
-polygon, then aggregate per pickup month.
+"""
+Q3: Monthly trip stats within ~5km of a 10km bounding box around Sedona.
 """
 
 from __future__ import annotations

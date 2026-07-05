@@ -1,6 +1,5 @@
 """
 Aggregation specs for the fused aggregate-join (SpatialGroupBy.agg).
-Specs are associative so partials fold over the streamed join without materialising the full pair frame.
 """
 
 from __future__ import annotations

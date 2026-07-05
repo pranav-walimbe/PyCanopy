@@ -1,4 +1,6 @@
-"""Subprocess entry point: runs one SpatialBench query in an isolated interpreter."""
+"""
+Subprocess entry point: runs one SpatialBench query in an isolated interpreter.
+"""
 
 from __future__ import annotations
 

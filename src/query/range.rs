@@ -1,3 +1,5 @@
+//! Range query kernels for point and polygon datasets.
+
 use crate::index::SpatialIndex;
 
 /// Range query against a point dataset. The index performs the exact coordinate check

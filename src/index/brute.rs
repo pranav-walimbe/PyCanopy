@@ -1,3 +1,5 @@
+//! Linear-scan brute-force index for small datasets or high-selectivity queries.
+
 use std::sync::Arc;
 
 use crate::index::SpatialIndex;

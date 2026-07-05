@@ -1,5 +1,4 @@
-//! Decode a WKB Polygon / MultiPolygon column straight into the engine's flat ring
-//! arrays, with no per-geometry object allocation.
+//! Decodes a WKB Polygon or MultiPolygon column into the engine's flat ring arrays.
 
 use std::mem::MaybeUninit;
 
@@ -14,16 +13,11 @@ const MIN_DECODE_CHUNK: usize = 256;
 /// Flat ring representation parsed from a WKB column (see Engine::from_polygon_rings).
 /// part_poly is Some only when some geometry expanded into more than one part.
 pub struct ParsedPolygons {
-    /// X coordinates of all ring vertices
-    pub xs: Vec<f64>,
-    /// Y coordinates of all ring vertices
-    pub ys: Vec<f64>,
-    /// ring_offsets[r]..ring_offsets[r+1] gives the coordinate range of ring r
-    pub ring_offsets: Vec<i64>,
-    /// poly_offsets[i]..poly_offsets[i+1] gives the ring range of polygon part i
-    pub poly_offsets: Vec<i64>,
-    /// Maps each polygon part to its logical polygon index, or None when no MultiPolygons exist
-    pub part_poly: Option<Vec<u32>>,
+    pub xs: Vec<f64>,                // x coordinates of all ring vertices
+    pub ys: Vec<f64>,                // y coordinates of all ring vertices
+    pub ring_offsets: Vec<i64>,      // coordinate range per ring
+    pub poly_offsets: Vec<i64>,      // ring range per polygon part
+    pub part_poly: Option<Vec<u32>>, // logical polygon per part, None if no MultiPolygons
 }
 
 struct Reader<'a> {

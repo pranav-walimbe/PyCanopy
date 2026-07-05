@@ -1,7 +1,5 @@
-"""Q1: Trips starting within ~50km (0.45 degrees) of the Sedona city center.
-
-PyCanopy: a single-point radius filter of all trip pickup points against the
-Sedona center.
+"""
+Q1: Trips starting within ~50km (0.45 degrees) of the Sedona city center.
 """
 
 from __future__ import annotations

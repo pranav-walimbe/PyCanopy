@@ -1,6 +1,5 @@
-"""On-box entry point: measure PyCanopy on SpatialBench and render the chart.
-
-Called by bootstrap.sh after building PyCanopy on the EC2 box.
+"""
+On-box entry point: measure PyCanopy on SpatialBench and render the chart.
 """
 
 from __future__ import annotations

@@ -1,4 +1,6 @@
-"""Tests for the Python Engine wrapper (pycanopy.Engine)."""
+"""
+Tests for the Python Engine wrapper (pycanopy.Engine).
+"""
 
 import numpy as np
 import pyarrow as pa

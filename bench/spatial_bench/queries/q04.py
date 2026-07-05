@@ -1,8 +1,5 @@
-"""Q4: Zone distribution of the top 1000 trips by tip amount.
-
-PyCanopy: parallel fetch of trip and zone, sort a narrow (key, tip) projection to
-find the top-1000 keys, gather WKB geometry for only those rows and decode it.
-The within-join then maps each pickup point to its zone.
+"""
+Q4: Zone distribution of the top 1000 trips by tip amount.
 """
 
 from __future__ import annotations

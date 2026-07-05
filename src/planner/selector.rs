@@ -1,3 +1,5 @@
+//! Selects the cheapest index kind for a dataset and query using the cost model.
+
 use crate::planner::calibration::CostFactors;
 use crate::planner::cost::{probe_cost, selectivity, total_cost, IndexKind, IndexMode};
 use crate::query::types::Query;

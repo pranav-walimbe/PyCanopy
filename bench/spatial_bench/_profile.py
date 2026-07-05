@@ -1,7 +1,6 @@
-"""Profile path for SpatialBench: per-stage time + sampled memory plus oracle verification.
-
-ProfilingTables wraps only fetch / build so query modules stay unchanged. It is entered
-only by `_runner --profile` and run_profile_suite."""
+"""
+Profile path for SpatialBench: per-stage time + sampled memory plus oracle verification.
+"""
 
 from __future__ import annotations
 
@@ -20,10 +19,8 @@ from bench.spatial_bench.utils import (
     spawn_query,
 )
 
-# Coarse stages the harness can attribute without touching query or Rust code
-_STAGES = ("fetch", "build", "query", "collect")
-# How often the background thread samples resident memory, in seconds
-_SAMPLE_INTERVAL = 0.02
+_STAGES = ("fetch", "build", "query", "collect")  # coarse stages the harness can attribute
+_SAMPLE_INTERVAL = 0.02  # how often the background thread samples resident memory, in seconds
 _PAGE_SIZE = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
 _MIB = 1024 * 1024
 _SEP = "=" * 64

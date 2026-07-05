@@ -1,3 +1,5 @@
+//! Packed immutable R-tree index with Hilbert sort for point and polygon datasets.
+
 use std::sync::Arc;
 
 use geo_index::rtree::sort::HilbertSort;

@@ -1,6 +1,5 @@
-"""Launch an ephemeral EC2 box that runs SpatialBench, then fetch the comparison chart.
-
-Reads config.yaml, launches an m7i.2xlarge, measures PyCanopy against published baselines, and downloads the result PNG.
+"""
+Launch an ephemeral EC2 box that runs SpatialBench, then fetch the comparison chart.
 """
 
 from __future__ import annotations

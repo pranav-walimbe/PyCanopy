@@ -1,7 +1,5 @@
-"""Q9: Building conflation via IoU — find overlapping building footprints.
-
-PyCanopy: a polygon self-intersection join over building footprints, with overlap
-area and IoU computed per pair.
+"""
+Q9: Building conflation via IoU — find overlapping building footprints.
 """
 
 from __future__ import annotations

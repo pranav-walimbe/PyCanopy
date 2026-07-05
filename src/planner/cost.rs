@@ -1,3 +1,5 @@
+//! Cost model computing index build and probe cost from dataset stats and query shape.
+
 use crate::planner::calibration::CostFactors;
 use crate::query::types::Query;
 use crate::stats::types::DatasetStats;

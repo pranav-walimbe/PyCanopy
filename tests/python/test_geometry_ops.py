@@ -1,8 +1,8 @@
-"""Tests for the polygon geometry operations added for SpatialBench coverage.
+"""
+Tests for the polygon geometry operations added for SpatialBench coverage.
 
 Covers point-to-polygon distance joins, polygon self-intersection + IoU helpers,
-the single-polygon distance filter, and convex hull area. Geometries are simple
-axis-aligned squares so expected areas and distances are exact.
+the single-polygon distance filter, and convex hull area.
 """
 
 from __future__ import annotations

@@ -1,3 +1,5 @@
+//! Collects dataset statistics from flat point and polygon coordinate arrays.
+
 use geo::{coord, Rect};
 use rayon::prelude::*;
 

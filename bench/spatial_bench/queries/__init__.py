@@ -1,6 +1,5 @@
-"""Registry of SpatialBench query modules.
-
-Each module exposes id, title, a pycanopy(tables) implementation, and a compare dict for SedonaDB verification.
+"""
+Registry of SpatialBench query modules. Each module exposes id, title, a pycanopy(tables) implementation, and a compare dict for SedonaDB verification.
 """
 
 from __future__ import annotations

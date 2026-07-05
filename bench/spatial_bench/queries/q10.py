@@ -1,11 +1,5 @@
-"""Q10: Per-zone trip statistics, retaining zones with no trips.
-
-PyCanopy: a fused aggregate-join of trip pickups against zones, then a left-join of
-the aggregates back onto all zones so empty zones survive with num_trips = 0.
-
-The aggregate-join streams the trip points through the zone index in morsels and
-reduces each morsel to per-zone partial counts and means, so the join pair frame is
-never materialised; the partials combine into the exact single-pass result.
+"""
+Q10: Per-zone trip statistics, retaining zones with no trips.
 """
 
 from __future__ import annotations
