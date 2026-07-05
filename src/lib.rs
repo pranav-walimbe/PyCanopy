@@ -339,7 +339,7 @@ impl Engine {
         if let (Some(ring), Some(poly)) =
             (self.ring_offsets.as_deref(), self.poly_offsets.as_deref())
         {
-            self.prepared_polys = Some(PreparedPolygons::build(&self.xs, &self.ys, ring, poly));
+            self.prepared_polys = Some(PreparedPolygons::build(&self.ys, ring, poly));
         }
     }
 }
