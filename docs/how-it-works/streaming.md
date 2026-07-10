@@ -10,7 +10,7 @@ The probe side of any join is sliced into fixed-size chunks called morsels:
 MORSEL_ROWS = 262_144  # 256K rows per morsel
 ```
 
-Morsels are produced via `iter_slices` — a zero-copy operation that yields views into the probe DataFrame without copying data. Each morsel is joined independently against the full index, and its result is either yielded, accumulated, or written to disk depending on the collection method.
+Morsels are produced via `iter_slices`, a zero-copy operation that yields views into the probe DataFrame without copying data. Each morsel is joined independently against the full index, and its result is either yielded, accumulated, or written to disk depending on the collection method.
 
 ## collect()
 
@@ -39,7 +39,7 @@ sf.lazy().polygon_knn_join(trips, "lon", "lat", k=5).sink_parquet("result.parque
 
 ## lazy_source()
 
-Exposes the join result as a native Polars `LazyFrame` source. This lets you fuse spatial join output with downstream Polars operations — sorts, sinks, further filters — into a single spilling pipeline:
+Exposes the join result as a native Polars `LazyFrame` source. This lets you fuse spatial join output with downstream Polars operations (sorts, sinks, further filters) into a single spilling pipeline:
 
 ```python
 (
@@ -52,8 +52,8 @@ Exposes the join result as a native Polars `LazyFrame` source. This lets you fus
 )
 ```
 
-Polars handles spilling to disk for the sort if the result exceeds memory, so the entire pipeline — join, select, sort, write — never requires the full result to be in RAM at once.
+Polars handles spilling to disk for the sort if the result exceeds memory, so the entire pipeline (join, select, sort, write) never requires the full result to be in RAM at once.
 
 ## Aggregate-join streaming
 
-`.group_by(keys).agg(...)` reduces over the morsel stream using associative partial aggregations. Each morsel produces per-group partials (counts, sums, etc.) that are combined across morsels at the end. The full pair frame never materialises — only the per-group accumulators are held in memory, which are bounded by the number of unique groups rather than the number of join pairs.
+`.group_by(keys).agg(...)` reduces over the morsel stream using associative partial aggregations. Each morsel produces per-group partials (counts, sums, etc.) that are combined across morsels at the end. The full pair frame never materialises. Only the per-group accumulators are held in memory, bounded by the number of unique groups rather than the number of join pairs.

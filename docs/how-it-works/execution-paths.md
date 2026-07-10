@@ -16,7 +16,7 @@ The EXPR path keeps the spatial engine inside Polars' processing loop, allowing 
 
 ## IO path
 
-Used when few results are expected (low selectivity — e.g. a tight bounding box or a point-in-polygon query on a sparse dataset). The index is queried directly, and the result row indices are used to slice the DataFrame:
+Used when few results are expected (low selectivity, e.g. a tight bounding box or a point-in-polygon query on a sparse dataset). The index is queried directly, and the result row indices are used to slice the DataFrame:
 
 ```
 index.range_query(bbox) → [i, j, k, ...]  →  df[i, j, k, ...]
@@ -26,7 +26,7 @@ No Polars expression pipeline is involved. This avoids the overhead of batch pro
 
 ## Polars / PyO3 integration
 
-The Rust engine is compiled as a PyO3 extension (`pycanopy._core`). Coordinate arrays are passed as zero-copy numpy views at the Python/Rust boundary — no allocation occurs for the handoff. The index structures themselves (KD-tree, R-tree, grid) are packed immutable Rust structs that live for the lifetime of the `Engine` object.
+The Rust engine is compiled as a PyO3 extension (`pycanopy._core`). Coordinate arrays are passed as zero-copy numpy views at the Python/Rust boundary. No allocation occurs for the handoff. The index structures themselves (KD-tree, R-tree, grid) are packed immutable Rust structs that live for the lifetime of the `Engine` object.
 
 For the EXPR path, the plugin is registered via Polars' `register_plugin_function` API, which lets the Rust closure participate in Polars' lazy evaluation graph natively.
 

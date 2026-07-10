@@ -278,18 +278,16 @@ The empirical constants ($c_{\text{scan}}$, $c_{\text{tree}}$, $c_{\text{grid}}$
 `select_index` is a rule-based pre-filter that picks a candidate index type:
 
 ```mermaid
-flowchart LR
+flowchart TD
     A[Query arrives] --> B{N < 500\nor sel > 50%?}
     B -- yes --> BF[Brute force]
-    B -- no --> C{kNN and\nk/N > 10%?}
+    B -- no --> C{kNN with\nk/N > 10%?}
     C -- yes --> BF
     C -- no --> D{Polygon\ndataset?}
     D -- yes --> RT[R-tree]
-    D -- no --> E{Query type}
-    E -- kNN / contains --> KD[KD-tree]
-    E -- range --> F{Uniform?}
-    F -- yes --> GR[Grid]
-    F -- no --> KD
+    D -- no --> E{Range query\nand uniform?}
+    E -- yes --> GR[Grid]
+    E -- no --> KD[KD-tree]
 ```
 
 All index types share the same coordinate arrays with no duplication.

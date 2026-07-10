@@ -13,7 +13,7 @@ The optimizer runs a fixed sequence of passes over the plan:
 
 **1. Selectivity estimation**
 
-Each node is annotated with an estimated selectivity — the fraction of the dataset expected to survive. Scalar Polars filters get an estimate from column statistics; spatial predicates use the cost model's histogram or kNN ratio.
+Each node is annotated with an estimated selectivity, the fraction of the dataset expected to survive. Scalar Polars filters get an estimate from column statistics; spatial predicates use the cost model's histogram or kNN ratio.
 
 **2. Predicate pushdown**
 
@@ -21,7 +21,7 @@ Scalar `filter()` nodes are sunk to the bottom of the plan so they run first, re
 
 **3. Cost-sort**
 
-Spatial predicates are reordered by ascending estimated output size. Cheaper, more selective predicates run earlier. kNN and join nodes act as barriers — no reordering crosses them.
+Spatial predicates are reordered by ascending estimated output size. Cheaper, more selective predicates run earlier. kNN and join nodes act as barriers. No reordering crosses them.
 
 **4. Filter fusion**
 
@@ -39,7 +39,5 @@ A terminal `.select(cols)` is pinned as the last node and its column set is prop
 
 After optimization, the executor picks one of two execution strategies per node:
 
-- **IO path** — used when selectivity is low (few results expected). The index is queried directly and the result is returned as a slice of the DataFrame. No Polars expression pipeline is involved.
-- **EXPR path** — used when selectivity is high. The spatial closure runs as a Polars `map_batches` plugin, processing the DataFrame in batches. Scalar filters run first inside the batch, then the spatial query runs on the surviving rows.
-
-The optimizer annotates each node with the chosen path based on the selectivity threshold from the cost model.
+- **IO path**: used when selectivity is low (few results expected). The index is queried directly and the result is returned as a slice of the DataFrame. No Polars expression pipeline is involved.
+- **EXPR path**: used when selectivity is high. The spatial closure runs as a Polars `map_batches` plugin, processing the DataFrame in batches. Scalar filters run first inside the batch, then the spatial query runs on the surviving rows.

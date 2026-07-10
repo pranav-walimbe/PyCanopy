@@ -83,7 +83,7 @@ print(lf.explain())
 #     DF [N=100,000; path: EXPR]
 ```
 
-The optimizer flipped the declaration order — scalar filter runs first, spatial query runs on the smaller survivor set.
+The optimizer flipped the declaration order: scalar filter runs first, spatial query runs on the smaller survivor set.
 
 ## Streaming large results
 
@@ -115,7 +115,7 @@ sf = SpatialFrame(df, x_col="lon", y_col="lat", index_mode="auto")
 ```python
 import numpy as np
 
-# Append new points — visible to queries immediately, no index rebuild
+# Append new points, visible to queries immediately with no index rebuild
 sf.engine.append_delta(np.array([2.5]), np.array([48.9]))
 result = sf.lazy().range_query(-10.0, 35.0, 40.0, 70.0).collect()
 
