@@ -294,7 +294,7 @@ class SpatialFrame:
 
         Args:
             polygon: A single shapely Polygon (interior holes supported).
-            distance: Maximum point-to-polygon distance for a match.
+            distance: Maximum Euclidean point-to-polygon distance for a match.
 
         Returns:
             The subset of this frame's DataFrame matching the distance predicate.

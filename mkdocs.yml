@@ -35,6 +35,7 @@ nav:
     - SpatialLazyFrame: api/lazy-frame.md
     - Aggregations: api/aggregations.md
     - Engine & Utilities: api/engine.md
+    - Distance Operations: api/distance-operations.md
   - How It Works:
     - Query Planner: how-it-works/query-planner.md
     - Cost Model & Index Selection: how-it-works/cost-model.md

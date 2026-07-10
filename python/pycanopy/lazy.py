@@ -324,7 +324,7 @@ class SpatialLazyFrame:
             query_df: DataFrame of query points.
             x_col: Column in query_df holding x coordinates.
             y_col: Column in query_df holding y coordinates.
-            distance: Maximum point-to-polygon distance for a match.
+            distance: Maximum Euclidean point-to-polygon distance for a match.
 
         Returns:
             New SpatialLazyFrame with the polygon within-distance join node appended.
@@ -376,7 +376,7 @@ class SpatialLazyFrame:
 
         Args:
             polygon: A single shapely Polygon (interior holes supported).
-            distance: Maximum point-to-polygon distance for a row to be kept.
+            distance: Maximum Euclidean point-to-polygon distance for a row to be kept.
 
         Returns:
             New SpatialLazyFrame with the points-within-distance node appended.
