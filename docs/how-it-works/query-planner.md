@@ -25,7 +25,7 @@ Spatial predicates are reordered by ascending estimated output size. Cheaper, mo
 
 **4. Filter fusion**
 
-Consecutive `range_query` or `contains` nodes are merged into a single operation. Two overlapping bounding-box queries become one tighter query; two containment checks on the same polygon set are intersected. This avoids building the index twice.
+Consecutive `range_query` or `contains` nodes get interleaved into a single Rust call. Each predicate is still queried separately against the index, then the hit lists are intersected in Rust via a sorted merge.
 
 **5. Join side selection**
 

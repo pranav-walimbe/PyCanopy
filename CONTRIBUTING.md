@@ -52,20 +52,11 @@ ruff format && ruff check
 cargo fmt && cargo clippy
 ```
 
-The key rules:
+To avoid a slopocolypse, I like these guidelines:
 
 - No em dashes, no semicolons in comments or docstrings.
 - All Python imports at module level.
 - Public Python functions use Google-style docstrings (`Args:`, `Returns:`).
-- Private Python functions use a `#` comment as the first line in the body — no docstring.
+- Private Python functions use a `#` comment as the first line in the body.
 - Rust `pub` items require `///` doc comments; every module file requires `//!`.
-- Single-line comments have no trailing period; multi-line comment blocks end each sentence with a period.
-
-## Docs
-
-```bash
-uv sync --group docs
-mkdocs serve
-```
-
-The asset copy hook (`hooks.py`) runs automatically on `mkdocs serve` and `mkdocs gh-deploy`.
+- Single-line comments have no trailing period, multi-line comment blocks end each sentence with a period.

@@ -19,11 +19,13 @@ PyCanopy brings spatial queries — range, kNN, joins, polygon containment — i
 
 [Apache SpatialBench](https://github.com/apache/sedona-spatialbench) is the industry-standard single-node spatial query benchmark, maintained by the Apache Sedona project. Results below are from a single `m7i.2xlarge` (8 vCPU, 32 GB), the same instance type used in the published baseline.
 
-**SF1 (~6M trips):** PyCanopy wins 7/12 queries.
+PyCanopy wins a total of 11/24 testcases and lands within 5% of winning 14/24 testcases (there is some variance among benchmark runs).
+
+**SF1** (~6M trips)
 
 ![Apache SpatialBench SF1](assets/spatialbench_sf1_auto.png)
 
-**SF10 (~60M trips):** PyCanopy wins 5/12 queries.
+**SF10** (~60M trips)
 
 ![Apache SpatialBench SF10](assets/spatialbench_sf10_auto.png)
 

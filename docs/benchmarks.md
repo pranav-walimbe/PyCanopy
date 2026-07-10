@@ -4,9 +4,9 @@
 
 Run on a single `m7i.2xlarge` (8 vCPU, 32 GB), the same hardware used by [Apache SpatialBench](https://github.com/apache/sedona-spatialbench). PyCanopy is measured with `index_mode="auto"`.
 
-### SF1 (~6M trips)
+PyCanopy wins a total of 11/24 testcases and lands within 5% of winning 14/24 testcases (there is some variance among benchmark runs).
 
-PyCanopy wins 7/12 queries.
+### SF1 (~6M trips)
 
 ![PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1](assets/spatialbench_sf1_auto.png)
 
@@ -28,8 +28,6 @@ PyCanopy wins 7/12 queries.
 | q12 | **14.00** | 14.55 | ERROR | TIMEOUT |
 
 ### SF10 (~60M trips)
-
-PyCanopy wins 5/12 queries.
 
 ![PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF10](assets/spatialbench_sf10_auto.png)
 

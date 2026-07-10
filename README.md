@@ -209,7 +209,7 @@ flowchart LR
 ### Logical planning
 
 - **Predicate pushdown:** scalar filters run first, reducing rows before any spatial work.
-- **Fusion:** consecutive range/contains predicates merge into a single operation.
+- **Fusion:** consecutive range/contains predicates get interleaved into a single Rust call.
 - **Join side:** indexes on the side that makes the join most efficient.
 - **Projection pushdown:** a terminal `.select()` narrows both join sides before the gather.
 - **IO path:** low-selectivity queries return results as a direct slice, bypassing the Polars expression pipeline.
