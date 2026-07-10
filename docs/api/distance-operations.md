@@ -27,19 +27,11 @@ For a join (`within_distance_join`, `polygon_within_distance_join`), reproject b
 
 ## Recommendation by input type
 
-PyCanopy doesn't have a CRS system currently so it's recommended to use the following conversion prior to interacting with the engine.
-
 ```mermaid
 flowchart TD
-    A[geopandas GeoSeries] -->|carries .crs| D[Reprojected GeoSeries]
-    B[WKB point or polygon column] -->|CRS lived at file level, not in the bytes| E[Decode, reproject, re-feed]
-    C[numpy array, GeoArrow, shapely list, xy tuples, coordinate sequences] -->|no CRS anywhere| F[pyproj or geopandas on raw arrays]
-    D --> G[SpatialFrame or from_polygons]
-    E --> G
-    F --> G
-    G --> H[distance now means real-world units]
+    A[geopandas GeoSeries] -->|has .crs| R[Reproject]
+    B[WKB point or polygon column] -->|decode first| R
+    C[numpy, GeoArrow, shapely list, tuples] -->|raw coordinates| R
+    R --> S[SpatialFrame]
+    S --> D[distance in real-world units]
 ```
-
-- **geopandas `GeoSeries`**: reproject in place with `gs.to_crs(gs.estimate_utm_crs())`.
-- **WKB point or polygon columns**: decode with `wkb_points_to_xy` (points) or `Engine.from_wkb_polygons` (polygons), reproject the decoded coordinates, then feed the result to PyCanopy.
-- **numpy arrays, GeoArrow, shapely lists, tuples, coordinate sequences**: no CRS ever attached, reproject the raw arrays directly with `pyproj` or `geopandas`.

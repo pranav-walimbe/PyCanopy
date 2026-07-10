@@ -45,8 +45,6 @@ result = sf.lazy().filter(pl.col("population") > 100_000).range_query(-10.0, 35.
 
 ## Why PyCanopy
 
-During my undergrad research, I saw firsthand how spatial dataframe tooling could use performance improvements.
-
 The driving motivator behind creating this library was to provide the optimizations of relational DBs (query planning, indexing, etc) in a fast, Polars-like interface meant for in-memory spatial work.
 
 Edit [June 19 2026]: Apache SedonaDB released a cool Python DataFrame API. There are similarities between their API and this tool but some key differences are that this library uses (1) a Polars-native query engine and (2) a cost model that decides whether and how to index.
