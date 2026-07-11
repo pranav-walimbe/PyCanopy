@@ -41,6 +41,7 @@ nav:
     - Cost Model & Index Selection: how-it-works/cost-model.md
     - Execution Paths: how-it-works/execution-paths.md
     - Streaming Architecture: how-it-works/streaming.md
+    - In-Memory Optimization: how-it-works/in-memory-optimization.md
   - Contributing: contributing.md
 
 plugins:
