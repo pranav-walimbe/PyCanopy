@@ -33,6 +33,7 @@ use query::{
         par_radius, par_within_distance, par_within_distance_flipped,
         par_within_distance_to_polygons,
     },
+    geodesy::{conservative_degree_box, haversine_distance_m, DistanceMetric},
     geometry::{convex_hull_area, polygon_area, polygon_intersection_area},
     multipoly::{dedup_indices, dedup_self_pairs, polygon_parts_csr, sum_part_areas},
     nearest::query_nearest,
@@ -62,6 +63,7 @@ struct Engine {
     prepared_polys: Option<PreparedPolygons>, // sub-linear PIP edge index, built lazily
     part_poly: Option<Arc<[u32]>>, // logical polygon per index part, None if no MultiPolygons
     n_polygons: usize, // count of logical polygons, equals part count when part_poly is None
+    metric: DistanceMetric, // how threshold distances are measured: Planar (default) / Haversine
 }
 
 const DELTA_FLUSH_FRACTION: f64 = 0.1;
@@ -94,6 +96,7 @@ impl Engine {
             prepared_polys: None,
             part_poly,
             n_polygons,
+            metric: DistanceMetric::Planar,
         }
     }
 
@@ -368,6 +371,7 @@ impl Engine {
             prepared_polys: None,
             part_poly: None,
             n_polygons: 0,
+            metric: DistanceMetric::Planar,
         })
     }
 
@@ -521,6 +525,18 @@ impl Engine {
         Ok(prev.to_string())
     }
 
+    /// Set how threshold distances are measured ("planar" / "geographic"), fixed per frame
+    fn set_coordinate_system(&mut self, coordinate_system: &str) -> PyResult<()> {
+        self.metric = DistanceMetric::from_coordinate_system(coordinate_system)
+            .map_err(PyValueError::new_err)?;
+        Ok(())
+    }
+
+    /// The coordinate system this engine measures threshold distances in
+    fn coordinate_system(&self) -> String {
+        self.metric.coordinate_system().to_string()
+    }
+
     /// Return the k dataset indices nearest to (x, y), sorted nearest-first
     fn knn(&mut self, x: f64, y: f64, k: usize) -> PyResult<Vec<usize>> {
         let kind = self.plan_index(
@@ -647,10 +663,12 @@ impl Engine {
                 "radius_query requires a point dataset",
             ));
         }
-        let bbox = Rect::new(
-            coord! { x: cx - distance, y: cy - distance },
-            coord! { x: cx + distance, y: cy + distance },
-        );
+        // Geographic distances are meters over degrees, so the box has to be widened, not dilated
+        let (min_x, min_y, max_x, max_y) = match self.metric {
+            DistanceMetric::Planar => (cx - distance, cy - distance, cx + distance, cy + distance),
+            DistanceMetric::Haversine => conservative_degree_box(cx, cy, distance),
+        };
+        let bbox = Rect::new(coord! { x: min_x, y: min_y }, coord! { x: max_x, y: max_y });
         // Skip histogram early-exit when delta is non-empty: delta points are not in the histogram
         if self.delta_xs.is_empty() {
             if let Some(hist) = &self.stats.histogram {
@@ -670,6 +688,7 @@ impl Engine {
                 cx,
                 cy,
                 distance,
+                self.metric,
             ),
             IndexKind::RTree => par_radius(
                 self.rtree.as_ref().unwrap(),
@@ -678,6 +697,7 @@ impl Engine {
                 cx,
                 cy,
                 distance,
+                self.metric,
             ),
             IndexKind::KdTree => par_radius(
                 self.kdtree.as_ref().unwrap(),
@@ -686,6 +706,7 @@ impl Engine {
                 cx,
                 cy,
                 distance,
+                self.metric,
             ),
             IndexKind::Grid => par_radius(
                 self.grid.as_ref().unwrap(),
@@ -694,16 +715,26 @@ impl Engine {
                 cx,
                 cy,
                 distance,
+                self.metric,
             ),
         };
         // Refine delta points by exact distance and address them in the combined index space
         if !self.delta_xs.is_empty() {
-            let d2 = distance * distance;
             let n_main = self.xs.len();
+            let d2 = distance * distance;
+            let cos_lat = cy.to_radians().cos();
             for (i, (&x, &y)) in self.delta_xs.iter().zip(self.delta_ys.iter()).enumerate() {
-                let dx = x - cx;
-                let dy = y - cy;
-                if dx * dx + dy * dy <= d2 {
+                let hit = match self.metric {
+                    DistanceMetric::Planar => {
+                        let dx = x - cx;
+                        let dy = y - cy;
+                        dx * dx + dy * dy <= d2
+                    }
+                    DistanceMetric::Haversine => {
+                        haversine_distance_m(cx, cy, cos_lat, x, y) <= distance
+                    }
+                };
+                if hit {
                     result.push((n_main + i) as u64);
                 }
             }
@@ -1098,14 +1129,30 @@ impl Engine {
             ));
         }
         if flipped {
-            let pairs = par_within_distance_flipped(qxs, qys, &self.xs, &self.ys, distance);
+            let pairs =
+                par_within_distance_flipped(qxs, qys, &self.xs, &self.ys, distance, self.metric);
             return Ok(PyArray1::from_vec(py, pairs));
         }
         let candidate = point_distance_candidate(&self.stats);
-        let bbox = Rect::new(
-            coord! { x: 0.0, y: 0.0 },
-            coord! { x: 2.0 * distance, y: 2.0 * distance },
-        );
+        // A probe window sized in degrees, measured at the dataset's mid-latitude since a
+        // longitude degree shrinks toward the poles. Only its extent is read, not its position.
+        let bbox = match self.metric {
+            DistanceMetric::Planar => Rect::new(
+                coord! { x: 0.0, y: 0.0 },
+                coord! { x: 2.0 * distance, y: 2.0 * distance },
+            ),
+            DistanceMetric::Haversine => {
+                let mid_lat = self
+                    .stats
+                    .extent
+                    .map_or(0.0, |r| (r.min().y + r.max().y) / 2.0);
+                let (min_x, min_y, max_x, max_y) = conservative_degree_box(0.0, mid_lat, distance);
+                Rect::new(
+                    coord! { x: 0.0, y: 0.0 },
+                    coord! { x: max_x - min_x, y: max_y - min_y },
+                )
+            }
+        };
         let kind = self.plan_index_kind(
             &Query::Range { bbox },
             total_q_count.unwrap_or(qxs.len()),
@@ -1120,6 +1167,7 @@ impl Engine {
                 &self.xs,
                 &self.ys,
                 distance,
+                self.metric,
             ),
             IndexKind::RTree => par_within_distance(
                 self.rtree.as_ref().unwrap(),
@@ -1128,6 +1176,7 @@ impl Engine {
                 &self.xs,
                 &self.ys,
                 distance,
+                self.metric,
             ),
             IndexKind::KdTree => par_within_distance(
                 self.kdtree.as_ref().unwrap(),
@@ -1136,6 +1185,7 @@ impl Engine {
                 &self.xs,
                 &self.ys,
                 distance,
+                self.metric,
             ),
             IndexKind::Grid => par_within_distance(
                 self.grid.as_ref().unwrap(),
@@ -1144,6 +1194,7 @@ impl Engine {
                 &self.xs,
                 &self.ys,
                 distance,
+                self.metric,
             ),
         };
         Ok(PyArray1::from_vec(py, pairs))

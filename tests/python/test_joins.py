@@ -455,3 +455,85 @@ def test_select_drops_heavy_geom_column_on_within_join(sf_polygons):
     result = sf_polygons.lazy().within_join(query_df, "qx", "qy").select("qx", "poly_id").collect()
     assert result.columns == ["qx", "poly_id"]
     assert sorted(result["poly_id"].to_list()) == [0, 1]
+
+
+# geographic within_distance_join tests
+
+
+# Real airports with published great-circle distances from JFK: LAX 3974 km,
+# SFO 4152 km, LHR 5540 km, CDG 5834 km.
+@pytest.fixture(scope="module")
+def sf_airports():
+    df = pl.DataFrame(
+        {
+            "name": ["JFK", "LAX", "SFO", "LHR", "CDG"],
+            "lon": [-73.7781, -118.4085, -122.3790, -0.4543, 2.5479],
+            "lat": [40.6413, 33.9416, 37.6213, 51.4700, 49.0097],
+        }
+    )
+    return SpatialFrame(df, "lon", "lat", coordinate_system="geographic")
+
+
+def _jfk_probe():
+    return pl.DataFrame({"probe": ["from_jfk"], "lon": [-73.7781], "lat": [40.6413]})
+
+
+def test_geographic_within_distance_join_measures_meters(sf_airports):
+    # 4000 km reaches LAX (3974) but not SFO (4152), so the threshold lands between them
+    out = (
+        sf_airports.lazy()
+        .within_distance_join(_jfk_probe(), x_col="lon", y_col="lat", distance=4_000_000)
+        .collect()
+    )
+    assert sorted(out["name"].to_list()) == ["JFK", "LAX"]
+
+
+def test_geographic_within_distance_join_flipped_path(sf_airports):
+    # Q=3 > N//2 on the 5-airport frame, so the optimizer indexes the query side instead
+    probe = pl.DataFrame(
+        {
+            "probe": ["from_jfk", "from_lhr", "from_sfo"],
+            "lon": [-73.7781, -0.4543, -122.3790],
+            "lat": [40.6413, 51.4700, 37.6213],
+        }
+    )
+    plan = sf_airports.lazy().within_distance_join(
+        probe, x_col="lon", y_col="lat", distance=4_000_000
+    )
+    optimized = SpatialOptimizer().optimize(plan._plan, sf_airports.engine)
+    node = next(n for n in optimized if isinstance(n, WithinDistanceJoinNode))
+    assert node.flip is True
+    out = plan.collect()
+    assert sorted(zip(out["probe"].to_list(), out["name"].to_list())) == [
+        ("from_jfk", "JFK"),
+        ("from_jfk", "LAX"),
+        ("from_lhr", "CDG"),
+        ("from_lhr", "LHR"),
+        ("from_sfo", "LAX"),
+        ("from_sfo", "SFO"),
+    ]
+
+
+def test_geographic_within_distance_join_streams_in_morsels(sf_airports):
+    # Batched collection re-plans per morsel, so the metric has to survive the slicing
+    probe = pl.concat([_jfk_probe()] * 4)
+    out = pl.concat(
+        list(
+            sf_airports.lazy()
+            .within_distance_join(probe, x_col="lon", y_col="lat", distance=4_000_000)
+            .collect_batched(batch_size=1)
+        )
+    )
+    assert sorted(out["name"].unique().to_list()) == ["JFK", "LAX"]
+    assert out.height == 8
+
+
+def test_geographic_join_across_the_antimeridian():
+    # Suva 178.44E and Apia 171.75W are 1152 km apart across the +/-180 seam
+    apia = pl.DataFrame({"name": ["Apia"], "lon": [-171.7513], "lat": [-13.8333]})
+    suva = pl.DataFrame({"city": ["Suva"], "lon": [178.4419], "lat": [-18.1416]})
+    sf = SpatialFrame(apia, "lon", "lat", coordinate_system="geographic")
+    near = sf.lazy().within_distance_join(suva, x_col="lon", y_col="lat", distance=1_500_000)
+    far = sf.lazy().within_distance_join(suva, x_col="lon", y_col="lat", distance=1_000_000)
+    assert near.collect().height == 1
+    assert far.collect().height == 0

@@ -4,9 +4,12 @@ Define SpatialFrame which is the entry point for spatial query planning.
 
 from __future__ import annotations
 
+from typing import Literal
+
 import numpy as np
 import polars as pl
 
+from pycanopy.coordinates import resolve_coordinate_system
 from pycanopy.engine import Engine, wkb_points_to_xy
 from pycanopy.lazy import SpatialLazyFrame
 
@@ -24,9 +27,18 @@ class SpatialFrame:
         index_mode: Index build policy fixed for this frame's engine. "auto"
             (default) builds only when the cost model beats a scan, "eager" always
             builds an index, "none" always scans brute-force.
+        coordinate_system: How distances are measured. "planar" (default) uses the
+            coordinates' own units, "geographic" reads lon/lat degrees as meters.
     """
 
-    def __init__(self, df: pl.DataFrame, x_col: str, y_col: str, index_mode: str = "auto") -> None:
+    def __init__(
+        self,
+        df: pl.DataFrame,
+        x_col: str,
+        y_col: str,
+        index_mode: str = "auto",
+        coordinate_system: Literal["planar", "geographic"] | None = None,
+    ) -> None:
         if x_col not in df.columns:
             raise ValueError(f"x_col {x_col!r} not found in DataFrame")
         if y_col not in df.columns:
@@ -34,11 +46,11 @@ class SpatialFrame:
         self._df = df
         self._x_col = x_col
         self._y_col = y_col
-        self._engine = Engine.from_coords(
-            df[x_col].to_numpy(),
-            df[y_col].to_numpy(),
-        )
+        xs = df[x_col].to_numpy()
+        ys = df[y_col].to_numpy()
+        self._engine = Engine.from_coords(xs, ys)
         self._engine.set_index_mode(index_mode)
+        self._engine.set_coordinate_system(resolve_coordinate_system(coordinate_system, xs, ys))
         self._wkb_col: str | None = None
         self._wkb_series: pl.Series | None = None
 
@@ -50,6 +62,7 @@ class SpatialFrame:
         x_col: str = "_x",
         y_col: str = "_y",
         index_mode: str = "auto",
+        coordinate_system: Literal["planar", "geographic"] | None = None,
     ) -> SpatialFrame:
         """Construct a point SpatialFrame from a WKB point column of ``df``.
 
@@ -62,6 +75,7 @@ class SpatialFrame:
             x_col: Internal column name for the extracted x coordinates.
             y_col: Internal column name for the extracted y coordinates.
             index_mode: Index build policy ("eager" / "none" / "auto").
+            coordinate_system: How distances are measured ("planar" / "geographic").
 
         Returns:
             SpatialFrame backed by a point index.
@@ -70,7 +84,13 @@ class SpatialFrame:
             raise ValueError(f"wkb_col {wkb_col!r} not found in DataFrame")
         xs, ys = wkb_points_to_xy(df[wkb_col])
         enriched = df.with_columns(pl.Series(x_col, xs), pl.Series(y_col, ys))
-        return cls(enriched, x_col=x_col, y_col=y_col, index_mode=index_mode)
+        return cls(
+            enriched,
+            x_col=x_col,
+            y_col=y_col,
+            index_mode=index_mode,
+            coordinate_system=coordinate_system,
+        )
 
     @classmethod
     def from_polygons(
@@ -175,12 +195,22 @@ class SpatialFrame:
                 return SpatialFrame.from_wkb_polygons(
                     empty, self._wkb_col, self._x_col, self._y_col
                 )
-            return SpatialFrame(self._df.clear(), self._x_col, self._y_col)
+            return SpatialFrame(
+                self._df.clear(),
+                self._x_col,
+                self._y_col,
+                coordinate_system=self.coordinate_system,
+            )
         idx_s = pl.Series(np.asarray(indices, dtype=np.uint32))
         if self._wkb_col is not None:
             filtered = self._df[idx_s].with_columns(self._wkb_series[idx_s].alias(self._wkb_col))
             return SpatialFrame.from_wkb_polygons(filtered, self._wkb_col, self._x_col, self._y_col)
-        return SpatialFrame(self._df[idx_s], self._x_col, self._y_col)
+        return SpatialFrame(
+            self._df[idx_s],
+            self._x_col,
+            self._y_col,
+            coordinate_system=self.coordinate_system,
+        )
 
     # Geometry aggregations and transforms (polygon datasets)
 
@@ -332,6 +362,15 @@ class SpatialFrame:
             The underlying Engine.
         """
         return self._engine
+
+    @property
+    def coordinate_system(self) -> str:
+        """Expose how this frame measures threshold distances.
+
+        Returns:
+            Either "planar" or "geographic".
+        """
+        return self._engine.coordinate_system
 
     @property
     def x_col(self) -> str:

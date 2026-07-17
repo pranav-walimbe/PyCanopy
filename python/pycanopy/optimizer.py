@@ -36,6 +36,9 @@ from pycanopy.nodes import (
 _FUSION_SELECTIVITY_FLOOR = 0.05  # nodes below this threshold are too selective to fuse
 _FUSION_MIN_N = 500  # datasets smaller than this always use BruteForce
 _IO_SELECTIVITY_THRESHOLD = 0.05  # selectivity where slicing sf.df directly (IO path) is cheaper
+_METERS_PER_DEGREE_LAT = 110_574.0  # mirrors src/query/geodesy.rs
+_METERS_PER_DEGREE_LON_EQUATOR = 111_320.0  # a longitude degree at the equator
+_POLE_GUARD_LAT = 89.9  # past here cos(lat) nears zero
 
 
 _BINARY_OP_COST: dict[str, int] = {
@@ -158,7 +161,8 @@ class SpatialOptimizer:
             elif isinstance(node, KnnNode):
                 node = dataclasses.replace(node, selectivity=min(1.0, node.k / max(n, 1)))
             elif isinstance(node, WithinDistanceOfPointNode):
-                node = dataclasses.replace(node, selectivity=self._disk_selectivity(node, extent))
+                sel = self._disk_selectivity(node, extent, engine.coordinate_system)
+                node = dataclasses.replace(node, selectivity=sel)
             elif isinstance(node, ScalarNode):
                 node = dataclasses.replace(node, cost=_scalar_cost(node.expr))
             # join nodes have no selectivity field
@@ -184,6 +188,7 @@ class SpatialOptimizer:
         self,
         node: WithinDistanceOfPointNode,
         extent: tuple[float, float, float, float] | None,
+        coordinate_system: str,
     ) -> float:
         # Selectivity of a radius query as its disk area divided by the dataset extent area
         if extent is None:
@@ -192,7 +197,16 @@ class SpatialOptimizer:
         total_area = (max_x - min_x) * (max_y - min_y)
         if total_area <= 0.0:
             return 1.0
-        return min(1.0, math.pi * node.distance * node.distance / total_area)
+        return min(1.0, self._disk_area(node, coordinate_system) / total_area)
+
+    def _disk_area(self, node: WithinDistanceOfPointNode, coordinate_system: str) -> float:
+        # A geographic radius is meters against a degree extent, so it becomes a degree ellipse
+        if coordinate_system != "geographic":
+            return math.pi * node.distance * node.distance
+        cos_lat = math.cos(math.radians(min(abs(node.cy), _POLE_GUARD_LAT)))
+        lat_radius = node.distance / _METERS_PER_DEGREE_LAT
+        lon_radius = node.distance / (_METERS_PER_DEGREE_LON_EQUATOR * cos_lat)
+        return math.pi * lat_radius * lon_radius
 
     def _cost_sort(self, plan: Plan) -> Plan:
         # Reorder nodes so cheaper operations run first. Joins and KNN are barriers, and within

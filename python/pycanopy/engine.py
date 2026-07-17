@@ -378,6 +378,24 @@ class Engine:
         """
         return self._core.set_index_mode(mode)
 
+    def set_coordinate_system(self, coordinate_system: str) -> None:
+        """Set how threshold distances are measured, fixed for this engine.
+
+        Args:
+            coordinate_system: "planar" to measure in the coordinates' own units, or
+                "geographic" to read lon/lat degrees and measure great-circle meters.
+        """
+        self._core.set_coordinate_system(coordinate_system)
+
+    @property
+    def coordinate_system(self) -> str:
+        """Report how this engine measures threshold distances.
+
+        Returns:
+            Either "planar" or "geographic".
+        """
+        return self._core.coordinate_system()
+
     def knn(self, x: float, y: float, k: int) -> list[int]:
         """Return indices of the k nearest points to (x, y).
 

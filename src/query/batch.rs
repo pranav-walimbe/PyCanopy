@@ -15,6 +15,7 @@ type TileResults = Vec<Vec<(u32, Vec<(u64, f64)>)>>;
 
 use crate::index::kdtree::PackedKdTree;
 use crate::index::SpatialIndex;
+use crate::query::geodesy::{conservative_degree_box, haversine_distance_m, DistanceMetric};
 use crate::query::geometry::point_to_polygon_distance;
 use crate::query::prepared::PreparedPolygons;
 use crate::query::range::pip_raw;
@@ -115,8 +116,8 @@ pub fn par_contains<I: SpatialIndex + Sync>(
         .collect()
 }
 
-/// Bare engine point indices within `distance` of a single center. Dilated-box candidates
-/// refined in parallel by exact squared distance.
+/// Bare engine point indices within `distance` of a single center. Box candidates from the
+/// index refined in parallel by the metric's exact distance.
 pub fn par_radius<I: SpatialIndex + Sync>(
     index: &I,
     xs: &[f64],
@@ -124,23 +125,58 @@ pub fn par_radius<I: SpatialIndex + Sync>(
     cx: f64,
     cy: f64,
     distance: f64,
+    metric: DistanceMetric,
 ) -> Vec<u64> {
-    let d2 = distance * distance;
-    index
-        .range(cx - distance, cy - distance, cx + distance, cy + distance)
-        .into_par_iter()
-        .filter(move |&ei| {
-            let dx = xs[ei] - cx;
-            let dy = ys[ei] - cy;
-            dx * dx + dy * dy <= d2
-        })
-        .map(|ei| ei as u64)
-        .collect()
+    // Dispatch once per call, never per candidate, so the planar path compiles as it always did
+    match metric {
+        DistanceMetric::Planar => {
+            let d2 = distance * distance;
+            index
+                .range(cx - distance, cy - distance, cx + distance, cy + distance)
+                .into_par_iter()
+                .filter(move |&ei| {
+                    let dx = xs[ei] - cx;
+                    let dy = ys[ei] - cy;
+                    dx * dx + dy * dy <= d2
+                })
+                .map(|ei| ei as u64)
+                .collect()
+        }
+        DistanceMetric::Haversine => {
+            let (min_x, min_y, max_x, max_y) = conservative_degree_box(cx, cy, distance);
+            // Hoisted out of the candidate loop, where the center's latitude never changes
+            let cos_lat = cy.to_radians().cos();
+            index
+                .range(min_x, min_y, max_x, max_y)
+                .into_par_iter()
+                .filter(move |&ei| {
+                    haversine_distance_m(cx, cy, cos_lat, xs[ei], ys[ei]) <= distance
+                })
+                .map(|ei| ei as u64)
+                .collect()
+        }
+    }
 }
 
-/// For each query point, (query_idx, engine_idx) for every engine point within `distance`.
-/// Bbox pre-filter then exact Euclidean check.
+/// For each query point, (query_idx, engine_idx) for every engine point within `distance`
 pub fn par_within_distance<I: SpatialIndex + Sync>(
+    index: &I,
+    qxs: &[f64],
+    qys: &[f64],
+    xs: &[f64],
+    ys: &[f64],
+    distance: f64,
+    metric: DistanceMetric,
+) -> Vec<u64> {
+    // Dispatch once per call, never per candidate, so the planar path compiles as it always did
+    match metric {
+        DistanceMetric::Planar => within_distance_planar(index, qxs, qys, xs, ys, distance),
+        DistanceMetric::Haversine => within_distance_haversine(index, qxs, qys, xs, ys, distance),
+    }
+}
+
+/// par_within_distance over a flat plane, bbox pre-filter then exact Euclidean check
+fn within_distance_planar<I: SpatialIndex + Sync>(
     index: &I,
     qxs: &[f64],
     qys: &[f64],
@@ -149,8 +185,7 @@ pub fn par_within_distance<I: SpatialIndex + Sync>(
     distance: f64,
 ) -> Vec<u64> {
     let d2 = distance * distance;
-    // Single probe: parallelize the Euclidean refinement over candidates across threads.
-    // The multi-probe path parallelises over queries instead.
+    // Single probe parallelises the refinement over candidates, multi-probe over queries
     if qxs.len() == 1 {
         let qx = qxs[0];
         let qy = qys[0];
@@ -182,6 +217,46 @@ pub fn par_within_distance<I: SpatialIndex + Sync>(
         .collect()
 }
 
+/// par_within_distance over lon/lat degrees, widened-box pre-filter then exact haversine check
+fn within_distance_haversine<I: SpatialIndex + Sync>(
+    index: &I,
+    qxs: &[f64],
+    qys: &[f64],
+    xs: &[f64],
+    ys: &[f64],
+    distance: f64,
+) -> Vec<u64> {
+    // Single probe parallelises the refinement over candidates, multi-probe over queries
+    if qxs.len() == 1 {
+        let qx = qxs[0];
+        let qy = qys[0];
+        let (min_x, min_y, max_x, max_y) = conservative_degree_box(qx, qy, distance);
+        let cos_lat = qy.to_radians().cos();
+        return index
+            .range(min_x, min_y, max_x, max_y)
+            .into_par_iter()
+            .filter(move |&ei| haversine_distance_m(qx, qy, cos_lat, xs[ei], ys[ei]) <= distance)
+            .flat_map_iter(|ei| [0u64, ei as u64])
+            .collect();
+    }
+    qxs.par_iter()
+        .zip(qys.par_iter())
+        .enumerate()
+        .flat_map_iter(|(qi, (&qx, &qy))| {
+            let (min_x, min_y, max_x, max_y) = conservative_degree_box(qx, qy, distance);
+            // Hoisted out of the candidate loop, where the query's latitude never changes
+            let cos_lat = qy.to_radians().cos();
+            index
+                .range(min_x, min_y, max_x, max_y)
+                .into_iter()
+                .filter(move |&ei| {
+                    haversine_distance_m(qx, qy, cos_lat, xs[ei], ys[ei]) <= distance
+                })
+                .flat_map(move |ei| [qi as u64, ei as u64])
+        })
+        .collect()
+}
+
 /// Flipped par_within_distance. Indexes the query side and iterates engine points. Same
 /// pairs and cheaper when the query count is much larger than the engine count.
 pub fn par_within_distance_flipped(
@@ -190,25 +265,48 @@ pub fn par_within_distance_flipped(
     xs: &[f64],
     ys: &[f64],
     distance: f64,
+    metric: DistanceMetric,
 ) -> Vec<u64> {
-    let d2 = distance * distance;
     // Build a KD-tree on the (smaller) query side
     let q_index = PackedKdTree::build(Arc::from(qxs.to_vec()), Arc::from(qys.to_vec()));
-    xs.par_iter()
-        .zip(ys.par_iter())
-        .enumerate()
-        .flat_map_iter(|(ei, (&sx, &sy))| {
-            q_index
-                .range(sx - distance, sy - distance, sx + distance, sy + distance)
-                .into_iter()
-                .filter(move |&qi| {
-                    let dx = qxs[qi] - sx;
-                    let dy = qys[qi] - sy;
-                    dx * dx + dy * dy <= d2
+    // Dispatch once per call, never per candidate, so the planar path compiles as it always did
+    match metric {
+        DistanceMetric::Planar => {
+            let d2 = distance * distance;
+            xs.par_iter()
+                .zip(ys.par_iter())
+                .enumerate()
+                .flat_map_iter(|(ei, (&sx, &sy))| {
+                    q_index
+                        .range(sx - distance, sy - distance, sx + distance, sy + distance)
+                        .into_iter()
+                        .filter(move |&qi| {
+                            let dx = qxs[qi] - sx;
+                            let dy = qys[qi] - sy;
+                            dx * dx + dy * dy <= d2
+                        })
+                        .flat_map(move |qi| [qi as u64, ei as u64])
                 })
-                .flat_map(move |qi| [qi as u64, ei as u64])
-        })
-        .collect()
+                .collect()
+        }
+        DistanceMetric::Haversine => xs
+            .par_iter()
+            .zip(ys.par_iter())
+            .enumerate()
+            .flat_map_iter(|(ei, (&sx, &sy))| {
+                let (min_x, min_y, max_x, max_y) = conservative_degree_box(sx, sy, distance);
+                // Hoisted out of the candidate loop, where the engine point's latitude is fixed
+                let cos_lat = sy.to_radians().cos();
+                q_index
+                    .range(min_x, min_y, max_x, max_y)
+                    .into_iter()
+                    .filter(move |&qi| {
+                        haversine_distance_m(sx, sy, cos_lat, qxs[qi], qys[qi]) <= distance
+                    })
+                    .flat_map(move |qi| [qi as u64, ei as u64])
+            })
+            .collect(),
+    }
 }
 
 /// For each query point, (query_idx, polygon_idx) for every Engine polygon within
@@ -783,6 +881,135 @@ pub fn par_bbox_filter(
 mod tests {
     use super::*;
     use crate::index::rtree::PackedRTree;
+    use crate::query::geodesy::haversine_distance_m;
+
+    // A lon/lat point cloud spanning the equator, mid latitudes, the poles, and the antimeridian
+    fn lonlat_cloud() -> (Vec<f64>, Vec<f64>) {
+        let mut xs = Vec::new();
+        let mut ys = Vec::new();
+        for band in [-89.5, -85.0, -45.0, -0.5, 0.0, 0.5, 45.0, 85.0, 89.5] {
+            for step in 0..36 {
+                xs.push(-180.0 + step as f64 * 10.0);
+                ys.push(band);
+            }
+            // Straddle the antimeridian, where neighbours sit either side of the +/-180 seam
+            for lon in [-179.99, -179.9, 179.9, 179.99] {
+                xs.push(lon);
+                ys.push(band);
+            }
+        }
+        (xs, ys)
+    }
+
+    // Every engine point within `distance` meters of the query, checked pair by pair
+    fn brute_haversine(xs: &[f64], ys: &[f64], qx: f64, qy: f64, distance: f64) -> Vec<u64> {
+        let cos_lat = qy.to_radians().cos();
+        (0..xs.len())
+            .filter(|&i| haversine_distance_m(qx, qy, cos_lat, xs[i], ys[i]) <= distance)
+            .map(|i| i as u64)
+            .collect()
+    }
+
+    #[test]
+    fn haversine_radius_matches_brute_force_across_latitude_bands() {
+        let (xs, ys) = lonlat_cloud();
+        let index = PackedRTree::build(Arc::from(xs.clone()), Arc::from(ys.clone()));
+        for &(cx, cy) in &[
+            (0.0, 0.0),
+            (-73.9, 40.7),
+            (10.0, 85.0),
+            (10.0, 89.5),
+            (179.95, 0.0),
+            (-179.95, -45.0),
+            (0.0, -89.5),
+        ] {
+            for &distance in &[500.0, 50_000.0, 400_000.0] {
+                let mut got = par_radius(
+                    &index,
+                    &xs,
+                    &ys,
+                    cx,
+                    cy,
+                    distance,
+                    DistanceMetric::Haversine,
+                );
+                got.sort_unstable();
+                let want = brute_haversine(&xs, &ys, cx, cy, distance);
+                assert_eq!(got, want, "radius {distance} m around ({cx}, {cy})");
+            }
+        }
+    }
+
+    #[test]
+    fn haversine_within_distance_join_matches_brute_force() {
+        let (xs, ys) = lonlat_cloud();
+        let index = PackedRTree::build(Arc::from(xs.clone()), Arc::from(ys.clone()));
+        let qxs = vec![0.0, -73.9, 10.0, 179.95, -179.95, 0.0];
+        let qys = vec![0.0, 40.7, 85.0, 0.0, -45.0, 89.5];
+        let distance = 200_000.0;
+        let flat = par_within_distance(
+            &index,
+            &qxs,
+            &qys,
+            &xs,
+            &ys,
+            distance,
+            DistanceMetric::Haversine,
+        );
+        for qi in 0..qxs.len() {
+            let mut got: Vec<u64> = flat
+                .chunks_exact(2)
+                .filter(|p| p[0] == qi as u64)
+                .map(|p| p[1])
+                .collect();
+            got.sort_unstable();
+            let want = brute_haversine(&xs, &ys, qxs[qi], qys[qi], distance);
+            assert_eq!(got, want, "query {qi} at ({}, {})", qxs[qi], qys[qi]);
+        }
+    }
+
+    #[test]
+    fn haversine_flipped_join_matches_the_unflipped_pairs() {
+        let (xs, ys) = lonlat_cloud();
+        let index = PackedRTree::build(Arc::from(xs.clone()), Arc::from(ys.clone()));
+        let qxs = vec![0.0, -73.9, 10.0, 179.95];
+        let qys = vec![0.0, 40.7, 85.0, 0.0];
+        let distance = 200_000.0;
+        let mut want = par_within_distance(
+            &index,
+            &qxs,
+            &qys,
+            &xs,
+            &ys,
+            distance,
+            DistanceMetric::Haversine,
+        );
+        let mut got =
+            par_within_distance_flipped(&qxs, &qys, &xs, &ys, distance, DistanceMetric::Haversine);
+        want.sort_unstable();
+        got.sort_unstable();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn single_probe_haversine_matches_the_multi_probe_path() {
+        // The one-query fast path parallelises differently, so it needs its own check
+        let (xs, ys) = lonlat_cloud();
+        let index = PackedRTree::build(Arc::from(xs.clone()), Arc::from(ys.clone()));
+        let (qx, qy, distance) = (-73.9, 40.7, 300_000.0);
+        let single = par_within_distance(
+            &index,
+            &[qx],
+            &[qy],
+            &xs,
+            &ys,
+            distance,
+            DistanceMetric::Haversine,
+        );
+        let mut got: Vec<u64> = single.chunks_exact(2).map(|p| p[1]).collect();
+        got.sort_unstable();
+        assert_eq!(got, brute_haversine(&xs, &ys, qx, qy, distance));
+    }
 
     // A grid of g*g unit squares spaced 2 apart, as flat single-part polygon ring arrays
     fn grid_squares(g: usize) -> (Vec<f64>, Vec<f64>, Vec<i64>, Vec<i64>) {
