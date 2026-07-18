@@ -1792,6 +1792,90 @@ impl Engine {
         Ok(PyArray1::from_vec(py, dists).into())
     }
 
+    /// Haversine great-circle distance in meters between two lon/lat point sets, four flat arrays
+    #[staticmethod]
+    fn haversine_distance(
+        py: Python<'_>,
+        lons1: PyReadonlyArray1<f64>,
+        lats1: PyReadonlyArray1<f64>,
+        lons2: PyReadonlyArray1<f64>,
+        lats2: PyReadonlyArray1<f64>,
+    ) -> PyResult<Py<PyArray1<f64>>> {
+        let lons1 = lons1
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("lons1 must be a contiguous float64 array"))?;
+        let lats1 = lats1
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("lats1 must be a contiguous float64 array"))?;
+        let lons2 = lons2
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("lons2 must be a contiguous float64 array"))?;
+        let lats2 = lats2
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("lats2 must be a contiguous float64 array"))?;
+        let n = lons1.len();
+        let dists: Vec<f64> = (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let cos_lat1 = lats1[i].to_radians().cos();
+                haversine_distance_m(lons1[i], lats1[i], cos_lat1, lons2[i], lats2[i])
+            })
+            .collect();
+        Ok(PyArray1::from_vec(py, dists).into())
+    }
+
+    /// Euclidean distance in coordinate units from each point to a fixed center
+    #[staticmethod]
+    fn euclidean_distance_to(
+        py: Python<'_>,
+        xs: PyReadonlyArray1<f64>,
+        ys: PyReadonlyArray1<f64>,
+        cx: f64,
+        cy: f64,
+    ) -> PyResult<Py<PyArray1<f64>>> {
+        let xs = xs
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("xs must be a contiguous float64 array"))?;
+        let ys = ys
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("ys must be a contiguous float64 array"))?;
+        let n = xs.len();
+        let dists: Vec<f64> = (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let dx = xs[i] - cx;
+                let dy = ys[i] - cy;
+                (dx * dx + dy * dy).sqrt()
+            })
+            .collect();
+        Ok(PyArray1::from_vec(py, dists).into())
+    }
+
+    /// Haversine distance in meters from each lon/lat point to a fixed center
+    #[staticmethod]
+    fn haversine_distance_to(
+        py: Python<'_>,
+        lons: PyReadonlyArray1<f64>,
+        lats: PyReadonlyArray1<f64>,
+        cx: f64,
+        cy: f64,
+    ) -> PyResult<Py<PyArray1<f64>>> {
+        let lons = lons
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("lons must be a contiguous float64 array"))?;
+        let lats = lats
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("lats must be a contiguous float64 array"))?;
+        // hoist the fixed center's cos(lat) out of the per-point loop
+        let cos_cy = cy.to_radians().cos();
+        let n = lons.len();
+        let dists: Vec<f64> = (0..n)
+            .into_par_iter()
+            .map(|i| haversine_distance_m(cx, cy, cos_cy, lons[i], lats[i]))
+            .collect();
+        Ok(PyArray1::from_vec(py, dists).into())
+    }
+
     /// Heap bytes of all currently-built indexes (excludes the always-present xs/ys arrays).
     /// 0 if none built. Sums every built index. Usually one but several can coexist.
     fn index_bytes(&self) -> usize {

@@ -7,13 +7,31 @@ the single-polygon distance filter, and convex hull area.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import polars as pl
 import pytest
 import shapely
 from shapely.geometry import box as shapely_box
 
-from pycanopy import Engine, SpatialFrame, wkb_point_distance
+from pycanopy import (
+    Engine,
+    SpatialFrame,
+    distance_to_point,
+    point_distance,
+    wkb_point_distance,
+)
+
+
+def _haversine_ref(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
+    # reference great-circle distance in meters for the geographic distance tests
+    r = 6_371_008.8
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlam / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
 
 
 def _poly_engine(boxes) -> Engine:
@@ -136,6 +154,59 @@ def test_wkb_point_distance():
     dists = wkb_point_distance(pts_a, pts_b)
     assert abs(dists[0] - 5.0) < 1e-9
     assert dists[1] == 0.0
+
+
+def test_point_distance_planar_is_euclidean():
+    # planar measures Euclidean in coordinate units (3-4-5 triangle -> 5.0)
+    x1 = np.array([0.0, 0.0])
+    y1 = np.array([0.0, 0.0])
+    x2 = np.array([3.0, 0.0])
+    y2 = np.array([4.0, 0.0])
+    dists = point_distance(x1, y1, x2, y2, "planar")
+    assert abs(dists[0] - 5.0) < 1e-9
+    assert dists[1] == 0.0
+
+
+def test_point_distance_geographic_matches_haversine_oracle():
+    # JFK -> LAX great-circle distance, checked against an independent haversine reference
+    lon1, lat1 = -73.7781, 40.6413
+    lon2, lat2 = -118.4085, 33.9416
+    dists = point_distance(
+        np.array([lon1]), np.array([lat1]), np.array([lon2]), np.array([lat2]), "geographic"
+    )
+    assert abs(dists[0] - _haversine_ref(lon1, lat1, lon2, lat2)) < 1e-6
+
+
+def test_distance_to_point_matches_pairwise():
+    # column-to-center agrees with the pairwise form given a broadcast center
+    lons = np.array([-118.4085, -87.9073])
+    lats = np.array([33.9416, 41.9742])
+    cx, cy = -73.7781, 40.6413
+    to_pt = distance_to_point(lons, lats, cx, cy, "geographic")
+    pair = point_distance(lons, lats, np.full_like(lons, cx), np.full_like(lats, cy), "geographic")
+    assert np.allclose(to_pt, pair, atol=1e-6)
+
+
+def test_distance_to_point_planar_is_euclidean():
+    dists = distance_to_point(np.array([3.0]), np.array([4.0]), 0.0, 0.0, "planar")
+    assert abs(dists[0] - 5.0) < 1e-9
+
+
+def test_point_distance_accepts_polars_columns():
+    # a polars Float64 column flows through the zero-copy path without a dtype error
+    df = pl.DataFrame({"x": [0.0, 1.0], "y": [0.0, 1.0]})
+    dists = point_distance(df["x"], df["y"], df["x"], df["y"], "planar")
+    assert np.allclose(dists, [0.0, 0.0])
+
+
+def test_point_distance_rejects_unknown_coordinate_system():
+    with pytest.raises(ValueError, match="planar"):
+        point_distance(np.array([0.0]), np.array([0.0]), np.array([0.0]), np.array([0.0]), "sphere")
+
+
+def test_distance_to_point_rejects_unknown_coordinate_system():
+    with pytest.raises(ValueError, match="planar"):
+        distance_to_point(np.array([0.0]), np.array([0.0]), 0.0, 0.0, "sphere")
 
 
 def test_within_distance_to_polygons_rejects_point_engine():

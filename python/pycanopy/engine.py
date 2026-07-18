@@ -139,6 +139,58 @@ def wkb_point_distance(series_a, series_b) -> np.ndarray:
     return _CoreEngine.euclidean_distance(xs1, ys1, xs2, ys2)
 
 
+def point_distance(x1, y1, x2, y2, coordinate_system: str = "planar") -> np.ndarray:
+    """Distance between two point sets row by row, in one parallel pass.
+
+    Args:
+        x1: x (or longitude) of the first point set.
+        y1: y (or latitude) of the first point set.
+        x2: x (or longitude) of the second point set.
+        y2: y (or latitude) of the second point set.
+        coordinate_system: "planar" (default) Euclidean, or "geographic" for haversine meters.
+
+    Returns:
+        Float64 numpy array of per-row distances.
+    """
+    x1 = np.ascontiguousarray(x1, dtype=np.float64)
+    y1 = np.ascontiguousarray(y1, dtype=np.float64)
+    x2 = np.ascontiguousarray(x2, dtype=np.float64)
+    y2 = np.ascontiguousarray(y2, dtype=np.float64)
+    if coordinate_system == "geographic":
+        return _CoreEngine.haversine_distance(x1, y1, x2, y2)
+    if coordinate_system == "planar":
+        return _CoreEngine.euclidean_distance(x1, y1, x2, y2)
+    raise ValueError(
+        f"coordinate_system must be 'planar' or 'geographic', got {coordinate_system!r}"
+    )
+
+
+def distance_to_point(
+    xs, ys, cx: float, cy: float, coordinate_system: str = "planar"
+) -> np.ndarray:
+    """Distance from each point to a fixed center, in one parallel pass.
+
+    Args:
+        xs: x (or longitude) of each point.
+        ys: y (or latitude) of each point.
+        cx: x (or longitude) of the fixed center.
+        cy: y (or latitude) of the fixed center.
+        coordinate_system: "planar" (default) Euclidean, or "geographic" for haversine meters.
+
+    Returns:
+        Float64 numpy array of per-point distances to the center.
+    """
+    xs = np.ascontiguousarray(xs, dtype=np.float64)
+    ys = np.ascontiguousarray(ys, dtype=np.float64)
+    if coordinate_system == "geographic":
+        return _CoreEngine.haversine_distance_to(xs, ys, cx, cy)
+    if coordinate_system == "planar":
+        return _CoreEngine.euclidean_distance_to(xs, ys, cx, cy)
+    raise ValueError(
+        f"coordinate_system must be 'planar' or 'geographic', got {coordinate_system!r}"
+    )
+
+
 def _wkb_points_fast(arr: pa.Array) -> tuple[np.ndarray, np.ndarray] | None:
     # Read x/y from a uniformly 21-byte WKB point column via one numpy view, or None for
     # nulls or any non-uniform or non-point layout so the caller can fall back to shapely.

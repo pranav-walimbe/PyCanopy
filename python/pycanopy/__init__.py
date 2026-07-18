@@ -1,6 +1,12 @@
 from . import agg
 from .coordinates import PyCanopyCoordinateWarning
-from .engine import Engine, wkb_point_distance, wkb_points_to_xy
+from .engine import (
+    Engine,
+    distance_to_point,
+    point_distance,
+    wkb_point_distance,
+    wkb_points_to_xy,
+)
 from .frame import SpatialFrame
 from .lazy import SpatialGroupBy, SpatialLazyFrame
 
@@ -11,6 +17,8 @@ __all__ = [
     "SpatialGroupBy",
     "SpatialLazyFrame",
     "agg",
+    "distance_to_point",
+    "point_distance",
     "wkb_point_distance",
     "wkb_points_to_xy",
 ]
