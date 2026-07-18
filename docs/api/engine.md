@@ -1,8 +1,8 @@
-# Engine & Utilities
+# Engine
 
 `Engine` is the low-level spatial index that backs every `SpatialFrame`. Most users interact with it only through `SpatialFrame.engine` for delta buffer operations or batch convex-hull computations. It can also be used directly when you need index access without the DataFrame layer.
 
-`wkb_point_distance` and `wkb_points_to_xy` are standalone utility functions for working with WKB-encoded geometry columns.
+For coordinate systems and the standalone distance utilities, see [Coordinate Reference System](coordinate-reference-system.md).
 
 ::: pycanopy.Engine
     options:
@@ -15,7 +15,3 @@
         - "!^contains_mask"
         - "!^knn_mask"
         - "!^polygon_pairs"
-
-::: pycanopy.wkb_point_distance
-
-::: pycanopy.wkb_points_to_xy

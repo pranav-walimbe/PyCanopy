@@ -34,8 +34,8 @@ nav:
     - SpatialFrame: api/spatial-frame.md
     - SpatialLazyFrame: api/lazy-frame.md
     - Aggregations: api/aggregations.md
-    - Engine & Utilities: api/engine.md
-    - Distance Operations: api/distance-operations.md
+    - Engine: api/engine.md
+    - Coordinate Reference System: api/coordinate-reference-system.md
   - How It Works:
     - Query Planner: how-it-works/query-planner.md
     - Cost Model & Index Selection: how-it-works/cost-model.md

@@ -110,6 +110,19 @@ sf.lazy().polygon_knn_join(trips, "lon", "lat", k=5).sink_parquet("nearest.parqu
 sf = SpatialFrame(df, x_col="lon", y_col="lat", index_mode="auto")
 ```
 
+## Coordinate reference system
+
+```python
+# Default is "planar": Euclidean distance in the coordinates' own units
+sf = SpatialFrame(df, x_col="lon", y_col="lat")
+
+# "geographic": read lon/lat degrees and measure haversine distance in meters
+sf = SpatialFrame(df, x_col="lon", y_col="lat", coordinate_system="geographic")
+
+# distance is now meters, so this is a true 50 km radius
+near = sf.lazy().within_distance_of_point(cx=-111.7610, cy=34.8697, distance=50_000).collect()
+```
+
 ## Live updates via delta buffer
 
 ```python
