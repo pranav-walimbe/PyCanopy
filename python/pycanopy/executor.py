@@ -451,9 +451,9 @@ class SpatialExecutor:
 
         parts: list[pl.DataFrame] = []
         if query_keep:
-            parts.append(node.query_df.select(query_keep).gather(q_idx))
+            parts.append(node.query_df.select(query_keep)[q_idx])
         if target_keep:
-            target_part = sf.df.select(target_keep).gather(t_idx)
+            target_part = sf.df.select(target_keep)[t_idx]
             rename = {c: f"right_{c}" for c in target_keep if c in overlap}
             if rename:
                 target_part = target_part.rename(rename)

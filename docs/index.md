@@ -4,16 +4,16 @@ A declarative spatial query layer for Polars. Rust core, Python API.
 
 ## What is PyCanopy
 
-PyCanopy brings fast spatial queries (range, kNN, joins, polygon containment) into the Polars ecosystem without leaving Python. You declare the operations you want and the engine decides the most efficient way to execute the query and whether it should build one of its available spatial indices. 
+PyCanopy brings fast spatial queries (range, kNN, joins, polygon containment) into the Polars ecosystem without leaving Python. You declare the operations you want and the engine decides the most efficient way to execute the query and whether it should build one of its available spatial indices.
 
 ## Why PyCanopy
 
 |  | PyCanopy | GeoPandas | DuckDB | SedonaDB | Spatial Polars |
 |:--|:--------:|:---------:|:------:|:--------:|:--------------:|
-| Polars-native, no SQL or conversion             | ✓ | ✗ | ✗ (SQL) | ✗ (SQL) | ✓ |
-| Spatial query planner (reorder, fuse, pushdown) | ✓ | ✗ | ✗ | ✓ (SQL) | ✗ |
+| Polars-native API                               | ✓ | ✗ | ✗ | ✗ | ✓ |
+| Spatial query planner (reorder, pushdown, etc)  | ✓ | ✗ | ✓ | ✓ | ✗ |
 | Index vs scan decided by cost model             | ✓ | ✗ | ✗ | ✗ | ✗ |
-| Adaptive index (KD-tree / R-tree / grid)        | ✓ | ✗ | ✗ | ✗ | ✗ |
+| Dynamic index selection                         | ✓ | ✗ | ✗ | ✗ | ✗ |
 
 ## Benchmarks
 
