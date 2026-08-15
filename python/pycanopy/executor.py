@@ -127,7 +127,7 @@ class SpatialExecutor:
     ) -> pl.DataFrame:
         """Execute the optimised plan against sf.
 
-        The engine's index mode (eager/none/auto, fixed at frame construction)
+        The engine's index mode (eager/none/auto, initialized at frame construction)
         governs whether indexes are built, the executor does not change it.
 
         Args:

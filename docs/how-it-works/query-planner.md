@@ -1,6 +1,6 @@
 # Query Planner
 
-PyCanopy separates declaration from execution. You chain operations on a `SpatialLazyFrame` in any order; the `SpatialOptimizer` rewrites the plan before `SpatialExecutor` runs it.
+PyCanopy separates declaration from execution. You chain filter operations on a `SpatialLazyFrame`, and the `SpatialOptimizer` may reorder compatible operations before execution. kNN and join operations act as barriers, and projection pushdown applies to a terminal `.select()`.
 
 ```mermaid
 flowchart LR
@@ -13,11 +13,11 @@ The optimizer runs a fixed sequence of passes over the plan:
 
 **1. Selectivity estimation**
 
-Each node is annotated with an estimated selectivity, the fraction of the dataset expected to survive. Scalar Polars filters get an estimate from column statistics; spatial predicates use the cost model's histogram or kNN ratio.
+Spatial predicates receive estimated selectivities based on dataset extent or simple output ratios. Scalar Polars filters receive heuristic execution costs derived from their expression structure; PyCanopy does not currently estimate their selectivity from column statistics.
 
 **2. Predicate pushdown**
 
-Scalar `filter()` nodes are sunk to the bottom of the plan so they run first, reducing the row count before any spatial work begins. A scalar filter that eliminates 90% of rows makes every subsequent spatial operation 10x cheaper.
+Scalar `filter()` nodes are moved ahead of compatible spatial predicates. On the EXPR path, this reduces the candidate row indices passed into the spatial masking step.
 
 **3. Cost-sort**
 
@@ -25,19 +25,19 @@ Spatial predicates are reordered by ascending estimated output size. Cheaper, mo
 
 **4. Filter fusion**
 
-Consecutive `range_query` or `contains` nodes get interleaved into a single Rust call. Each predicate is still queried separately against the index, then the hit lists are intersected in Rust via a sorted merge.
+On datasets with at least 500 rows, consecutive eligible `range_query` and `contains` predicates may be fused into one Rust call. Predicates estimated to retain less than 5% of rows are executed separately. Each fused predicate is still queried separately against the index, then the hit lists are intersected in Rust via a sorted merge.
 
 **5. Join side selection**
 
-For join operations, the optimizer selects which side of the join carries the index. It builds on the side that minimises total probe cost given the estimated sizes of both inputs.
+For `within_join` and `within_distance_join`, the optimizer may flip the join when the query side contains more than half as many rows as the indexed dataset. Other join types retain their declared orientation.
 
 **6. Projection pushdown**
 
-A terminal `.select(cols)` is pinned as the last node and its column set is propagated back into any join as `keep_columns`. Both sides of the join are narrowed before the gather step, so the only full-width materialisation is the final output.
+A terminal `.select(cols)` remains the final operation, and its required columns are propagated into join nodes as `keep_columns`. Each join side is narrowed before gathering rows, avoiding construction of an unnecessary full-width joined frame.
 
 ## IO vs EXPR path selection
 
-After optimization, the executor picks one of two execution strategies per node:
+The optimizer chooses one execution path for the complete plan. Plans containing kNN or join operations use EXPR. For filter-only plans, a sufficiently selective range, contains, or fused spatial predicate selects IO; otherwise the plan uses EXPR:
 
 - **IO path**: used when selectivity is low (few results expected). The index is queried directly and the result is returned as a slice of the DataFrame. No Polars expression pipeline is involved.
 - **EXPR path**: used when selectivity is high. The spatial closure runs as a Polars `map_batches` plugin, processing the DataFrame in batches. Scalar filters run first inside the batch, then the spatial query runs on the surviving rows.

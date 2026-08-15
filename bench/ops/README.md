@@ -1,6 +1,6 @@
 # Ops Calibration Benchmark
 
-Measures the 9 `CostFactors` ns/op constants used by the query planner's cost model
+Measures the 10 `CostFactors` ns/op constants used by the query planner's cost model
 (`src/planner/cost.rs`, `src/planner/calibration.rs`).
 
 ## Method

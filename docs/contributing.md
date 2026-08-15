@@ -2,7 +2,7 @@
 
 ## Build setup
 
-You need Rust (stable) and Python 3.10–3.12.
+You need Rust (stable), `cargo-nextest`, and Python 3.10–3.12. Install the Rust test runner with `cargo install cargo-nextest` if it is not already available.
 
 ```bash
 # Clone and set up
@@ -13,7 +13,7 @@ cd PyCanopy
 uv sync --group dev
 
 # Build the Rust extension and install in editable mode
-maturin develop
+uv run maturin develop
 
 # Full check: format + build + lint + test
 make check
@@ -22,7 +22,7 @@ make check
 For a release build (needed for accurate benchmark numbers):
 
 ```bash
-maturin develop --release
+uv run maturin develop --release
 ```
 
 ## Make targets
@@ -40,7 +40,7 @@ maturin develop --release
 ```bash
 make test
 # or directly
-pytest tests/python -x -q
+uv run pytest tests/python -x -q
 ```
 
 ## Style
@@ -48,7 +48,7 @@ pytest tests/python -x -q
 After every code change, run:
 
 ```bash
-ruff format && ruff check
+uv run ruff format && uv run ruff check
 cargo fmt && cargo clippy
 ```
 

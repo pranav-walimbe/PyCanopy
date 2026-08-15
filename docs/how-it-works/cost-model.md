@@ -2,7 +2,7 @@
 
 ## Index types
 
-PyCanopy maintains four index implementations that share the same underlying coordinate arrays:
+PyCanopy provides four spatial access implementations. KD-tree, grid, and point brute-force indexes share the engine's coordinate buffers, while the R-tree builds a separate packed bounding-box representation for polygon and MBR queries.
 
 | Index | Best for |
 |:------|:---------|
@@ -13,9 +13,9 @@ PyCanopy maintains four index implementations that share the same underlying coo
 
 ## Index mode
 
-`index_mode` is set once at `SpatialFrame` construction and controls how the cost model is applied:
+`index_mode` is configured when a `SpatialFrame` is constructed and controls how spatial indexes are used. Advanced users can change the mode later through `sf.engine.set_index_mode(...)`.
 
-| Mode | Behaviour |
+| Mode | Behavior |
 |:-----|:----------|
 | `auto` (default) | Build index only when the cost model says it beats a scan |
 | `eager` | Always build the selected index type, skip the cost check |
@@ -38,7 +38,7 @@ flowchart TD
     E -- no --> KD[KD-tree]
 ```
 
-Uniformity is assessed from the 32×32 density histogram built over the coordinate extents.
+Point-distribution uniformity is classified separately from selectivity estimation. The engine divides the coordinate extent into a grid, measures the coefficient of variation of cell counts, and classifies distributions above the configured threshold as clustered. The fixed 32×32 density histogram is used to estimate range-query selectivity.
 
 ## Cost gate
 
@@ -72,7 +72,7 @@ N \cdot c_{\text{scan}} & \text{brute force} \\
 \end{cases}
 $$
 
-**Build cost** (paid once, amortised over $Q$ queries):
+**Build cost** (paid once, amortized over $Q$ queries):
 
 $$
 \text{Cost}_{\text{build}} = \begin{cases}
@@ -87,7 +87,10 @@ $$
 The empirical constants ($c_{\text{scan}}$, $c_{\text{tree}}$, $c_{\text{grid}}$, $c_{\text{build}}$) live in `src/planner/calibration.rs` and are derived by running the ops benchmark suite:
 
 ```bash
-python -m bench.ops --sizes 10000 100000 1000000 --queries 100
+uv run python -m bench.ops
+
+# Optional timing repetitions and random seed
+uv run python -m bench.ops --runs 5 --seed 42
 ```
 
-This sweeps probe time per (index kind, query kind) across dataset sizes and fits the constants. Re-run after `maturin develop --release` on any new hardware.
+The suite runs fixed sweeps across point and polygon dataset sizes. For each measurement, it divides elapsed time by the corresponding workload term and takes the median normalized ratio across sizes. Run it against a release build when recalibrating the constants for target hardware.

@@ -1,10 +1,10 @@
 # Execution Paths
 
-After optimization, `SpatialExecutor` runs the plan using one of two strategies. The choice is made per-node based on selectivity.
+After optimization, `SpatialExecutor` runs the plan using one of two strategies. The optimizer chooses one execution path for the complete plan. Plans containing kNN or join operations use EXPR. For filter-only plans, a sufficiently selective range, contains, or fused spatial predicate selects IO; otherwise the plan uses EXPR.
 
 ## EXPR path
 
-Used when a large fraction of the dataset is expected to match (high selectivity). The spatial operation is registered as a Polars `map_batches` plugin and runs inside the Polars expression engine.
+Used when a large fraction of the dataset is expected to match. The spatial operation runs as a Polars `map_batches` expression. Its callback receives the surviving row indices and invokes the Rust engine to produce a Boolean mask.
 
 Execution order within a batch:
 
@@ -26,9 +26,9 @@ No Polars expression pipeline is involved. This avoids the overhead of batch pro
 
 ## Polars / PyO3 integration
 
-The Rust engine is compiled as a PyO3 extension (`pycanopy._core`). Coordinate arrays are passed as zero-copy numpy views at the Python/Rust boundary. No allocation occurs for the handoff. The index structures themselves (KD-tree, R-tree, grid) are packed immutable Rust structs that live for the lifetime of the `Engine` object.
+The Rust engine is compiled as a PyO3 extension (`pycanopy._core`). The Rust extension reads contiguous NumPy coordinate buffers directly at the Python/Rust boundary. When an `Engine` is constructed, the coordinates are copied once into Rust-owned `Arc<[f64]>` buffers. Subsequent index builds share those buffers without copying the coordinate data again. The index structures themselves (KD-tree, R-tree, grid) are packed immutable Rust structs that live for the lifetime of the `Engine` object.
 
-For the EXPR path, the plugin is registered via Polars' `register_plugin_function` API, which lets the Rust closure participate in Polars' lazy evaluation graph natively.
+The EXPR path uses Polars' Python `map_batches` API rather than a native Polars expression plugin. The callback crosses into the PyO3 extension for spatial computation, while Polars manages the surrounding lazy expression pipeline.
 
 ## Join assembly
 
@@ -38,4 +38,4 @@ Spatial join kernels (`knn_join`, `within_distance_join`, `within_join`, etc.) r
 2. Horizontal-concatenates them into a single DataFrame.
 3. Renames any conflicting column names on the right side with a `right_` prefix.
 
-If a `.select()` was pushed down, both sides are narrowed to the keep-set before the gather, so the full-width DataFrame is never materialised.
+If a `.select()` was pushed down, both sides are narrowed to the keep-set before the gather, so the full-width DataFrame is never materialized.

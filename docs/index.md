@@ -8,18 +8,19 @@ PyCanopy brings fast spatial queries (range, kNN, joins, polygon containment) in
 
 ## Why PyCanopy
 
-|  | PyCanopy | GeoPandas | DuckDB | SedonaDB | Spatial Polars |
-|:--|:--------:|:---------:|:------:|:--------:|:--------------:|
-| Polars-native API                               | ✓ | ✗ | ✗ | ✗ | ✓ |
-| Spatial query planner (reorder, pushdown, etc)  | ✓ | ✗ | ✓ | ✓ | ✗ |
-| Index vs scan decided by cost model             | ✓ | ✗ | ✗ | ✗ | ✗ |
-| Dynamic index selection                         | ✓ | ✗ | ✗ | ✗ | ✗ |
+| Capability | PyCanopy | GeoPandas | DuckDB | SedonaDB | Spatial Polars |
+|:--|:--:|:--:|:--:|:--:|:--:|
+| Uses Polars DataFrames directly | ✓ | ✗ | ✗ | ✗ | ✓ |
+| Spatial-aware query planning | ✓ | ✗ | ✓ | ✓ | ✗ |
+| Automatically accelerates spatial joins with an index | ✓ | ✓ | ✓ | ✓ | ✗ |
+| Explicit cost-based choice between scanning and building an index | ✓ | ✗ | ✗ | ✗ | ✗ |
+| Selects among multiple spatial index types by workload | ✓ | ✗ | ✗ | ✗ | ✗ |
 
 ## Benchmarks
 
 [Apache SpatialBench](https://github.com/apache/sedona-spatialbench) is the industry-standard single-node spatial query benchmark, maintained by the Apache Sedona project. Results below are from a single `m7i.2xlarge` (8 vCPU, 32 GB), the same instance type used in the published baseline.
 
-PyCanopy wins a total of 11/24 testcases and lands within 5% of winning 14/24 testcases (there is some variance among benchmark runs).
+PyCanopy is fastest on 11/24 testcases, including one tie, and lands within 5% of the fastest time on 14/24 testcases (there is some variance among benchmark runs).
 
 **SF1** (~6M trips)
 

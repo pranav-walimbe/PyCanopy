@@ -1,6 +1,6 @@
-# Coordinate Reference System
+# Planar and Geographic Distances
 
-A `SpatialFrame` measures **planar** distance by default: plain Euclidean distance on `x_col`/`y_col` in your coordinates' own units. Passing `coordinate_system="geographic"` reads `x_col`/`y_col` as WGS84 lon/lat degrees and measures great-circle (haversine) distance in meters. The setting is fixed at construction and defaults to `planar`.
+PyCanopy has built-in distance handling for planar coordinates and WGS84 longitude/latitude. The default `planar` model uses Euclidean distance in the coordinates' existing units. The `geographic` model interprets coordinates as WGS84 longitude/latitude and uses haversine distance in meters. PyCanopy does not store CRS metadata or reproject coordinates, so inputs must already use the expected coordinate system.
 
 ```python
 from pycanopy import SpatialFrame

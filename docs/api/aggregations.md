@@ -1,6 +1,6 @@
 # Aggregations
 
-Aggregation specs used with `.group_by(...).agg(...)`. Each spec reduces over a streamed spatial join without materialising the full pair frame.
+Aggregation specs used with `.group_by(...).agg(...)`. Each spec reduces over a streamed spatial join without materializing the full pair frame.
 
 ```python
 import pycanopy as pc

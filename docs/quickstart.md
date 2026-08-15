@@ -25,7 +25,7 @@ result = (
     .collect()
 )
 
-# k-nearest neighbours
+# k-nearest neighbors
 nearest = sf.lazy().knn(x=2.35, y=48.85, k=5).collect()
 
 # kNN join: for each query point, the 3 nearest dataset rows
@@ -57,7 +57,7 @@ result = sf.lazy().within_join(query_df, x_col="qx", y_col="qy").collect()
 import pycanopy as pc
 
 # Count trips per zone and average fare, reduced over a streamed join
-# The full pair frame is never materialised
+# The full pair frame is never materialized
 stats = (
     zones.lazy()
     .within_join(trips, x_col="lon", y_col="lat")
@@ -83,7 +83,7 @@ print(lf.explain())
 #     DF [N=100,000; path: EXPR]
 ```
 
-The optimizer flipped the declaration order: scalar filter runs first, spatial query runs on the smaller survivor set.
+The optimizer flipped the declaration order so the scalar filter runs first. The spatial operation then masks the rows that survived that filter.
 
 ## Streaming large results
 

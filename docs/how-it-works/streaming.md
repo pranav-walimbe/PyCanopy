@@ -1,10 +1,10 @@
 # Streaming Architecture
 
-PyCanopy bounds memory on large join results through a morsel-based streaming design. All streaming is implemented in Python on top of Polars' native lazy infrastructure.
+PyCanopy reduces memory growth for large join results through a morsel-based streaming design. All streaming is implemented in Python on top of Polars' lazy infrastructure.
 
 ## Morsel design
 
-The probe side of any join is sliced into fixed-size chunks called morsels:
+For supported joins with a query DataFrame, the probe side is sliced into fixed-size chunks called morsels:
 
 ```
 MORSEL_ROWS = 262_144  # 256K rows per morsel
@@ -14,7 +14,7 @@ Morsels are produced via `iter_slices`, a zero-copy operation that yields views 
 
 ## collect()
 
-`collect()` automatically streams when the probe DataFrame exceeds a threshold. It accumulates morsel results in memory and concatenates them at the end. For very large probes this bounds the transient memory overhead to one morsel at a time during the join phase, while the final result still materialises fully.
+`collect()` automatically streams when the probe DataFrame exceeds a threshold. It accumulates morsel results in memory and concatenates them at the end. For very large probes this bounds the transient memory overhead to one morsel at a time during the join phase, while the final result still materializes fully.
 
 The `batch_size` parameter overrides the morsel size if you need finer control.
 
@@ -31,7 +31,7 @@ Useful for pipelines that can process results as they arrive, or for writing to 
 
 ## sink_parquet()
 
-Streams the join result directly to a Parquet file. Each morsel is processed and written before the next is read, so peak memory is bounded to one morsel regardless of output size:
+Streams the join result directly to a Parquet file. Each probe morsel is processed and written before the next one begins, preventing accumulation of the complete join result. Memory use for an individual morsel still depends on join fan-out: a morsel that produces many matches can produce a large result batch.
 
 ```python
 sf.lazy().polygon_knn_join(trips, "lon", "lat", k=5).sink_parquet("result.parquet")
@@ -39,7 +39,7 @@ sf.lazy().polygon_knn_join(trips, "lon", "lat", k=5).sink_parquet("result.parque
 
 ## lazy_source()
 
-Exposes the join result as a native Polars `LazyFrame` source. This lets you fuse spatial join output with downstream Polars operations (sorts, sinks, further filters) into a single spilling pipeline:
+`lazy_source()` exposes the spatial result through Polars' Python IO-source interface and returns a `pl.LazyFrame`. This allows downstream Polars operations to consume PyCanopy's morsel stream and enables projection, predicate, and row-limit pushdown into the source:
 
 ```python
 (
@@ -52,8 +52,8 @@ Exposes the join result as a native Polars `LazyFrame` source. This lets you fus
 )
 ```
 
-Polars handles spilling to disk for the sort if the result exceeds memory, so the entire pipeline (join, select, sort, write) never requires the full result to be in RAM at once.
+Downstream operations such as sorting are managed by Polars and may stream or spill depending on the Polars version, execution engine, and configuration. Memory use is therefore not guaranteed to remain at one morsel.
 
 ## Aggregate-join streaming
 
-`.group_by(keys).agg(...)` reduces over the morsel stream using associative partial aggregations. Each morsel produces per-group partials (counts, sums, etc.) that are combined across morsels at the end. The full pair frame never materialises. Only the per-group accumulators are held in memory, bounded by the number of unique groups rather than the number of join pairs.
+`.group_by(keys).agg(...)` reduces over the morsel stream using associative partial aggregations. Each morsel produces per-group partials (counts, sums, etc.) that are combined across morsels at the end. The full pair frame never materializes. Only the per-group accumulators are held in memory, bounded by the number of unique groups rather than the number of join pairs.

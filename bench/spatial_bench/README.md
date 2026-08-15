@@ -10,11 +10,11 @@ in that repository, measured on the same hardware.
 **Hardware:** Ephemeral **m7i.2xlarge** (8 vCPU, 32 GB RAM, `us-west-2`) launched for each run,
 matching the published baseline hardware exactly.
 
-**Cold S3 reads:** Data is read directly from the public SpatialBench S3 bucket inside the timed
-window. Each query subprocess starts with a cold page cache.
+**Timed S3 reads:** Data is read directly from the public SpatialBench S3 bucket inside the timed
+window and is not staged locally.
 
-**Process isolation:** Each query runs in a fresh Python subprocess (`_runner.py`) so no state,
-cached data, or compiled code leaks between queries.
+**Process isolation:** Each query runs in a fresh Python subprocess (`_runner.py`), so Python
+objects, spatial indexes, and in-process caches are not reused between queries.
 
 **Repetitions:** Each query runs `--n` times (default 3) in separate subprocesses. The reported
 time is the average. Each subprocess has a 1200-second timeout matching the published baseline.
@@ -51,8 +51,7 @@ The EC2 instance uses an instance role (no keys injected). The role needs:
 - `s3:GetObject` on the SpatialBench data bucket
 - `s3:PutObject` / `s3:GetObject` on the results bucket specified in `config.yaml`
 
-See `config.yaml` for bucket names and the `spatial_bench/README.md` IAM section for the full
-policy.
+The local launcher also needs SSM read, EC2 lifecycle, `iam:PassRole`, and results-bucket read permissions.
 
 ## Directory layout
 

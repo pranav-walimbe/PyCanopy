@@ -16,7 +16,7 @@
 ---
 
 > [!NOTE]
-> Highly competitive on [Apache SpatialBench](https://github.com/apache/sedona-spatialbench) (single node spatial query benchmark): fastest on 11/24 testcases, within 5% of winning on 14/24 testcases
+> Highly competitive on [Apache SpatialBench](https://github.com/apache/sedona-spatialbench) (single-node spatial query benchmark): fastest on 11/24 testcases including one tie, within 5% of the fastest time on 14/24 testcases
 
 <p align="center">
   <img src="assets/spatialbench_sf1_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1" width="100%"/>
@@ -47,15 +47,13 @@ result = sf.lazy().filter(pl.col("population") > 100_000).range_query(-10.0, 35.
 
 The driving motivator behind creating this library was to provide the optimizations of relational DBs (query planning, indexing, etc) in a fast, Polars-like interface meant for in-memory spatial work.
 
-Edit [June 19 2026]: Apache SedonaDB released a cool Python DataFrame API. There are similarities between their API and this tool but some key differences are that this library uses (1) a Polars-native query engine and (2) a cost model that decides whether and how to index.
-
-
-|  | PyCanopy | GeoPandas | DuckDB | SedonaDB | Spatial Polars |
-|:--|:--------:|:---------:|:------:|:--------:|:--------------:|
-| Polars-native API                               | ✓ | ✗ | ✗ | ✗ | ✓ |
-| Spatial query planner (reorder, pushdown, etc)  | ✓ | ✗ | ✓ | ✓ | ✗ |
-| Index vs scan decided by cost model             | ✓ | ✗ | ✗ | ✗ | ✗ |
-| Dynamic index selection                         | ✓ | ✗ | ✗ | ✗ | ✗ |
+| Capability | PyCanopy | GeoPandas | DuckDB | SedonaDB | Spatial Polars |
+|:--|:--:|:--:|:--:|:--:|:--:|
+| Uses Polars DataFrames directly | ✓ | ✗ | ✗ | ✗ | ✓ |
+| Spatial-aware query planning | ✓ | ✗ | ✓ | ✓ | ✗ |
+| Automatically accelerates spatial joins with an index | ✓ | ✓ | ✓ | ✓ | ✗ |
+| Explicit cost-based choice between scanning and building an index | ✓ | ✗ | ✗ | ✗ | ✗ |
+| Selects among multiple spatial index types by workload | ✓ | ✗ | ✗ | ✗ | ✗ |
 
 ---
 
@@ -77,7 +75,7 @@ print(lf.explain())
 #     DF [N=100,000; path: EXPR]
 ```
 
-The optimizer moved the scalar filter below the range query. It runs first on all rows, then the spatial index is probed on the smaller survivor set.
+The optimizer runs the scalar filter first. On the EXPR path, the surviving original row indices are passed to Rust, which returns a spatial Boolean mask over those candidates.
 
 ### kNN join
 
@@ -102,7 +100,7 @@ stats = (
 )
 ```
 
-The full pair frame is never materialised. Each probe morsel folds into per-group partials and combines at the end.
+The full pair frame is never materialized. Each probe morsel folds into per-group partials and combines at the end.
 
 ### Polygon intersects self-join
 
@@ -118,7 +116,7 @@ overlaps = sf.intersects_pairs(key_col="id")
 Returns all intersecting polygon pairs with overlap area and IoU. `key_col` replaces positional indices with values from that column.
 
 > [!NOTE]
-> For the full operation catalogue, index modes, streaming joins, and API reference see the **[docs site](https://pranav-walimbe.github.io/PyCanopy)**.
+> For the full operation catalog, index modes, streaming joins, and API reference see the **[docs site](https://pranav-walimbe.github.io/PyCanopy)**.
 
 ---
 
@@ -128,7 +126,7 @@ Returns all intersecting polygon pairs with overlap area and IoU. `key_col` repl
 
 Run on a single `m7i.2xlarge` (8 vCPU, 32 GB), the same hardware used by [Apache SpatialBench](https://github.com/apache/sedona-spatialbench). PyCanopy is measured live with `index_mode="auto"`. Results were produced using the benchmark harness in `bench/spatial_bench`.
 
-PyCanopy wins a total of 11/24 testcases and lands within 5% of winning 14/24 testcases (there is some variance among benchmark runs).
+PyCanopy is fastest on 11/24 testcases, including one tie, and lands within 5% of the fastest time on 14/24 testcases (there is some variance among benchmark runs).
 
 **SF1** (~6M trips)
 
@@ -144,54 +142,7 @@ PyCanopy wins a total of 11/24 testcases and lands within 5% of winning 14/24 te
 </p>
 <p align="center"><sub>Apache SpatialBench SF10 · lower is better · linear axis, bars past the cap truncated with their value · TIMEOUT / ERROR annotated</sub></p>
 
-All times in seconds. **Bold** = fastest on that query. SedonaDB, DuckDB, and GeoPandas baselines from published SpatialBench results.
-
-<table>
-<tr>
-<td valign="top">
-
-**SF1**
-
-<table>
-<tr><th>Query</th><th>PyCanopy</th><th>SedonaDB</th><th>DuckDB</th><th>GeoPandas</th></tr>
-<tr><td>q1</td><td>1.39</td><td><b>0.66</b></td><td>0.96</td><td>12.78</td></tr>
-<tr><td>q2</td><td><b>3.74</b></td><td>8.07</td><td>9.95</td><td>20.74</td></tr>
-<tr><td>q3</td><td>1.23</td><td><b>0.80</b></td><td>1.17</td><td>13.59</td></tr>
-<tr><td>q4</td><td><b>7.44</b></td><td>8.41</td><td>9.83</td><td>25.24</td></tr>
-<tr><td>q5</td><td><b>1.71</b></td><td>5.10</td><td>1.80</td><td>47.08</td></tr>
-<tr><td>q6</td><td><b>5.51</b></td><td>8.59</td><td>9.36</td><td>24.43</td></tr>
-<tr><td>q7</td><td>2.15</td><td><b>1.66</b></td><td>1.82</td><td>137.00</td></tr>
-<tr><td>q8</td><td><b>1.04</b></td><td>1.10</td><td>1.08</td><td>16.08</td></tr>
-<tr><td>q9</td><td><b>0.23</b></td><td>0.23</td><td>50.15</td><td>0.28</td></tr>
-<tr><td>q10</td><td><b>8.65</b></td><td>18.79</td><td>207.84</td><td>46.13</td></tr>
-<tr><td>q11</td><td><b>9.90</b></td><td>32.98</td><td>TIMEOUT</td><td>51.01</td></tr>
-<tr><td>q12</td><td>14.86</td><td><b>14.55</b></td><td>ERROR</td><td>TIMEOUT</td></tr>
-</table>
-
-</td>
-<td valign="top">
-
-**SF10**
-
-<table>
-<tr><th>Query</th><th>PyCanopy</th><th>SedonaDB</th><th>DuckDB</th><th>GeoPandas</th></tr>
-<tr><td>q1</td><td>8.52</td><td><b>3.04</b></td><td>4.58</td><td>ERROR</td></tr>
-<tr><td>q2</td><td>9.39</td><td>8.89</td><td><b>8.26</b></td><td>ERROR</td></tr>
-<tr><td>q3</td><td>6.88</td><td><b>4.09</b></td><td>5.17</td><td>TIMEOUT</td></tr>
-<tr><td>q4</td><td>17.34</td><td><b>7.52</b></td><td>8.51</td><td>ERROR</td></tr>
-<tr><td>q5</td><td>14.60</td><td>50.81</td><td><b>14.40</b></td><td>ERROR</td></tr>
-<tr><td>q6</td><td>11.07</td><td><b>9.11</b></td><td>10.67</td><td>ERROR</td></tr>
-<tr><td>q7</td><td>22.73</td><td>14.44</td><td><b>14.03</b></td><td>ERROR</td></tr>
-<tr><td>q8</td><td>7.30</td><td><b>7.24</b></td><td>7.57</td><td>TIMEOUT</td></tr>
-<tr><td>q9</td><td><b>0.34</b></td><td>0.38</td><td>942.98</td><td>0.49</td></tr>
-<tr><td>q10</td><td><b>27.26</b></td><td>42.02</td><td>ERROR</td><td>ERROR</td></tr>
-<tr><td>q11</td><td><b>37.21</b></td><td>97.52</td><td>ERROR</td><td>ERROR</td></tr>
-<tr><td>q12</td><td>175.31</td><td><b>145.66</b></td><td>ERROR</td><td>TIMEOUT</td></tr>
-</table>
-
-</td>
-</tr>
-</table>
+SedonaDB, DuckDB, and GeoPandas baselines come from published SpatialBench results. See the [full per-query results and methodology](https://pranav-walimbe.github.io/PyCanopy/benchmarks/).
 
 ---
 
@@ -209,8 +160,8 @@ flowchart LR
 ### Logical planning
 
 - **Predicate pushdown:** scalar filters run first, reducing rows before any spatial work.
-- **Fusion:** consecutive range/contains predicates get interleaved into a single Rust call.
-- **Join side:** indexes on the side that makes the join most efficient.
+- **Fusion:** eligible consecutive range and contains predicates are combined into a single Rust call.
+- **Join side:** within and within-distance joins may be flipped based on the relative input sizes.
 - **Projection pushdown:** a terminal `.select()` narrows both join sides before the gather.
 - **IO path:** low-selectivity queries return results as a direct slice, bypassing the Polars expression pipeline.
 - **EXPR path:** runs the spatial engine as a Polars `map_batches` expression over the query set.
@@ -219,7 +170,7 @@ flowchart LR
 
 `index_mode` determines how we use the cost model:
 
-| Mode | Behaviour |
+| Mode | Behavior |
 |:-----|:----------|
 | `auto` (default) | build index when cost model allows it |
 | `eager` | always build the selected index type, skip the cost check |
@@ -290,11 +241,11 @@ flowchart TD
     E -- no --> KD[KD-tree]
 ```
 
-All index types share the same coordinate arrays with no duplication.
+Index implementations reuse the engine's coordinate buffers where applicable. KD-tree, grid, and point brute-force indexes share the same reference-counted arrays rather than copying coordinate data.
 
 ### Why Rust
 
-The hot paths need packed immutable index structures, zero-copy array slices at the Python boundary, and loop-level parallelism. C++ would require a separate FFI layer and would lose the native Polars plugin integration that PyO3/Maturin provides for free.
+The hot paths benefit from packed immutable index structures, parallel loops, and efficient access to contiguous NumPy buffers. PyO3 and Maturin provide direct Python bindings and cross-platform extension packaging.
 
 ---
 
