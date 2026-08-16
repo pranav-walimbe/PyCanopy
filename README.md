@@ -149,104 +149,31 @@ SedonaDB, DuckDB, and GeoPandas baselines come from published SpatialBench resul
 
 ## How It Works
 
-The engine has dedicated components for query planning / execution and ultimately returns a Polars DataFrame.
+### Spatial-aware Logical Planning
 
-### Query flow
+- **Predicate pushdown:** moves compatible scalar filters ahead of spatial predicates
+- **Filter fusion:** combines eligible range and contains predicates in a single Rust call
+- **Projection pushdown:** narrows join inputs before gathering rows
+- **Join orientation:** flips supported joins based on relative input sizes
 
-```mermaid
-flowchart LR
-    A[User chain] --> B[SpatialOptimizer] --> C[SpatialExecutor] --> F[pl.DataFrame]
-```
+### Physical Planning
 
-### Logical planning
+- **IO path:** directly queries the spatial index and slices source rows for selective predicates
+- **EXPR path:** applies scalar filters in Polars before evaluating broader spatial predicates in Rust
+- **Morsel streaming:** processes large query-side joins in batches for incremental collection, lazy pipelines, or direct Parquet sinks
+- **Streaming aggregation:** aggregates each join batch as it is produced, avoiding materialization of the complete join result
 
-- **Predicate pushdown:** scalar filters run first, reducing rows before any spatial work.
-- **Fusion:** eligible consecutive range and contains predicates are combined into a single Rust call.
-- **Join side:** within and within-distance joins may be flipped based on the relative input sizes.
-- **Projection pushdown:** a terminal `.select()` narrows both join sides before the gather.
-- **IO path:** low-selectivity queries return results as a direct slice, bypassing the Polars expression pipeline.
-- **EXPR path:** runs the spatial engine as a Polars `map_batches` expression over the query set.
+### Automatic Indexing
 
-### Cost model
-
-`index_mode` determines how we use the cost model:
-
-| Mode | Behavior |
-|:-----|:----------|
-| `auto` (default) | build index when cost model allows it |
-| `eager` | always build the selected index type, skip the cost check |
-| `none` | always scan |
-
-When `index_mode="auto"`, the planner picks the minimum-cost option ($Q$ queries, $N$ items):
-
-$$
-\text{winner} = \arg\min \begin{cases}
-\text{Cost}_{\text{probe}}(\text{built index}) & \text{build already paid} \\
-\text{Cost}_{\text{build}} + \text{Cost}_{\text{probe}}(\text{best new index}) \\
-\text{Cost}_{\text{probe}}(\text{brute force})
-\end{cases}
-$$
-
-<br>
-
-**Selectivity** (fraction of the dataset expected to match):
-
-$$
-\text{sel} = \begin{cases}
-\text{hist}(\text{bbox}) / N & \text{range (32×32 density histogram)} \\
-k / N & \text{kNN} \\
-1 / N & \text{contains}
-\end{cases}
-$$
-
-<br>
-
-**Probe cost** ($Q$ warm queries against a built index):
-
-$$
-\text{Cost}_{\text{probe}} = Q \times \begin{cases}
-N \cdot c_{\text{scan}} & \text{brute force} \\
-(\log_2 N + \text{sel} \cdot N) \cdot c_{\text{tree}} & \text{KD-tree or R-tree} \\
-\text{sel} \cdot N \cdot c_{\text{grid}} & \text{grid}
-\end{cases}
-$$
-
-<br>
-
-**Build cost** (paid once):
-
-$$
-\text{Cost}_{\text{build}} = \begin{cases}
-0 & \text{brute force} \\
-N \cdot c_{\text{build}} & \text{grid} \\
-N \log_2 N \cdot c_{\text{build}} & \text{KD-tree or R-tree}
-\end{cases}
-$$
-
-The empirical constants ($c_{\text{scan}}$, $c_{\text{tree}}$, $c_{\text{grid}}$, $c_{\text{build}}$) are calibrated from benchmark runs in `bench/ops`.
-
-### Index selection
-
-`select_index` is a rule-based pre-filter that picks a candidate index type:
-
-```mermaid
-flowchart TD
-    A[Query arrives] --> B{N < 500\nor sel > 50%?}
-    B -- yes --> BF[Brute force]
-    B -- no --> C{kNN with\nk/N > 10%?}
-    C -- yes --> BF
-    C -- no --> D{Polygon\ndataset?}
-    D -- yes --> RT[R-tree]
-    D -- no --> E{Range query\nand uniform?}
-    E -- yes --> GR[Grid]
-    E -- no --> KD[KD-tree]
-```
-
-Index implementations reuse the engine's coordinate buffers where applicable. KD-tree, grid, and point brute-force indexes share the same reference-counted arrays rather than copying coordinate data.
+- Tracks dataset extent, spatial distribution, and density to estimate query selectivity
+- Uses a cost model to compare brute-force scanning, reusing an existing index, and building and probing a new index
+- Selects among grid, KD-tree, and R-tree indexes based on the query and workload
 
 ### Why Rust
 
 The hot paths benefit from packed immutable index structures, parallel loops, and efficient access to contiguous NumPy buffers. PyO3 and Maturin provide direct Python bindings and cross-platform extension packaging.
+
+For a detailed overview of PyCanopy's design, see the [How It Works documentation](https://pranav-walimbe.github.io/PyCanopy/how-it-works/query-planner/).
 
 ---
 
