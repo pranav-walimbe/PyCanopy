@@ -60,7 +60,7 @@ The driving motivator behind creating this library was to provide the optimizati
 
 ## Example Operations
 
-### Inspecting the query plan
+### Optimized range query
 
 ```python
 lf = (
@@ -88,33 +88,26 @@ result = sf.lazy().knn_join(query_df, x_col="qx", y_col="qy", k=3).collect()
 
 For each row in `query_df`, returns the 3 nearest rows in the `SpatialFrame`. Large probes are streamed in morsels automatically.
 
-### Proximity join with aggregation
+### Point-in-polygon join with aggregation
 
 ```python
 import pycanopy as pc
 
+zones = SpatialFrame.from_wkb_polygons(
+    pl.read_parquet("zones.parquet"),
+    geometry_col="geometry",
+)
+trips = pl.read_parquet("trips.parquet")
+
 stats = (
-    sf.lazy()
-    .within_distance_join(landmarks, x_col="lon", y_col="lat", distance=0.5)
-    .group_by(["landmark"])
-    .agg(count=pc.agg.count(), avg_fare=pc.agg.mean("fare"))
+    zones.lazy()
+    .within_join(trips, x_col="lon", y_col="lat")
+    .group_by(["zone_id"])
+    .agg(trip_count=pc.agg.count(), avg_fare=pc.agg.mean("fare"))
 )
 ```
 
-The full pair frame is never materialized. Each probe morsel folds into per-group partials and combines at the end.
-
-### Polygon intersects self-join
-
-```python
-from shapely.geometry import box
-
-polygons = [box(i, 0, i + 1.5, 1.0) for i in range(10_000)]
-sf = SpatialFrame.from_polygons(pl.DataFrame({"id": range(10_000), "geom": polygons}), geometry_col="geom")
-
-overlaps = sf.intersects_pairs(key_col="id")
-```
-
-Returns all intersecting polygon pairs with overlap area and IoU. `key_col` replaces positional indices with values from that column.
+Each query-side batch is joined and aggregated before the next begins, so the complete pair frame is never materialized.
 
 > [!NOTE]
 > For the full operation catalog, index modes, streaming joins, and API reference see the **[docs site](https://pranav-walimbe.github.io/PyCanopy)**.

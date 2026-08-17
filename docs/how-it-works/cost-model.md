@@ -2,28 +2,30 @@
 
 ## Index types
 
-PyCanopy provides four spatial access implementations. KD-tree, grid, and point brute-force indexes share the engine's coordinate buffers, while the R-tree builds a separate packed bounding-box representation for polygon and MBR queries.
+PyCanopy chooses among four spatial access paths:
 
 | Index | Best for |
 |:------|:---------|
-| KD-tree | Point kNN, point containment queries |
-| R-tree | Polygon datasets, MBR range queries |
-| Grid | Range queries on uniformly distributed points |
-| Brute force | Small datasets (N < 500) or high-selectivity queries |
+| KD-tree | Point kNN and range queries over clustered point data |
+| R-tree | Polygon queries and bounding-box searches |
+| Grid | Range and distance queries over uniformly distributed points |
+| Brute force | Small datasets or queries expected to scan or return much of the dataset |
 
 ## Index mode
 
-`index_mode` is configured when a `SpatialFrame` is constructed and controls how spatial indexes are used. Advanced users can change the mode later through `sf.engine.set_index_mode(...)`.
+`index_mode` is set on `SpatialFrame` construction and can later be changed through
+`sf.engine.set_index_mode(...)`.
 
 | Mode | Behavior |
 |:-----|:----------|
 | `auto` (default) | Build index only when the cost model says it beats a scan |
-| `eager` | Always build the selected index type, skip the cost check |
+| `eager` | Use the rule-selected access path without comparing its estimated cost with a scan |
 | `none` | Always scan brute-force |
 
-## Rule-based pre-filter
+## Candidate index selection
 
-Before the cost gate, `select_index` applies a rule-based pre-filter to pick a candidate index type:
+When the engine considers building a new index, `select_index` applies these rules to pick
+the candidate type:
 
 ```mermaid
 flowchart TD
@@ -38,15 +40,19 @@ flowchart TD
     E -- no --> KD[KD-tree]
 ```
 
-Point-distribution uniformity is classified separately from selectivity estimation. The engine divides the coordinate extent into a grid, measures the coefficient of variation of cell counts, and classifies distributions above the configured threshold as clustered. The fixed 32×32 density histogram is used to estimate range-query selectivity.
+Point distribution is classified from variation in grid-cell counts. A separate 32×32
+histogram estimates range selectivity; polygon histograms count exterior-ring centroids.
+
+In `auto` mode, cached indexes are also candidates and their build cost is already paid.
 
 ## Cost gate
 
-When `index_mode="auto"`, the planner computes three costs and picks the minimum ($Q$ = probe count, $N$ = dataset size):
+When `index_mode="auto"`, the planner compares the applicable costs and picks the minimum
+($Q$ = probe count, $N$ = dataset size):
 
 $$
 \text{winner} = \arg\min \begin{cases}
-\text{Cost}_{\text{probe}}(\text{built index}) & \text{build already paid} \\
+\text{Cost}_{\text{probe}}(\text{each built index}) & \text{build already paid} \\
 \text{Cost}_{\text{build}} + \text{Cost}_{\text{probe}}(\text{best new index}) \\
 \text{Cost}_{\text{probe}}(\text{brute force})
 \end{cases}
@@ -72,7 +78,7 @@ N \cdot c_{\text{scan}} & \text{brute force} \\
 \end{cases}
 $$
 
-**Build cost** (paid once, amortized over $Q$ queries):
+**Build cost** (paid once and compared with the probe cost for all $Q$ queries):
 
 $$
 \text{Cost}_{\text{build}} = \begin{cases}
@@ -84,7 +90,8 @@ $$
 
 ## Calibration
 
-The empirical constants ($c_{\text{scan}}$, $c_{\text{tree}}$, $c_{\text{grid}}$, $c_{\text{build}}$) live in `src/planner/calibration.rs` and are derived by running the ops benchmark suite:
+The formulas above use generic names for readability. The operation-specific constants in
+`src/planner/calibration.rs` can be recalibrated with:
 
 ```bash
 uv run python -m bench.ops
@@ -93,4 +100,5 @@ uv run python -m bench.ops
 uv run python -m bench.ops --runs 5 --seed 42
 ```
 
-The suite runs fixed sweeps across point and polygon dataset sizes. For each measurement, it divides elapsed time by the corresponding workload term and takes the median normalized ratio across sizes. Run it against a release build when recalibrating the constants for target hardware.
+The suite normalizes timings across point and polygon dataset sizes and reports the median
+ratio. Use a release build when calibrating for target hardware.

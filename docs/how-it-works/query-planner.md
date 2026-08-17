@@ -1,43 +1,49 @@
-# Query Planner
+# Query Planning
 
-PyCanopy separates declaration from execution. You chain filter operations on a `SpatialLazyFrame`, and the `SpatialOptimizer` may reorder compatible operations before execution. kNN and join operations act as barriers, and projection pushdown applies to a terminal `.select()`.
+Operations on a `SpatialLazyFrame` build an immutable plan. At collection time, the
+`SpatialOptimizer` rewrites the plan and selects an execution path for the
+`SpatialExecutor`.
 
-```mermaid
-flowchart LR
-    A[User chain] --> B[SpatialOptimizer] --> C[SpatialExecutor] --> D[pl.DataFrame]
-```
+## Optimization features
 
-## Optimizer passes
+### Selectivity and cost estimation
 
-The optimizer runs a fixed sequence of passes over the plan:
+Spatial-filter selectivity is estimated from the dataset extent and query shape. Scalar
+Polars filters receive heuristic costs based on expression structure, not column
+statistics. These estimates guide ordering and execution-path selection.
 
-**1. Selectivity estimation**
+### Predicate pushdown and ordering
 
-Spatial predicates receive estimated selectivities based on dataset extent or simple output ratios. Scalar Polars filters receive heuristic execution costs derived from their expression structure; PyCanopy does not currently estimate their selectivity from column statistics.
+Within a reorderable section, scalar filters run before spatial filters. Scalars are
+ordered by estimated expression cost and spatial filters by selectivity. kNN operations
+and joins are barriers; filters do not move across them.
 
-**2. Predicate pushdown**
+### Filter fusion
 
-Scalar `filter()` nodes are moved ahead of compatible spatial predicates. On the EXPR path, this reduces the candidate row indices passed into the spatial masking step.
+On datasets with at least 500 rows, eligible `range_query` and `contains` filters may be
+combined. Rust queries each predicate and intersects their sorted result indices. Filters
+estimated to retain less than 5% of rows remain separate.
 
-**3. Cost-sort**
+### Join orientation
 
-Spatial predicates are reordered by ascending estimated output size. Cheaper, more selective predicates run earlier. kNN and join nodes act as barriers. No reordering crosses them.
+`within_join` and `within_distance_join` may reverse the indexed and probe sides based on
+their relative sizes. Other joins retain their declared orientation.
 
-**4. Filter fusion**
+### Projection pushdown
 
-On datasets with at least 500 rows, consecutive eligible `range_query` and `contains` predicates may be fused into one Rust call. Predicates estimated to retain less than 5% of rows are executed separately. Each fused predicate is still queried separately against the index, then the hit lists are intersected in Rust via a sorted merge.
+A terminal `.select(...)` is pushed into spatial joins. Each side is narrowed before rows
+are gathered, while preserving columns required by post-join filters.
 
-**5. Join side selection**
+## Execution-path selection
 
-For `within_join` and `within_distance_join`, the optimizer may flip the join when the query side contains more than half as many rows as the indexed dataset. Other join types retain their declared orientation.
+After rewriting the plan, PyCanopy selects one execution path for the query:
 
-**6. Projection pushdown**
+- **IO path:** For sufficiently selective `range_query`, `contains`, or fused spatial
+  filters, the executor queries the spatial engine directly and slices the source
+  DataFrame using the returned row indices.
+- **EXPR path:** For broader filters, scalar Polars expressions run first and the spatial
+  operation evaluates the surviving original row indices through Polars' `map_batches`
+  API. kNN and spatial join plans also use this path.
 
-A terminal `.select(cols)` remains the final operation, and its required columns are propagated into join nodes as `keep_columns`. Each join side is narrowed before gathering rows, avoiding construction of an unnecessary full-width joined frame.
-
-## IO vs EXPR path selection
-
-The optimizer chooses one execution path for the complete plan. Plans containing kNN or join operations use EXPR. For filter-only plans, a sufficiently selective range, contains, or fused spatial predicate selects IO; otherwise the plan uses EXPR:
-
-- **IO path**: used when selectivity is low (few results expected). The index is queried directly and the result is returned as a slice of the DataFrame. No Polars expression pipeline is involved.
-- **EXPR path**: used when selectivity is high. The spatial closure runs as a Polars `map_batches` plugin, processing the DataFrame in batches. Scalar filters run first inside the batch, then the spatial query runs on the surviving rows.
+This chooses how the plan interacts with Polars. The Rust cost model separately chooses
+whether to scan, reuse an index, or build a new one.
