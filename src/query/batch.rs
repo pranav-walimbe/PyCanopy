@@ -937,7 +937,9 @@ mod tests {
         );
         for qi in 0..qxs.len() {
             let mut got: Vec<u64> = flat
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .filter(|p| p[0] == qi as u64)
                 .map(|p| p[1])
                 .collect();
@@ -985,7 +987,7 @@ mod tests {
             distance,
             DistanceMetric::Haversine,
         );
-        let mut got: Vec<u64> = single.chunks_exact(2).map(|p| p[1]).collect();
+        let mut got: Vec<u64> = single.as_chunks::<2>().0.iter().map(|p| p[1]).collect();
         got.sort_unstable();
         assert_eq!(got, brute_haversine(&xs, &ys, qx, qy, distance));
     }

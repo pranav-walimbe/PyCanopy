@@ -6,7 +6,9 @@
 /// logical pairs are sorted and deduplicated so each intersecting polygon pair appears once.
 pub fn dedup_self_pairs(pairs: Vec<u64>, part_poly: &[u32]) -> Vec<u64> {
     let mut logical: Vec<(u32, u32)> = pairs
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .filter_map(|c| {
             let (a, b) = (part_poly[c[0] as usize], part_poly[c[1] as usize]);
             (a != b).then_some((a.min(b), a.max(b)))
