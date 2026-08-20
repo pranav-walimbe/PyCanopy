@@ -14,7 +14,7 @@ const TILE_GRID: usize = 16;
 type TileResults = Vec<Vec<(u32, Vec<(u64, f64)>)>>;
 
 use crate::index::kdtree::PackedKdTree;
-use crate::index::SpatialIndex;
+use crate::index::{point_box_dist2, SpatialIndex};
 use crate::query::geodesy::{conservative_degree_box, haversine_distance_m, DistanceMetric};
 use crate::query::geometry::point_to_polygon_distance;
 use crate::query::prepared::PreparedPolygons;
@@ -384,89 +384,104 @@ fn part_mbrs(xs: &[f64], ys: &[f64], ring_offsets: &[i64], poly_offsets: &[i64])
     out
 }
 
+/// Logical polygon owning a part, the identity when the dataset has no multi-part mapping
 #[inline]
-fn point_box_dist2(px: f64, py: f64, b: &[f64; 4]) -> f64 {
-    // Squared distance from a point to an axis-aligned box, zero when the point is inside
-    let dx = (b[0] - px).max(0.0).max(px - b[2]);
-    let dy = (b[1] - py).max(0.0).max(py - b[3]);
-    dx * dx + dy * dy
+fn logical_poly(part_poly: Option<&[u32]>, ei: usize) -> u64 {
+    match part_poly {
+        Some(pp) => pp[ei] as u64,
+        None => ei as u64,
+    }
 }
 
-/// k nearest single-part polygons for one query, refining candidates nearest-MBR-first and
-/// pruning the per-edge scan once k exact hits bound the search. Padded with `(u64::MAX, inf)`.
+/// Insert one polygon into a distance-ascending top-k list, holding the nearest part per polygon.
+///
+/// Candidates arrive in lower-bound order rather than exact order, so a later part of a polygon
+/// already held can still be the nearer one and has to displace the entry that is there.
+fn insert_nearest(kept: &mut Vec<(u64, f64)>, pid: u64, d: f64, k: usize) {
+    match kept.iter().position(|c| c.0 == pid) {
+        Some(pos) if kept[pos].1 <= d => return,
+        Some(pos) => {
+            kept.remove(pos);
+        }
+        None if kept.len() == k && d >= kept[k - 1].1 => return,
+        None => {}
+    }
+    let pos = kept.partition_point(|c| c.1 <= d);
+    kept.insert(pos, (pid, d));
+    if kept.len() > k {
+        kept.pop();
+    }
+}
+
+/// The k nearest polygons to one query by exact point-to-polygon distance, in two phases.
+///
+/// A seed pass refines the MBR-nearest parts, which bounds the true kth distance from above.
+/// That bound then defines a box holding every part that can still qualify, since a part whose
+/// MBR is further than the bound cannot have a nearer boundary. The sweep over that box refines
+/// nearest-MBR-first and stops once the next lower bound cannot beat the kth exact distance held,
+/// so the result is exact for holes, concavity, and MultiPolygons alike. Fixed oversampling
+/// cannot make that guarantee: any cutoff can drop a polygon whose MBR ranks poorly.
+///
+/// The sweep re-refines the seed's own parts, which costs k distances and saves tracking which
+/// parts were already seen. Padded with `(u64::MAX, inf)` when fewer than k polygons exist.
 #[allow(clippy::too_many_arguments)]
-fn knn_polys_pruned<I: SpatialIndex>(
+fn knn_polys_exact<I: SpatialIndex>(
     index: &I,
     qx: f64,
     qy: f64,
-    fetch: usize,
     k: usize,
     xs: &[f64],
     ys: &[f64],
     ring_offsets: &[i64],
     poly_offsets: &[i64],
     bbox: &[[f64; 4]],
+    part_poly: Option<&[u32]>,
+    n_parts: usize,
 ) -> Vec<(u64, f64)> {
-    // Order candidates by MBR lower bound
+    let mut kept: Vec<(u64, f64)> = Vec::with_capacity(k + 1);
+    // Seed pass. One fetch of k parts covers k polygons unless parts share a logical polygon,
+    // so grow the fetch until it does or until every part has been seen.
+    let mut fetch = k;
+    loop {
+        kept.clear();
+        for ei in index.nearest(qx, qy, fetch) {
+            let d = point_to_polygon_distance(qx, qy, xs, ys, ring_offsets, poly_offsets, ei);
+            insert_nearest(&mut kept, logical_poly(part_poly, ei), d, k);
+        }
+        if kept.len() == k || fetch >= n_parts {
+            break;
+        }
+        fetch = fetch.saturating_mul(2).min(n_parts);
+    }
+    if kept.len() < k {
+        // The seed swept every part, so the dataset holds fewer than k polygons
+        kept.resize(k, (u64::MAX, f64::INFINITY));
+        return kept;
+    }
+
+    // Sweep pass over every part the seed bound admits, nearest MBR first. The seed's k stay in
+    // `kept` as the working bound, so the sweep can only tighten the answer, never lose it to a
+    // rounding edge where a convex polygon's exact distance and its MBR bound differ by an ulp.
+    let radius = kept[k - 1].1;
+    let mut kth_sq = radius * radius;
     let mut cands: Vec<(usize, f64)> = index
-        .nearest(qx, qy, fetch)
+        .range(qx - radius, qy - radius, qx + radius, qy + radius)
         .into_iter()
         .map(|ei| (ei, point_box_dist2(qx, qy, &bbox[ei])))
         .collect();
     cands.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
 
-    let mut kept: Vec<(u64, f64)> = Vec::with_capacity(k + 1);
-    let mut kth_sq = f64::INFINITY;
     for (ei, lb_sq) in cands {
-        if kept.len() == k && lb_sq >= kth_sq {
+        // Candidates arrive nearest-MBR-first, so once a lower bound cannot beat the kth exact
+        // distance held, nothing after it can either.
+        if lb_sq >= kth_sq {
             break;
         }
         let d = point_to_polygon_distance(qx, qy, xs, ys, ring_offsets, poly_offsets, ei);
-        let pos = kept.partition_point(|c| c.1 <= d);
-        kept.insert(pos, (ei as u64, d));
-        if kept.len() > k {
-            kept.pop();
-        }
-        if kept.len() == k {
-            kth_sq = kept[k - 1].1 * kept[k - 1].1;
-        }
+        insert_nearest(&mut kept, logical_poly(part_poly, ei), d, k);
+        kth_sq = kept[k - 1].1 * kept[k - 1].1;
     }
-    kept.resize(k, (u64::MAX, f64::INFINITY));
     kept
-}
-
-/// k nearest multi-part polygons for one query, reducing each polygon's parts to its nearest
-/// part before ranking. Exhaustive: with the part mapping the k-th distance is not a safe bound.
-#[allow(clippy::too_many_arguments)]
-fn knn_polys_multipart<I: SpatialIndex>(
-    index: &I,
-    qx: f64,
-    qy: f64,
-    fetch: usize,
-    k: usize,
-    xs: &[f64],
-    ys: &[f64],
-    ring_offsets: &[i64],
-    poly_offsets: &[i64],
-    part_poly: &[u32],
-) -> Vec<(u64, f64)> {
-    let mut cands: Vec<(u64, f64)> = index
-        .nearest(qx, qy, fetch)
-        .into_iter()
-        .map(|ei| {
-            let d = point_to_polygon_distance(qx, qy, xs, ys, ring_offsets, poly_offsets, ei);
-            (part_poly[ei] as u64, d)
-        })
-        .collect();
-    cands.sort_unstable_by(|a, b| {
-        a.0.cmp(&b.0)
-            .then(a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal))
-    });
-    cands.dedup_by_key(|c| c.0);
-    cands.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
-    cands.truncate(k);
-    cands.resize(k, (u64::MAX, f64::INFINITY));
-    cands
 }
 
 /// Interleave two 16-bit coordinates into a 32-bit Morton (Z-order) code
@@ -524,9 +539,9 @@ fn morton_order(qxs: &[f64], qys: &[f64]) -> Vec<u32> {
 }
 
 /// For each query point, the k nearest Engine polygons by exact point-to-polygon distance.
-/// The MBR index over-samples candidates because MBR-nearest only approximates polygon
-/// distance. The candidates are then refined exactly. (indices, distances) in n_queries*k
-/// blocks. Short blocks padded with MAX and inf.
+/// The MBR index only orders candidates by a lower bound, so `knn_polys_exact` refines them
+/// and keeps widening until the bound proves no polygon was missed. (indices, distances) in
+/// n_queries*k blocks. Short blocks padded with MAX and inf.
 #[allow(clippy::too_many_arguments)]
 pub fn par_knn_to_polygons<I: SpatialIndex + Sync>(
     index: &I,
@@ -541,14 +556,7 @@ pub fn par_knn_to_polygons<I: SpatialIndex + Sync>(
     part_poly: Option<&[u32]>,
 ) -> (Vec<u64>, Vec<f64>) {
     let n = qxs.len();
-    // Over-sample MBR-nearest candidates: an MBR can be nearer than its polygon, so
-    // fetch a multiple of k (capped at the part count) before exact refinement.
-    let fetch = (k.saturating_mul(4)).clamp(k, n_parts.max(k));
-    // Only the single-part path uses the MBR table, so build it only then
-    let bbox = match part_poly {
-        Some(_) => Vec::new(),
-        None => part_mbrs(xs, ys, ring_offsets, poly_offsets),
-    };
+    let bbox = part_mbrs(xs, ys, ring_offsets, poly_offsets);
 
     let order = morton_order(qxs, qys);
     let tiles = build_query_tiles(qxs, qys, &order, TILE_GRID);
@@ -560,32 +568,19 @@ pub fn par_knn_to_polygons<I: SpatialIndex + Sync>(
             cell.iter()
                 .map(|&qi| {
                     let (qx, qy) = (qxs[qi as usize], qys[qi as usize]);
-                    let cands = match part_poly {
-                        Some(pp) => knn_polys_multipart(
-                            index,
-                            qx,
-                            qy,
-                            fetch,
-                            k,
-                            xs,
-                            ys,
-                            ring_offsets,
-                            poly_offsets,
-                            pp,
-                        ),
-                        None => knn_polys_pruned(
-                            index,
-                            qx,
-                            qy,
-                            fetch,
-                            k,
-                            xs,
-                            ys,
-                            ring_offsets,
-                            poly_offsets,
-                            &bbox,
-                        ),
-                    };
+                    let cands = knn_polys_exact(
+                        index,
+                        qx,
+                        qy,
+                        k,
+                        xs,
+                        ys,
+                        ring_offsets,
+                        poly_offsets,
+                        &bbox,
+                        part_poly,
+                        n_parts,
+                    );
                     (qi, cands)
                 })
                 .collect()
@@ -701,11 +696,7 @@ pub fn par_knn_to_polygons_sorted<I: SpatialIndex + Sync>(
     n_parts: usize,
     part_poly: Option<&[u32]>,
 ) -> (Vec<u64>, Vec<u64>, Vec<f64>) {
-    let fetch = (k.saturating_mul(4)).clamp(k, n_parts.max(k));
-    let bbox = match part_poly {
-        Some(_) => Vec::new(),
-        None => part_mbrs(xs, ys, ring_offsets, poly_offsets),
-    };
+    let bbox = part_mbrs(xs, ys, ring_offsets, poly_offsets);
     let order = morton_order(qxs, qys);
     let tiles = build_query_tiles(qxs, qys, &order, TILE_GRID);
 
@@ -716,32 +707,19 @@ pub fn par_knn_to_polygons_sorted<I: SpatialIndex + Sync>(
                 .iter()
                 .flat_map(|&qi| {
                     let (qx, qy) = (qxs[qi as usize], qys[qi as usize]);
-                    let cands = match part_poly {
-                        Some(pp) => knn_polys_multipart(
-                            index,
-                            qx,
-                            qy,
-                            fetch,
-                            k,
-                            xs,
-                            ys,
-                            ring_offsets,
-                            poly_offsets,
-                            pp,
-                        ),
-                        None => knn_polys_pruned(
-                            index,
-                            qx,
-                            qy,
-                            fetch,
-                            k,
-                            xs,
-                            ys,
-                            ring_offsets,
-                            poly_offsets,
-                            &bbox,
-                        ),
-                    };
+                    let cands = knn_polys_exact(
+                        index,
+                        qx,
+                        qy,
+                        k,
+                        xs,
+                        ys,
+                        ring_offsets,
+                        poly_offsets,
+                        &bbox,
+                        part_poly,
+                        n_parts,
+                    );
                     cands
                         .into_iter()
                         .filter(|(t_idx, _)| *t_idx != u64::MAX)
@@ -880,6 +858,7 @@ pub fn par_bbox_filter(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::index::brute::BruteForce;
     use crate::index::rtree::PackedRTree;
     use crate::query::geodesy::haversine_distance_m;
 
@@ -1093,6 +1072,306 @@ mod tests {
                     all[j]
                 );
             }
+        }
+    }
+
+    // Flatten parts, each a list of closed rings with the exterior first, into the two-level
+    // ring arrays the polygon kernels take.
+    fn ring_arrays(parts: &[Vec<Vec<(f64, f64)>>]) -> (Vec<f64>, Vec<f64>, Vec<i64>, Vec<i64>) {
+        let mut xs = Vec::new();
+        let mut ys = Vec::new();
+        let mut ring_offsets = Vec::new();
+        let mut poly_offsets = Vec::new();
+        for part in parts {
+            poly_offsets.push(ring_offsets.len() as i64);
+            for ring in part {
+                ring_offsets.push(xs.len() as i64);
+                for &(x, y) in ring {
+                    xs.push(x);
+                    ys.push(y);
+                }
+            }
+        }
+        poly_offsets.push(ring_offsets.len() as i64);
+        ring_offsets.push(xs.len() as i64);
+        (xs, ys, ring_offsets, poly_offsets)
+    }
+
+    // Closed square ring of half-width r centred on (cx, cy)
+    fn square_ring(cx: f64, cy: f64, r: f64) -> Vec<(f64, f64)> {
+        vec![
+            (cx - r, cy - r),
+            (cx + r, cy - r),
+            (cx + r, cy + r),
+            (cx - r, cy + r),
+            (cx - r, cy - r),
+        ]
+    }
+
+    // A square annulus: its MBR covers the centre while its boundary stays `hole` away from it,
+    // which is what makes MBR rank and exact distance disagree.
+    fn donut(cx: f64, cy: f64, outer: f64, hole: f64) -> Vec<Vec<(f64, f64)>> {
+        vec![square_ring(cx, cy, outer), square_ring(cx, cy, hole)]
+    }
+
+    fn xorshift(seed: u64) -> impl FnMut() -> f64 {
+        let mut state = seed;
+        move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        }
+    }
+
+    // Exact k nearest polygon distances for one query, by scanning every part
+    #[allow(clippy::too_many_arguments)]
+    fn brute_polys(
+        qx: f64,
+        qy: f64,
+        xs: &[f64],
+        ys: &[f64],
+        ring_offsets: &[i64],
+        poly_offsets: &[i64],
+        part_poly: Option<&[u32]>,
+        k: usize,
+    ) -> Vec<f64> {
+        let n_parts = poly_offsets.len() - 1;
+        let mut best: Vec<(u64, f64)> = Vec::new();
+        for p in 0..n_parts {
+            let d = point_to_polygon_distance(qx, qy, xs, ys, ring_offsets, poly_offsets, p);
+            let pid = logical_poly(part_poly, p);
+            match best.iter().position(|c| c.0 == pid) {
+                Some(pos) => best[pos].1 = best[pos].1.min(d),
+                None => best.push((pid, d)),
+            }
+        }
+        best.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+        best.into_iter().take(k).map(|c| c.1).collect()
+    }
+
+    #[test]
+    fn donut_mbrs_do_not_hide_the_nearest_polygon() {
+        // Four annuli whose MBRs all contain the query, so MBR rank puts them first, and one
+        // small square that is genuinely nearest. Fixed 4*k oversampling returned an annulus.
+        let mut parts: Vec<Vec<Vec<(f64, f64)>>> = (0..4)
+            .map(|i| donut(i as f64 * 0.1, 0.0, 100.0, 50.0))
+            .collect();
+        parts.push(vec![vec![
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (2.0, 1.0),
+            (1.0, 1.0),
+            (1.0, 0.0),
+        ]]);
+        let (xs, ys, ring_offsets, poly_offsets) = ring_arrays(&parts);
+        let n_parts = poly_offsets.len() - 1;
+
+        let rtree = PackedRTree::build_polygons(&xs, &ys, &ring_offsets, &poly_offsets);
+        let (idx, dist) = par_knn_to_polygons(
+            &rtree,
+            &[0.0],
+            &[0.0],
+            &xs,
+            &ys,
+            &ring_offsets,
+            &poly_offsets,
+            1,
+            n_parts,
+            None,
+        );
+        assert_eq!(idx, vec![4]);
+        assert!((dist[0] - 1.0).abs() < 1e-12, "rtree gave {}", dist[0]);
+
+        let brute = BruteForce::build_polygons(&xs, &ys, &ring_offsets, &poly_offsets);
+        let (idx, dist) = par_knn_to_polygons(
+            &brute,
+            &[0.0],
+            &[0.0],
+            &xs,
+            &ys,
+            &ring_offsets,
+            &poly_offsets,
+            1,
+            n_parts,
+            None,
+        );
+        assert_eq!(idx, vec![4]);
+        assert!((dist[0] - 1.0).abs() < 1e-12, "brute gave {}", dist[0]);
+    }
+
+    #[test]
+    fn random_annuli_knn_matches_brute_force() {
+        // Overlapping annuli of varied size: MBR order and exact order disagree constantly
+        let mut next = xorshift(0x9e3779b97f4a7c15);
+        let parts: Vec<Vec<Vec<(f64, f64)>>> = (0..120)
+            .map(|_| {
+                let outer = 5.0 + next() * 45.0;
+                let hole = outer * (0.2 + next() * 0.7);
+                donut(next() * 100.0, next() * 100.0, outer, hole)
+            })
+            .collect();
+        let (xs, ys, ring_offsets, poly_offsets) = ring_arrays(&parts);
+        let n_parts = poly_offsets.len() - 1;
+        let index = PackedRTree::build_polygons(&xs, &ys, &ring_offsets, &poly_offsets);
+
+        let n = 300;
+        let qxs: Vec<f64> = (0..n).map(|_| next() * 100.0).collect();
+        let qys: Vec<f64> = (0..n).map(|_| next() * 100.0).collect();
+        let k = 4;
+        let (_, dist) = par_knn_to_polygons(
+            &index,
+            &qxs,
+            &qys,
+            &xs,
+            &ys,
+            &ring_offsets,
+            &poly_offsets,
+            k,
+            n_parts,
+            None,
+        );
+
+        for q in 0..n {
+            let want = brute_polys(
+                qxs[q],
+                qys[q],
+                &xs,
+                &ys,
+                &ring_offsets,
+                &poly_offsets,
+                None,
+                k,
+            );
+            for j in 0..k {
+                assert!(
+                    (dist[q * k + j] - want[j]).abs() < 1e-9,
+                    "query {q} neighbour {j}: kernel {} vs brute {}",
+                    dist[q * k + j],
+                    want[j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn multipolygon_parts_collapse_to_one_neighbour() {
+        // Polygon 0 has a far part and a near one, polygons 1 and 2 sit between them. k counts
+        // distinct polygons, so polygon 0 must appear once, at its nearer part's distance.
+        let parts = vec![
+            vec![square_ring(40.0, 0.0, 1.0)],
+            vec![square_ring(5.0, 0.0, 1.0)],
+            vec![square_ring(20.0, 0.0, 1.0)],
+            vec![square_ring(10.0, 0.0, 1.0)],
+        ];
+        let (xs, ys, ring_offsets, poly_offsets) = ring_arrays(&parts);
+        let part_poly = [0u32, 0, 1, 2];
+        let n_parts = poly_offsets.len() - 1;
+        let index = PackedRTree::build_polygons(&xs, &ys, &ring_offsets, &poly_offsets);
+
+        let (idx, dist) = par_knn_to_polygons(
+            &index,
+            &[0.0],
+            &[0.0],
+            &xs,
+            &ys,
+            &ring_offsets,
+            &poly_offsets,
+            3,
+            n_parts,
+            Some(&part_poly),
+        );
+        assert_eq!(idx, vec![0, 2, 1]);
+        for (got, want) in dist.iter().zip([4.0, 9.0, 19.0]) {
+            assert!((got - want).abs() < 1e-12, "got {dist:?}");
+        }
+    }
+
+    #[test]
+    fn fewer_polygons_than_k_pads_the_block() {
+        let parts = vec![vec![square_ring(5.0, 0.0, 1.0)]];
+        let (xs, ys, ring_offsets, poly_offsets) = ring_arrays(&parts);
+        let index = PackedRTree::build_polygons(&xs, &ys, &ring_offsets, &poly_offsets);
+        let (idx, dist) = par_knn_to_polygons(
+            &index,
+            &[0.0],
+            &[0.0],
+            &xs,
+            &ys,
+            &ring_offsets,
+            &poly_offsets,
+            3,
+            1,
+            None,
+        );
+        assert_eq!(idx, vec![0, u64::MAX, u64::MAX]);
+        assert!((dist[0] - 4.0).abs() < 1e-12);
+        assert!(dist[1].is_infinite() && dist[2].is_infinite());
+    }
+
+    #[test]
+    fn sorted_variant_agrees_with_the_blocked_one() {
+        let mut next = xorshift(0xdeadbeefcafef00d);
+        let parts: Vec<Vec<Vec<(f64, f64)>>> = (0..60)
+            .map(|_| {
+                let outer = 4.0 + next() * 20.0;
+                donut(next() * 80.0, next() * 80.0, outer, outer * 0.6)
+            })
+            .collect();
+        let (xs, ys, ring_offsets, poly_offsets) = ring_arrays(&parts);
+        let n_parts = poly_offsets.len() - 1;
+        let index = PackedRTree::build_polygons(&xs, &ys, &ring_offsets, &poly_offsets);
+
+        let n = 50;
+        let qxs: Vec<f64> = (0..n).map(|_| next() * 80.0).collect();
+        let qys: Vec<f64> = (0..n).map(|_| next() * 80.0).collect();
+        let k = 3;
+        let (blocked_idx, blocked_dist) = par_knn_to_polygons(
+            &index,
+            &qxs,
+            &qys,
+            &xs,
+            &ys,
+            &ring_offsets,
+            &poly_offsets,
+            k,
+            n_parts,
+            None,
+        );
+        let (q_idx, t_idx, dists) = par_knn_to_polygons_sorted(
+            &index,
+            &qxs,
+            &qys,
+            &xs,
+            &ys,
+            &ring_offsets,
+            &poly_offsets,
+            k,
+            n_parts,
+            None,
+        );
+
+        assert_eq!(q_idx.len(), n * k);
+        // The sorted path emits globally ordered pairs, so regroup by query to compare
+        let mut grouped: Vec<Vec<(u64, f64)>> = vec![Vec::new(); n];
+        for i in 0..q_idx.len() {
+            grouped[q_idx[i] as usize].push((t_idx[i], dists[i]));
+        }
+        // Only the sorted path promises a tie-break, so normalise both sides to (dist, idx)
+        let by_dist_then_idx = |v: &mut Vec<(u64, f64)>| {
+            v.sort_unstable_by(|a, b| {
+                a.1.partial_cmp(&b.1)
+                    .unwrap_or(Ordering::Equal)
+                    .then(a.0.cmp(&b.0))
+            })
+        };
+        for (q, got) in grouped.iter_mut().enumerate() {
+            let mut want: Vec<(u64, f64)> = (0..k)
+                .map(|j| (blocked_idx[q * k + j], blocked_dist[q * k + j]))
+                .collect();
+            by_dist_then_idx(got);
+            by_dist_then_idx(&mut want);
+            assert_eq!(got, &want, "query {q}");
         }
     }
 }

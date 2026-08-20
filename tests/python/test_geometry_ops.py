@@ -75,6 +75,58 @@ def test_knn_to_polygons():
     assert int(idx[1]) in (0, 2)  # next nearest is one of the flanking squares
 
 
+def _annulus(cx: float, cy: float, outer: float, hole: float):
+    # Square annulus: its MBR covers the centre while its boundary stays `hole` away from it
+    ring = [
+        (cx - outer, cy - outer),
+        (cx + outer, cy - outer),
+        (cx + outer, cy + outer),
+        (cx - outer, cy + outer),
+    ]
+    inner = [
+        (cx - hole, cy - hole),
+        (cx - hole, cy + hole),
+        (cx + hole, cy + hole),
+        (cx + hole, cy - hole),
+    ]
+    return shapely.Polygon(ring, [inner])
+
+
+def test_knn_to_polygons_is_exact_under_covering_mbrs():
+    # Four annuli whose MBRs all contain the query outrank the one genuinely nearest square by
+    # MBR distance. Oversampling a fixed multiple of k dropped the square and returned 50.0.
+    polys = [_annulus(i * 0.1, 0.0, 100.0, 50.0) for i in range(4)]
+    polys.append(shapely_box(1, 0, 2, 1))
+    eng = Engine.from_polygons(polys)
+    idx, dist = eng.batch_knn_to_polygons(
+        np.array([0.0], dtype=np.float64), np.array([0.0], dtype=np.float64), 1
+    )
+    assert int(idx[0]) == 4
+    assert abs(float(dist[0]) - 1.0) < 1e-9
+
+
+def test_knn_to_polygons_matches_brute_force_on_annuli():
+    rng = np.random.default_rng(7)
+    outer = rng.uniform(5.0, 50.0, 40)
+    polys = [
+        _annulus(cx, cy, o, o * f)
+        for cx, cy, o, f in zip(
+            rng.uniform(0, 100, 40), rng.uniform(0, 100, 40), outer, rng.uniform(0.2, 0.9, 40)
+        )
+    ]
+    eng = Engine.from_polygons(polys)
+    qx = rng.uniform(0, 100, 50)
+    qy = rng.uniform(0, 100, 50)
+    k = 3
+    _, dist = eng.batch_knn_to_polygons(qx, qy, k)
+    dist = dist.reshape(-1, k)
+
+    points = shapely.points(qx, qy)
+    for q in range(len(qx)):
+        want = np.sort([p.distance(points[q]) for p in polys])[:k]
+        assert np.allclose(dist[q], want, atol=1e-9), f"query {q}: {dist[q]} vs {want}"
+
+
 def test_polygon_self_intersection_and_iou():
     # Square A (0,0)-(2,2) and square B (1,1)-(3,3) overlap in a 1x1 region.
     eng = _poly_engine([(0, 0, 2, 2), (1, 1, 3, 3)])
@@ -245,6 +297,19 @@ def test_lazy_polygon_knn_join():
     first = out.sort("distance_to_polygon").row(0, named=True)
     assert first["pid"] == 1
     assert abs(first["distance_to_polygon"]) < 1e-9
+
+
+@pytest.mark.parametrize("sorted_output", [False, True])
+def test_lazy_polygon_knn_join_is_exact_under_covering_mbrs(sorted_output):
+    # Same covering-MBR trap as the Engine-level test, through the lazy join and both its paths
+    polys = [_annulus(i * 0.1, 0.0, 100.0, 50.0) for i in range(4)]
+    polys.append(shapely_box(1, 0, 2, 1))
+    df = pl.DataFrame({"pid": list(range(5)), "geom": [p.wkb for p in polys]})
+    sf = SpatialFrame.from_wkb_polygons(df, "geom")
+    query = pl.DataFrame({"qx": [0.0], "qy": [0.0]})
+    out = sf.lazy().polygon_knn_join(query, "qx", "qy", k=1, sorted_output=sorted_output).collect()
+    assert out["pid"].to_list() == [4]
+    assert abs(out["distance_to_polygon"][0] - 1.0) < 1e-9
 
 
 def test_frame_intersects_pairs_iou():

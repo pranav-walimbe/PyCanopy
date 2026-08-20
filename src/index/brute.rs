@@ -2,20 +2,17 @@
 
 use std::sync::Arc;
 
-use crate::index::SpatialIndex;
+use crate::index::{point_box_dist2, SpatialIndex};
 
 /// Linear scan index, used for small datasets or high-selectivity queries.
 ///
-/// Stores per-geometry bounding boxes for MBR filtering. For point datasets the
-/// bbox is degenerate (min == max == coordinate) and xs/ys are shared Arcs from
-/// the Engine, so no data is copied. For polygon datasets, bbox arrays are derived
-/// from ring coordinates and centroids are stored for nearest queries.
+/// Stores per-geometry bounding boxes, which serve both MBR filtering and nearest ranking.
+/// For point datasets the bbox is degenerate (min == max == coordinate) and every array is a
+/// shared Arc from the Engine, so no data is copied and box distance is exact point distance.
+/// For polygon datasets the arrays are derived from ring coordinates.
 pub struct BruteForce {
-    /// Representative point coordinates: actual coords for points, centroids for polygons
-    xs: Arc<[f64]>,
-    ys: Arc<[f64]>,
-    /// Per-geometry bounding boxes for MBR filtering.
-    /// For point datasets these are Arc::clone of xs/ys (shared, zero cost).
+    /// Per-geometry bounding boxes.
+    /// For point datasets all four are Arc::clone of the Engine's xs/ys (shared, zero cost).
     /// For polygon datasets these are new allocations derived from ring coords.
     bbox_min_x: Arc<[f64]>,
     bbox_min_y: Arc<[f64]>,
@@ -28,25 +25,25 @@ impl SpatialIndex for BruteForce {
         BruteForce {
             bbox_min_x: Arc::clone(&xs),
             bbox_min_y: Arc::clone(&ys),
-            bbox_max_x: Arc::clone(&xs),
-            bbox_max_y: Arc::clone(&ys),
-            xs,
-            ys,
+            bbox_max_x: xs,
+            bbox_max_y: ys,
         }
     }
 
     fn nearest(&self, qx: f64, qy: f64, k: usize) -> Vec<usize> {
-        let n = self.xs.len();
+        // Rank by point-to-MBR distance, which is exact for the degenerate boxes of a point
+        // dataset and the lower bound the polygon refinement pass needs.
+        let n = self.bbox_min_x.len();
         let k = k.min(n);
-        let mut dists: Vec<(usize, f64)> = self
-            .xs
-            .iter()
-            .zip(self.ys.iter())
-            .enumerate()
-            .map(|(i, (&x, &y))| {
-                let dx = x - qx;
-                let dy = y - qy;
-                (i, dx * dx + dy * dy)
+        let mut dists: Vec<(usize, f64)> = (0..n)
+            .map(|i| {
+                let b = [
+                    self.bbox_min_x[i],
+                    self.bbox_min_y[i],
+                    self.bbox_max_x[i],
+                    self.bbox_max_y[i],
+                ];
+                (i, point_box_dist2(qx, qy, &b))
             })
             .collect();
         dists.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -68,18 +65,18 @@ impl SpatialIndex for BruteForce {
 impl BruteForce {
     /// Heap bytes allocated by this index, excluding coordinates shared with the Engine.
     ///
-    /// Point datasets share all bbox arcs with the Engine's xs/ys, so marginal cost is zero.
-    /// Polygon datasets allocate new centroid and MBR arrays of 6 * N * 8 bytes.
+    /// Point datasets alias the Engine's xs/ys in all four bbox arcs, so marginal cost is zero.
+    /// Polygon datasets allocate new MBR arrays of 4 * N * 8 bytes.
     pub fn heap_bytes(&self) -> usize {
-        if Arc::ptr_eq(&self.xs, &self.bbox_min_x) {
+        if Arc::ptr_eq(&self.bbox_min_x, &self.bbox_max_x) {
             0
         } else {
-            self.xs.len() * std::mem::size_of::<f64>() * 6
+            self.bbox_min_x.len() * std::mem::size_of::<f64>() * 4
         }
     }
 
-    /// Build from two-level polygon ring arrays. Computes per-polygon MBRs and centroids
-    /// from exterior rings only. Holes do not expand the MBR.
+    /// Build from two-level polygon ring arrays. Computes per-polygon MBRs from exterior
+    /// rings only. Holes do not expand the MBR.
     pub fn build_polygons(
         xs: &[f64],
         ys: &[f64],
@@ -87,21 +84,17 @@ impl BruteForce {
         poly_offsets: &[i64],
     ) -> Self {
         let n_polys = poly_offsets.len().saturating_sub(1);
-        let mut cxs = Vec::with_capacity(n_polys);
-        let mut cys = Vec::with_capacity(n_polys);
         let mut mn_xs = Vec::with_capacity(n_polys);
         let mut mn_ys = Vec::with_capacity(n_polys);
         let mut mx_xs = Vec::with_capacity(n_polys);
         let mut mx_ys = Vec::with_capacity(n_polys);
 
         for &ext_ring_i64 in poly_offsets.iter().take(n_polys) {
-            // MBR and centroid come from the exterior ring only
+            // The MBR comes from the exterior ring only
             let ext_ring = ext_ring_i64 as usize;
             let start = ring_offsets[ext_ring] as usize;
             let end = ring_offsets[ext_ring + 1] as usize;
             if start >= end {
-                cxs.push(0.0);
-                cys.push(0.0);
                 mn_xs.push(0.0);
                 mn_ys.push(0.0);
                 mx_xs.push(0.0);
@@ -121,8 +114,6 @@ impl BruteForce {
                     (lo_x.min(x), lo_y.min(y), hi_x.max(x), hi_y.max(y))
                 },
             );
-            cxs.push((mn_x + mx_x) / 2.0);
-            cys.push((mn_y + mx_y) / 2.0);
             mn_xs.push(mn_x);
             mn_ys.push(mn_y);
             mx_xs.push(mx_x);
@@ -130,8 +121,6 @@ impl BruteForce {
         }
 
         BruteForce {
-            xs: cxs.into(),
-            ys: cys.into(),
             bbox_min_x: mn_xs.into(),
             bbox_min_y: mn_ys.into(),
             bbox_max_x: mx_xs.into(),
@@ -188,5 +177,24 @@ mod tests {
     fn range_empty_bbox_returns_empty() {
         let (xs, ys) = five_point_grid();
         assert!(build(xs, ys).range(5.0, 5.0, 10.0, 10.0).is_empty());
+    }
+
+    #[test]
+    fn polygon_nearest_ranks_by_mbr_not_centroid() {
+        // A wide sliver spanning x 0..10 at y 0, and a small square at x 4..5, y 3..4. From
+        // (5, 0.5) the sliver's edge is 0.5 away but its centroid is 5 away, which centroid
+        // ranking put second. Ranking by MBR is the lower bound polygon refinement relies on.
+        let xs = vec![
+            0.0, 10.0, 10.0, 0.0, 0.0, // sliver ring
+            4.0, 5.0, 5.0, 4.0, 4.0, // square ring
+        ];
+        let ys = vec![
+            -0.1, -0.1, 0.1, 0.1, -0.1, // sliver ring
+            3.0, 3.0, 4.0, 4.0, 3.0, // square ring
+        ];
+        let ring_offsets = vec![0, 5, 10];
+        let poly_offsets = vec![0, 1, 2];
+        let index = BruteForce::build_polygons(&xs, &ys, &ring_offsets, &poly_offsets);
+        assert_eq!(index.nearest(5.0, 0.5, 2), vec![0, 1]);
     }
 }
