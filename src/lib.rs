@@ -65,7 +65,7 @@ struct Engine {
     delta_xs: Vec<f64>, // points appended since last flush, scanned alongside the main index
     delta_ys: Vec<f64>,
     delta_query_cost: u64, // accumulated delta-scan cost that drives the cost-based flush
-    index_mode: IndexMode, // index build policy: Eager (default) / None / Auto
+    index_mode: IndexMode, // index selection policy: Eager (default) / None / Auto / Explicit
     cost_factors: CostFactors,
     prepared_polys: Option<PreparedPolygons>, // sub-linear PIP edge index, built lazily
     part_poly: Option<Arc<[u32]>>, // logical polygon per index part, None if no MultiPolygons
@@ -262,36 +262,26 @@ impl Engine {
     }
 
     fn plan_index(&self, query: &Query, q_count: usize) -> IndexKind {
-        if self.index_mode == IndexMode::Auto {
-            let mut built = [IndexKind::BruteForce; 3];
-            let mut n = 0;
-            if self.rtree.is_some() {
-                built[n] = IndexKind::RTree;
-                n += 1;
+        match self.index_mode {
+            IndexMode::Auto => {
+                let mut built = [IndexKind::BruteForce; 3];
+                let mut n = 0;
+                if self.rtree.is_some() {
+                    built[n] = IndexKind::RTree;
+                    n += 1;
+                }
+                if self.kdtree.is_some() {
+                    built[n] = IndexKind::KdTree;
+                    n += 1;
+                }
+                if self.grid.is_some() {
+                    built[n] = IndexKind::Grid;
+                    n += 1;
+                }
+                plan_best_available(&built[..n], &self.stats, query, q_count, &self.cost_factors)
             }
-            if self.kdtree.is_some() {
-                built[n] = IndexKind::KdTree;
-                n += 1;
-            }
-            if self.grid.is_some() {
-                built[n] = IndexKind::Grid;
-                n += 1;
-            }
-            return plan_best_available(
-                &built[..n],
-                &self.stats,
-                query,
-                q_count,
-                &self.cost_factors,
-            );
+            mode => plan_access(&self.stats, query, q_count, mode, &self.cost_factors),
         }
-        plan_access(
-            &self.stats,
-            query,
-            q_count,
-            self.index_mode,
-            &self.cost_factors,
-        )
     }
 
     fn plan_index_kind(&self, query: &Query, q_count: usize, candidate: IndexKind) -> IndexKind {
@@ -548,6 +538,28 @@ impl Engine {
         Ok(())
     }
 
+    /// Build a specific index kind for the internal calibration harness.
+    fn _build_index_for_calibration(&mut self, kind: &str) -> PyResult<()> {
+        let kind = match kind {
+            "grid" => IndexKind::Grid,
+            "kd_tree" => IndexKind::KdTree,
+            "r_tree" => IndexKind::RTree,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "calibration index must be 'grid', 'kd_tree', or 'r_tree', got {other:?}"
+                )))
+            }
+        };
+        if self.ring_offsets.is_some() && matches!(kind, IndexKind::Grid | IndexKind::KdTree) {
+            return Err(PyValueError::new_err(
+                "grid and kd_tree calibration indexes require point data",
+            ));
+        }
+        self.index_mode = IndexMode::Explicit(kind);
+        self.build_index_if_needed(kind);
+        Ok(())
+    }
+
     /// Set the index build policy ("auto" / "eager" / "none"), returning the previous
     /// mode as a string so callers can restore it after a scoped override.
     fn set_index_mode(&mut self, mode: &str) -> PyResult<String> {
@@ -555,6 +567,9 @@ impl Engine {
             "auto" => IndexMode::Auto,
             "eager" => IndexMode::Eager,
             "none" => IndexMode::None,
+            "explicit:grid" => IndexMode::Explicit(IndexKind::Grid),
+            "explicit:kd_tree" => IndexMode::Explicit(IndexKind::KdTree),
+            "explicit:r_tree" => IndexMode::Explicit(IndexKind::RTree),
             other => {
                 return Err(PyValueError::new_err(format!(
                     "index mode must be 'auto', 'eager', or 'none', got '{other}'"
@@ -565,9 +580,25 @@ impl Engine {
             IndexMode::Auto => "auto",
             IndexMode::Eager => "eager",
             IndexMode::None => "none",
+            IndexMode::Explicit(IndexKind::Grid) => "explicit:grid",
+            IndexMode::Explicit(IndexKind::KdTree) => "explicit:kd_tree",
+            IndexMode::Explicit(IndexKind::RTree) => "explicit:r_tree",
+            IndexMode::Explicit(IndexKind::BruteForce) => "explicit:brute_force",
         };
         self.index_mode = new;
         Ok(prev.to_string())
+    }
+
+    /// Replace the planner cost factors from the ordered values supplied by the Python wrapper.
+    fn set_cost_factors(&mut self, values: Vec<f64>) -> PyResult<()> {
+        let values: [f64; 10] = values.try_into().map_err(|values: Vec<f64>| {
+            PyValueError::new_err(format!(
+                "cost profile must contain 10 values, got {}",
+                values.len()
+            ))
+        })?;
+        self.cost_factors = CostFactors::from_values(values).map_err(PyValueError::new_err)?;
+        Ok(())
     }
 
     /// Set how threshold distances are measured ("planar" / "geographic"), fixed per frame

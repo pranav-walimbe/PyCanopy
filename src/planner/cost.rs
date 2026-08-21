@@ -13,12 +13,13 @@ pub enum IndexKind {
     Grid,
 }
 
-/// How aggressively the planner builds spatial indexes
+/// Spatial index selection policy
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexMode {
     None,
     Eager,
     Auto,
+    Explicit(IndexKind),
 }
 
 fn build_cost(kind: IndexKind, n: usize, factors: &CostFactors) -> f64 {

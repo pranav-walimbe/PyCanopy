@@ -59,10 +59,13 @@ pub fn plan_access_with_kind(
     factors: &CostFactors,
     candidate: IndexKind,
 ) -> IndexKind {
-    if mode == IndexMode::None || candidate == IndexKind::BruteForce {
-        return IndexKind::BruteForce;
+    match mode {
+        IndexMode::Explicit(kind) => return kind,
+        IndexMode::None => return IndexKind::BruteForce,
+        IndexMode::Eager => return candidate,
+        IndexMode::Auto => {}
     }
-    if mode == IndexMode::Eager {
+    if candidate == IndexKind::BruteForce {
         return candidate;
     }
     let sel = selectivity(stats, query);
@@ -254,6 +257,24 @@ mod tests {
         assert_eq!(
             plan_access(&s, &big_knn(), 1_000_000, IndexMode::None, &f),
             IndexKind::BruteForce
+        );
+    }
+
+    #[test]
+    fn explicit_mode_overrides_the_planner_candidate() {
+        let s = stats(10_000, GeometryKind::Point, Distribution::Uniform);
+        let q = small_bbox();
+        let factors = CostFactors::default();
+        assert_eq!(
+            plan_access_with_kind(
+                &s,
+                &q,
+                1,
+                IndexMode::Explicit(IndexKind::KdTree),
+                &factors,
+                IndexKind::Grid,
+            ),
+            IndexKind::KdTree
         );
     }
 

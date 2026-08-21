@@ -178,6 +178,30 @@ def test_take_metrics_records_early_exit_without_an_index():
     assert operation["output_rows"] == 0
 
 
+def test_calibration_hook_builds_requested_index():
+    eng = Engine.from_coords(XS * 200, YS * 200)
+    eng.take_metrics()
+    eng._build_index_for_calibration("kd_tree")
+
+    builds = eng.take_metrics()["index_builds"]
+    assert len(builds) == 1
+    assert builds[0]["index"] == "kd_tree"
+    assert builds[0]["build_count"] == 1
+    assert builds[0]["elapsed_compute_ns"] > 0
+
+    eng.range_query(-0.1, -0.1, 0.1, 0.1)
+    operation = _metric(eng.take_metrics(), "range_query", "kd_tree")
+    assert operation["calls"] == 1
+    assert eng.set_index_mode("auto") == "explicit:kd_tree"
+    assert eng.set_index_mode("explicit:kd_tree") == "auto"
+
+
+def test_calibration_hook_rejects_point_only_index_for_polygons():
+    eng = Engine.from_polygons(SQUARES)
+    with pytest.raises(ValueError, match="require point data"):
+        eng._build_index_for_calibration("grid")
+
+
 def test_wkb_polygon_construction_metrics_are_reported():
     eng = Engine.from_wkb_polygons(pa.array([polygon.wkb for polygon in SQUARES]))
 

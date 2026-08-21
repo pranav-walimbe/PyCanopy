@@ -1,0 +1,14 @@
+{
+  "cost_factors": {
+    "knn_scan_ns_per_item": 5.348615,
+    "bbox_scan_ns_per_item": 2.788259,
+    "grid_build_ns_per_item": 8.375634,
+    "kdtree_build_ns_per_item": 5.516744,
+    "grid_range_ns": 23.314552,
+    "kdtree_range_ns": 4.102839,
+    "kdtree_knn_ns": 45.667072,
+    "rtree_build_ns_per_item": 5.021936,
+    "rtree_range_ns": 8.231254,
+    "rtree_knn_ns": 160.298859
+  }
+}

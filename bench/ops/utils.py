@@ -6,8 +6,6 @@ from __future__ import annotations
 
 import resource
 import sys
-import time
-from collections.abc import Callable
 
 import numpy as np
 import shapely
@@ -85,27 +83,6 @@ def generate_polygons(
     ph = polygon_size * (max_y - min_y)
     anchors = generate_points(n, seed, (min_x, min_y, max_x - pw, max_y - ph))
     return shapely.box(anchors[:, 0], anchors[:, 1], anchors[:, 0] + pw, anchors[:, 1] + ph)
-
-
-def time_min(fn: Callable[[], object], runs: int = 3) -> float:
-    """Run fn `runs` times and return the minimum elapsed time in milliseconds.
-
-    The floor is the least noisy estimate of a warm CPU bound cost, so the fixed
-    scheduling and allocation jitter that only ever inflates a sample is discarded.
-
-    Args:
-        fn: Zero-argument callable.
-        runs: Number of repetitions.
-
-    Returns:
-        Minimum elapsed time in milliseconds.
-    """
-    best = float("inf")
-    for _ in range(runs):
-        t0 = time.perf_counter()
-        fn()
-        best = min(best, (time.perf_counter() - t0) * 1_000)
-    return best
 
 
 def peak_rss_mb() -> float:

@@ -6,9 +6,12 @@ Normalizes varied point input to contiguous float64 arrays, with standard 2D LE 
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
+from functools import lru_cache
+from importlib.resources import files
 from weakref import WeakSet
 
 import numpy as np
@@ -24,9 +27,41 @@ except ImportError:
 
 _SHAPELY_POLYGON_TYPE_ID = 3
 _SHAPELY_MULTIPOLYGON_TYPE_ID = 6
+_COST_FACTOR_FIELDS = (
+    "knn_scan_ns_per_item",
+    "bbox_scan_ns_per_item",
+    "grid_build_ns_per_item",
+    "kdtree_build_ns_per_item",
+    "rtree_build_ns_per_item",
+    "kdtree_knn_ns",
+    "kdtree_range_ns",
+    "rtree_knn_ns",
+    "rtree_range_ns",
+    "grid_range_ns",
+)
 _ACTIVE_METRICS_CAPTURE: ContextVar[_EngineMetricsCapture | None] = ContextVar(
     "pycanopy_engine_metrics_capture", default=None
 )
+
+
+@lru_cache(maxsize=1)
+def _default_cost_factor_values() -> tuple[float, ...]:
+    """Load and validate the bundled planner profile once per Python process."""
+    profile_path = files("pycanopy").joinpath("cost_profiles").joinpath("default.json")
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    factors = profile.get("cost_factors")
+    if not isinstance(factors, dict):
+        raise ValueError("cost profile must contain a cost_factors object")
+    try:
+        return tuple(float(factors[name]) for name in _COST_FACTOR_FIELDS)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"invalid cost profile factor: {exc}") from exc
+
+
+def _configure_core(core: _CoreEngine) -> _CoreEngine:
+    """Apply the cached bundled planner profile to a newly constructed Rust Engine."""
+    core.set_cost_factors(_default_cost_factor_values())
+    return core
 
 
 class _EngineMetricsCapture:
@@ -401,7 +436,7 @@ class Engine:
         self._metrics_capture_id = -1
         if geometries is not None:
             xs, ys = _to_numpy_xy(geometries)
-            self._core = _CoreEngine.from_points(xs, ys)
+            self._core = _configure_core(_CoreEngine.from_points(xs, ys))
             _register_metrics_engine(self)
 
     def __del__(self):
@@ -428,7 +463,9 @@ class Engine:
         eng = cls.__new__(cls)
         eng._metrics_capture = None
         eng._metrics_capture_id = -1
-        eng._core = _CoreEngine.from_polygon_rings(xs, ys, ring_offsets, poly_offsets, part_poly)
+        eng._core = _configure_core(
+            _CoreEngine.from_polygon_rings(xs, ys, ring_offsets, poly_offsets, part_poly)
+        )
         return _register_metrics_engine(eng)
 
     @classmethod
@@ -448,7 +485,7 @@ class Engine:
         buffers = _wkb_binary_buffers(column)
         if buffers is not None:
             try:
-                eng._core = _CoreEngine.from_wkb_polygons(*buffers)
+                eng._core = _configure_core(_CoreEngine.from_wkb_polygons(*buffers))
                 return _register_metrics_engine(eng)
             except ValueError:
                 pass  # unusual WKB variant -> shapely fallback
@@ -486,15 +523,21 @@ class Engine:
         eng = cls.__new__(cls)
         eng._metrics_capture = None
         eng._metrics_capture_id = -1
-        eng._core = _CoreEngine.from_points(
-            np.ascontiguousarray(xs, dtype=np.float64),
-            np.ascontiguousarray(ys, dtype=np.float64),
+        eng._core = _configure_core(
+            _CoreEngine.from_points(
+                np.ascontiguousarray(xs, dtype=np.float64),
+                np.ascontiguousarray(ys, dtype=np.float64),
+            )
         )
         return _register_metrics_engine(eng)
 
     def build_index(self) -> None:
         """Build the spatial index ahead of any query (idempotent)."""
         self._core.build_index()
+
+    def _build_index_for_calibration(self, kind: str) -> None:
+        """Build an explicit index kind for the internal ops calibration harness."""
+        self._core._build_index_for_calibration(kind)
 
     def set_index_mode(self, mode: str) -> str:
         """Set the index build policy, returning the previous mode.

@@ -38,6 +38,10 @@ build-prod:
 	@rm -f python/pycanopy/*.so
 	uv run maturin develop --release
 
+.PHONY: tune-engine ## Calibrate planner costs and update the bundled profile
+tune-engine: build-prod
+	uv run python -m bench.ops
+
 # Build first so clippy and cargo nextest reuse compiled objects from maturin
 .PHONY: check
 check: format build lint
