@@ -12,6 +12,7 @@ import time as _time
 from bench.spatial_bench import queries
 from bench.spatial_bench._profile import ProfilingTables, profile_payload
 from bench.spatial_bench.utils import SpatialBenchTables, verify_outputs
+from pycanopy.engine import _capture_engine_metrics
 
 
 def _materialize(result):
@@ -42,16 +43,21 @@ def main() -> None:
         tables = SpatialBenchTables(data_dir=args.data_dir, index_mode=args.index_mode)
 
     try:
-        t0 = _time.perf_counter()
-        result = qmodule.pycanopy(tables)
         if args.profile:
-            with tables.profiler.stage("collect"):
-                result = _materialize(result)
+            with _capture_engine_metrics() as engine_capture:
+                t0 = _time.perf_counter()
+                result = qmodule.pycanopy(tables)
+                with tables.profiler.stage("materialize"):
+                    result = _materialize(result)
+                elapsed = _time.perf_counter() - t0
+                engine_metrics = engine_capture.take_metrics()
         else:
+            t0 = _time.perf_counter()
+            result = qmodule.pycanopy(tables)
             t_mat = _time.perf_counter()
             result = _materialize(result)
             print(f"PYCANOPY_MATERIALIZE={_time.perf_counter() - t_mat:.4f}", flush=True)
-        elapsed = _time.perf_counter() - t0
+            elapsed = _time.perf_counter() - t0
     except Exception as exc:
         print(f"PYCANOPY_ERROR={type(exc).__name__}: {exc}", flush=True)
         sys.exit(1)
@@ -61,7 +67,8 @@ def main() -> None:
     if args.profile:
         tables.profiler.stop()
         print(
-            f"PYCANOPY_PROFILE={json.dumps(profile_payload(tables.profiler, elapsed))}", flush=True
+            f"PYCANOPY_PROFILE={json.dumps(profile_payload(tables.profiler, elapsed, engine_metrics))}",
+            flush=True,
         )
         try:
             ok, detail = verify_outputs(result, args.query_id, args.data_dir, **qmodule.compare)

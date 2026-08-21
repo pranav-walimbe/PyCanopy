@@ -41,6 +41,8 @@ def main(argv: list[str] | None = None) -> int:
         The process exit code, 0 on success.
     """
     args = _build_parser().parse_args(argv)
+    if args.profile and args.scale_factor != 1:
+        raise SystemExit("--profile runs the SF1 workload; pass --scale-factor 1")
     data_dir = _DATA_TEMPLATE.replace("{sf}", str(args.scale_factor))
     qs = query_registry.ALL
     if args.query:

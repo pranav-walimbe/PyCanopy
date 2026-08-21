@@ -1,6 +1,4 @@
-"""
-Profile path for SpatialBench: per-stage time + sampled memory plus oracle verification.
-"""
+"""SpatialBench profile mode: Engine metrics, sampled RSS, and oracle verification."""
 
 from __future__ import annotations
 
@@ -13,22 +11,19 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from bench.spatial_bench.utils import (
-    _ASSETS_DIR,
-    SpatialBenchTables,
-    spawn_query,
-)
+from bench.spatial_bench.utils import _ASSETS_DIR, SpatialBenchTables, spawn_query
 
-_STAGES = ("fetch", "build", "query", "collect")  # coarse stages the harness can attribute
-_SAMPLE_INTERVAL = 0.02  # how often the background thread samples resident memory, in seconds
+_STAGES = ("fetch", "execute", "materialize")
+_SAMPLE_INTERVAL = 0.02
 _PAGE_SIZE = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
 _MIB = 1024 * 1024
-_SEP = "=" * 64
-_SUBSEP = "-" * 64
+_NS_PER_SECOND = 1_000_000_000
+_SEP = "=" * 76
+_SUBSEP = "-" * 76
 
 
 def _rss_bytes() -> int:
-    # Current resident set size in bytes from procfs, falling back to the rusage peak
+    # Current process RSS from procfs, falling back to the rusage peak where unavailable.
     try:
         with open("/proc/self/statm") as f:
             return int(f.read().split()[1]) * _PAGE_SIZE
@@ -38,17 +33,12 @@ def _rss_bytes() -> int:
 
 
 class _StageProfiler:
-    """Time each stage and sample resident memory on a background thread for one run.
-
-    Wall time per stage is a perf_counter delta. Memory is process RSS, so it counts the
-    Polars / numpy / Rust buffers and not just Python, sampled every _SAMPLE_INTERVAL and
-    bucketed by the active stage, with the residual time bucketed as "query".
-    """
+    """Measure honest harness boundaries and sample process RSS against the active boundary."""
 
     def __init__(self) -> None:
         self.times: dict[str, float] = {}
         self.stage_peak: dict[str, int] = {}
-        self.current = "query"
+        self.current = "execute"
         self.baseline = _rss_bytes()
         self.peak = self.baseline
         self._stop = threading.Event()
@@ -56,150 +46,127 @@ class _StageProfiler:
         self._thread.start()
 
     def _sample(self) -> None:
-        # Poll RSS until stopped, tracking the overall peak and the active-stage peak
         while not self._stop.wait(_SAMPLE_INTERVAL):
             self._observe()
 
     def _observe(self) -> None:
-        # Record one RSS reading against the overall and current-stage peaks
         rss = _rss_bytes()
         self.peak = max(self.peak, rss)
         self.stage_peak[self.current] = max(self.stage_peak.get(self.current, 0), rss)
 
     @contextmanager
     def stage(self, name: str):
-        """Time the wrapped region under ``name`` and bucket its memory samples to it.
-
-        Args:
-            name: Stage label to accumulate into.
-
-        Yields:
-            None, for the duration of the wrapped block.
-        """
-        start = time.perf_counter()
-        prev = self.current
+        """Accumulate wall time and sampled RSS under one non-overlapping harness boundary."""
+        started = time.perf_counter()
+        previous = self.current
         self.current = name
         self._observe()
         try:
             yield
         finally:
             self._observe()
-            self.current = prev
-            self.times[name] = self.times.get(name, 0.0) + time.perf_counter() - start
+            self.current = previous
+            self.times[name] = self.times.get(name, 0.0) + time.perf_counter() - started
 
     def stop(self) -> None:
-        """Stop the sampler thread and take one final reading."""
+        """Stop the sampler and take a final RSS observation."""
         self._stop.set()
         self._thread.join(timeout=1.0)
         self._observe()
 
 
 class ProfilingTables(SpatialBenchTables):
-    """SpatialBenchTables that times its S3 fetch and frame-build boundaries.
-
-    Each timed method just wraps the parent call, so query modules call the same names
-    and the hot-path class stays free of profiling code.
-    """
+    """SpatialBench tables that identify fetch wall time without timing Engine work."""
 
     def __init__(self, data_dir: str, index_mode: str = "eager") -> None:
         super().__init__(data_dir=data_dir, index_mode=index_mode)
         self.profiler = _StageProfiler()
 
     def parallel_fetch(self, needs: dict[str, list[str] | None]) -> None:
-        """Time the concurrent S3 fetch into the fetch stage.
-
-        Args:
-            needs: Map of table name to the columns to fetch, or None for all columns.
-        """
+        """Fetch several tables while attributing the boundary to fetch."""
         with self.profiler.stage("fetch"):
             super().parallel_fetch(needs)
 
     def table(self, name, columns=None):
-        """Time a cold table read into the fetch stage (a warm cache hit is ~free).
-
-        Args:
-            name: Table name.
-            columns: Optional subset of columns to read.
-
-        Returns:
-            The cached table as a Polars DataFrame.
-        """
+        """Read an uncached table while attributing the boundary to fetch."""
         with self.profiler.stage("fetch"):
             return super().table(name, columns)
 
-    def point_frame(self, df, wkb_col):
-        """Time point frame construction (WKB decode + index build) into the build stage.
 
-        Args:
-            df: DataFrame holding the WKB point column.
-            wkb_col: Name of the WKB point column.
+def _aggregate_engine_metrics(engines: list[dict]) -> dict:
+    construction = {"wkb_decode_ns": 0, "statistics_ns": 0}
+    builds: dict[str, dict] = {}
+    operations: dict[tuple[str, str], dict] = {}
+    for engine in engines:
+        for name in construction:
+            construction[name] += engine["construction"].get(name, 0)
+        for metric in engine["index_builds"]:
+            aggregate = builds.setdefault(
+                metric["index"],
+                {"index": metric["index"], "build_count": 0, "elapsed_compute_ns": 0},
+            )
+            aggregate["build_count"] += metric["build_count"]
+            aggregate["elapsed_compute_ns"] += metric["elapsed_compute_ns"]
+        for metric in engine["operations"]:
+            key = (metric["name"], metric["index"])
+            aggregate = operations.setdefault(
+                key,
+                {
+                    "name": metric["name"],
+                    "index": metric["index"],
+                    "calls": 0,
+                    "elapsed_compute_ns": 0,
+                    "output_rows": 0,
+                },
+            )
+            aggregate["calls"] += metric["calls"]
+            aggregate["elapsed_compute_ns"] += metric["elapsed_compute_ns"]
+            aggregate["output_rows"] += metric["output_rows"]
+    return {
+        "construction": construction,
+        "index_builds": [builds[key] for key in sorted(builds)],
+        "operations": [operations[key] for key in sorted(operations)],
+        "engines": engines,
+    }
 
-        Returns:
-            A point SpatialFrame over ``df``.
-        """
-        with self.profiler.stage("build"):
-            return super().point_frame(df, wkb_col)
 
-    def polygon_frame(self, df, wkb_col):
-        """Time polygon frame construction (WKB decode + index build) into the build stage.
-
-        Args:
-            df: DataFrame holding the WKB polygon column.
-            wkb_col: Name of the WKB polygon column.
-
-        Returns:
-            A polygon SpatialFrame over ``df``.
-        """
-        with self.profiler.stage("build"):
-            return super().polygon_frame(df, wkb_col)
-
-
-def profile_payload(profiler: _StageProfiler, elapsed: float) -> dict:
-    """Reduce a finished profiler to a per-stage time and memory payload.
-
-    Args:
-        profiler: The stage profiler after the run, with its sampler stopped.
-        elapsed: Total wall time of the timed region in seconds.
-
-    Returns:
-        A dict with a "time" map (stages plus total) and a "mem" map (RSS bytes: baseline,
-        overall peak, and per-stage peak), all order-independent.
-    """
-    t = profiler.times
-    measured = t.get("fetch", 0.0) + t.get("build", 0.0) + t.get("collect", 0.0)
+def profile_payload(profiler: _StageProfiler, elapsed: float, engines: list[dict]) -> dict:
+    """Build the raw profile payload from harness boundaries and Engine-reported work."""
+    engine = _aggregate_engine_metrics(engines)
+    engine_ns = sum(engine["construction"].values())
+    engine_ns += sum(metric["elapsed_compute_ns"] for metric in engine["index_builds"])
+    engine_ns += sum(metric["elapsed_compute_ns"] for metric in engine["operations"])
+    fetch = profiler.times.get("fetch", 0.0)
+    materialize = profiler.times.get("materialize", 0.0)
     return {
         "time": {
             "total": elapsed,
-            "fetch": t.get("fetch", 0.0),
-            "build": t.get("build", 0.0),
-            "query": max(elapsed - measured, 0.0),
-            "collect": t.get("collect", 0.0),
+            "fetch": fetch,
+            "execute": max(elapsed - fetch - materialize, 0.0),
+            "materialize": materialize,
+            "non_engine": max(elapsed - fetch - engine_ns / _NS_PER_SECOND, 0.0),
         },
         "mem": {
             "baseline": profiler.baseline,
             "peak": profiler.peak,
-            **{s: profiler.stage_peak.get(s, 0) for s in _STAGES},
+            **{stage: profiler.stage_peak.get(stage, profiler.baseline) for stage in _STAGES},
         },
+        "engine": engine,
     }
 
 
 def profile_query(query, data_dir: str, index_mode: str) -> dict:
-    """Run one query once under profiling and verification, parsing the runner output.
+    """Run one profiled query in an isolated process and parse its oracle verdict."""
+    result = spawn_query(query.id, data_dir, index_mode, "--profile")
+    if result["status"] != "ok":
+        print(f"[testcase] {result['status']} {query.id}: {result.get('error', '')}", flush=True)
+        return {
+            "status": result["status"],
+            "title": query.title,
+            "error": result.get("error", ""),
+        }
 
-    Args:
-        query: Query module exposing id, title, pycanopy(tables), and compare.
-        data_dir: ``s3://`` URI of the SpatialBench dataset root.
-        index_mode: PyCanopy index build policy ("eager" / "none" / "auto").
-
-    Returns:
-        A result dict with status, title, and on success the profile payload and verdict.
-    """
-    r = spawn_query(query.id, data_dir, index_mode, "--profile")
-    if r["status"] != "ok":
-        print(f"[testcase] {r['status']} {query.id}: {r.get('error', '')}", flush=True)
-        return {"status": r["status"], "title": query.title, "error": r.get("error", "")}
-
-    kv = r["kv"]
+    kv = result["kv"]
     profile = json.loads(kv["PYCANOPY_PROFILE"])
     if "PYCANOPY_MATCH" in kv:
         verify, detail = "match", kv["PYCANOPY_MATCH"]
@@ -208,7 +175,9 @@ def profile_query(query, data_dir: str, index_mode: str) -> dict:
     else:
         verify, detail = "error", kv.get("PYCANOPY_VERIFY_ERROR", "no verification output")
 
-    print(f"[testcase] completed {query.id} in {r['time']:.2f}s [verify: {verify}]", flush=True)
+    print(
+        f"[testcase] completed {query.id} in {result['time']:.2f}s [verify: {verify}]", flush=True
+    )
     if verify != "match":
         print(f"[verification] {verify} on {query.id}: {detail}", flush=True)
     return {
@@ -220,56 +189,89 @@ def profile_query(query, data_dir: str, index_mode: str) -> dict:
     }
 
 
-def _section(qid: str, r: dict) -> str:
-    # Render one per-query block: timing, sampled memory, and the verification verdict
-    lines = [_SEP, f"{qid}  {r.get('title', '')}".rstrip(), _SUBSEP]
-    if r["status"] != "ok":
-        return "\n".join([*lines, f"status        {r['status']}  {r.get('error', '')}".rstrip()])
+def _section(qid: str, result: dict) -> str:
+    lines = [_SEP, f"{qid}  {result.get('title', '')}".rstrip(), _SUBSEP]
+    if result["status"] != "ok":
+        return "\n".join(
+            [*lines, f"status        {result['status']}  {result.get('error', '')}".rstrip()]
+        )
 
-    t = r["profile"]["time"]
-    mib = {k: v / _MIB for k, v in r["profile"]["mem"].items()}
-    verdict = {"match": "PASS", "MISMATCH": "FAIL", "error": "ERROR"}.get(r["verify"], r["verify"])
+    profile = result["profile"]
+    wall = profile["time"]
+    mib = {name: value / _MIB for name, value in profile["mem"].items()}
+    engine = profile["engine"]
+    construction = engine["construction"]
+    verdict = {"match": "PASS", "MISMATCH": "FAIL", "error": "ERROR"}.get(
+        result["verify"], result["verify"]
+    )
     lines += [
-        f"time (s)      total {t['total']:6.2f}   fetch {t['fetch']:5.2f}   "
-        f"build {t['build']:5.2f}   query {t['query']:6.2f}   collect {t['collect']:5.2f}",
-        f"memory (MiB)  peak {mib['peak']:7.1f}   baseline {mib['baseline']:7.1f}   "
-        f"demand {mib['peak'] - mib['baseline']:+7.1f}",
-        f"  stage peak    fetch {mib['fetch']:7.1f}   build {mib['build']:7.1f}   "
-        f"query {mib['query']:7.1f}   collect {mib['collect']:7.1f}",
-        f"verify        {verdict}   {r['verify_detail']}",
+        f"wall (s)      total {wall['total']:7.3f}  fetch {wall['fetch']:7.3f}  "
+        f"execute {wall['execute']:7.3f}  materialize {wall['materialize']:7.3f}",
+        f"               non-engine wall after fetch {wall['non_engine']:7.3f}",
+        f"memory (MiB)  peak {mib['peak']:8.1f}  baseline {mib['baseline']:8.1f}  "
+        f"demand {mib['peak'] - mib['baseline']:+8.1f}",
+        f"  stage peak  fetch {mib['fetch']:8.1f}  execute {mib['execute']:8.1f}  "
+        f"materialize {mib['materialize']:8.1f}",
+        f"engines       {len(engine['engines'])}  WKB decode "
+        f"{construction['wkb_decode_ns'] / _NS_PER_SECOND:7.3f}s  statistics "
+        f"{construction['statistics_ns'] / _NS_PER_SECOND:7.3f}s",
     ]
+    if engine["index_builds"]:
+        lines.append("index builds")
+        for metric in engine["index_builds"]:
+            lines.append(
+                f"  {metric['index']:<26} calls {metric['build_count']:5,d}  "
+                f"time {metric['elapsed_compute_ns'] / _NS_PER_SECOND:9.4f}s"
+            )
+    if engine["operations"]:
+        lines.append("engine operations")
+        for metric in engine["operations"]:
+            lines.append(
+                f"  {metric['name']:<36} {metric['index']:<12} calls {metric['calls']:5,d}  "
+                f"rows {metric['output_rows']:12,d}  "
+                f"time {metric['elapsed_compute_ns'] / _NS_PER_SECOND:9.4f}s"
+            )
+    lines.append(f"verify        {verdict}   {result['verify_detail']}")
     return "\n".join(lines)
 
 
 def write_profile(results: dict, index_mode: str, path: Path) -> None:
-    """Write the per-query time + memory + verification report to ``path``.
-
-    Args:
-        results: Map of query id to its profile_query result dict.
-        index_mode: Index policy the run used.
-        path: Output text file path.
-    """
+    """Write the human-readable profile report."""
     head = (
-        f"PyCanopy SpatialBench SF1 profile (index_mode={index_mode}, 1 run)\n"
-        "Times in seconds, include profiling overhead. Memory is process RSS in MiB, sampled\n"
-        f"every {int(_SAMPLE_INTERVAL * 1000)} ms; demand is peak minus the post-import baseline."
+        f"PyCanopy historical SpatialBench SF1 profile (index_mode={index_mode}, 1 run/query)\n"
+        "Engine times are always-on production metrics. Harness stages are wall boundaries.\n"
+        f"RSS is sampled every {int(_SAMPLE_INTERVAL * 1000)} ms. Verification uses the "
+        "SedonaDB oracle for this workload."
     )
-    parts = [head, *[_section(qid, r) for qid, r in results.items()], _SEP]
+    parts = [head, *[_section(qid, result) for qid, result in results.items()], _SEP]
     path.write_text("\n".join(parts) + "\n")
 
 
 def run_profile_suite(query_modules: list, data_dir: str, index_mode: str = "auto") -> Path:
-    """Profile and verify each query once and write assets/profile.txt, returning its path.
-
-    Args:
-        query_modules: Query modules to run, each exposing id, pycanopy, and compare.
-        data_dir: ``s3://`` URI of the SpatialBench dataset root.
-        index_mode: PyCanopy index build policy ("eager" / "none" / "auto").
-
-    Returns:
-        The profile.txt path written under assets/.
-    """
+    """Profile and oracle-verify every selected SF1 query exactly once."""
     results = {query.id: profile_query(query, data_dir, index_mode) for query in query_modules}
-    path = _ASSETS_DIR / "profile.txt"
-    write_profile(results, index_mode, path)
-    return path
+    text_path = _ASSETS_DIR / "profile.txt"
+    json_path = _ASSETS_DIR / "profile.json"
+    write_profile(results, index_mode, text_path)
+    json_path.write_text(
+        json.dumps(
+            {
+                "workload": "historical SpatialBench SF1",
+                "index_mode": index_mode,
+                "runs_per_query": 1,
+                "queries": results,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+
+    invalid = [
+        qid
+        for qid, result in results.items()
+        if result["status"] != "ok" or result.get("verify") != "match"
+    ]
+    if invalid:
+        raise RuntimeError(f"profile verification failed for: {', '.join(invalid)}")
+    return text_path

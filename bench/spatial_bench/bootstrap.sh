@@ -19,14 +19,25 @@ REPO_URL="@@REPO_URL@@"
 REPO_BRANCH="@@REPO_BRANCH@@"
 SCALE_FACTOR="@@SCALE_FACTOR@@"
 MAX_RUNTIME_MIN="@@MAX_RUNTIME_MIN@@"
+PROFILE_MODE="@@PROFILE_MODE@@"
 
 S3_BASE="s3://${RESULT_BUCKET}/${RESULT_PREFIX}/${RUN_ID}"
 LOG=/var/log/pycanopy-bootstrap.log
 exec > >(tee -a "$LOG") 2>&1
 log() { echo "[bootstrap] $*"; }
 
-# Always ship the log and self-terminate, whether we succeed or fail
-cleanup() { aws s3 cp "$LOG" "${S3_BASE}/bootstrap.log" --region "$REGION" || true; shutdown -h now; }
+# Always ship the log and any completed profile artifacts, then self-terminate.
+cleanup() {
+  if [ "$PROFILE_MODE" = "1" ]; then
+    for artifact in profile.txt profile.json; do
+      if [ -f "/opt/pycanopy/assets/$artifact" ]; then
+        aws s3 cp "/opt/pycanopy/assets/$artifact" "${S3_BASE}/$artifact" --region "$REGION" || true
+      fi
+    done
+  fi
+  aws s3 cp "$LOG" "${S3_BASE}/bootstrap.log" --region "$REGION" || true
+  shutdown -h now
+}
 trap cleanup EXIT
 
 # Hard cap: terminate even if a step wedges
@@ -75,6 +86,9 @@ export TMPDIR=/data/scratch
 # object_store picks up IMDS credentials automatically once the region is set
 export AWS_DEFAULT_REGION="$REGION"
 log "measuring sf${SCALE_FACTOR}"
+if [ "$PROFILE_MODE" = "1" ]; then
+  rm -f /opt/pycanopy/assets/profile.txt /opt/pycanopy/assets/profile.json
+fi
 uv run python -m bench.spatial_bench._onbox --scale-factor "$SCALE_FACTOR" @@BENCH_FLAGS@@
 
 # Normal mode writes chart PNG + results txt; profile mode writes profile.txt; upload whichever exists.
@@ -87,8 +101,12 @@ RESULTS_TXT="spatial-bench-sf${SCALE_FACTOR}@@OUT_SUFFIX@@-results.txt"
 if [ -f "/opt/pycanopy/assets/$RESULTS_TXT" ]; then
   aws s3 cp "/opt/pycanopy/assets/$RESULTS_TXT" "${S3_BASE}/$RESULTS_TXT" --region "$REGION"
 fi
-if [ -f "/opt/pycanopy/assets/profile.txt" ]; then
-  aws s3 cp "/opt/pycanopy/assets/profile.txt" "${S3_BASE}/profile.txt" --region "$REGION"
+if [ "$PROFILE_MODE" = "1" ]; then
+  for artifact in profile.txt profile.json; do
+    if [ -f "/opt/pycanopy/assets/$artifact" ]; then
+      aws s3 cp "/opt/pycanopy/assets/$artifact" "${S3_BASE}/$artifact" --region "$REGION"
+    fi
+  done
 fi
 
 log "done"

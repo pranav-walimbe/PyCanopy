@@ -9,6 +9,7 @@ from shapely.geometry import MultiPolygon, Polygon
 from shapely.geometry import Point as ShapelyPoint
 
 from pycanopy import Engine
+from pycanopy.engine import _capture_engine_metrics
 
 # Point fixture:
 # Index 0=(0,0)  1=(1,0)  2=(2,0)  3=(0,1)  4=(1,1)
@@ -214,6 +215,22 @@ def test_batch_metrics_aggregate_streamed_style_calls_and_reuse_indexes():
     builds = {item["index"]: item for item in metrics["index_builds"]}
     assert builds["r_tree"]["build_count"] == 1
     assert builds["prepared_polygons"]["build_count"] == 1
+
+
+def test_profile_capture_collects_temporary_and_live_engines():
+    with _capture_engine_metrics() as capture:
+        live = Engine.from_coords(XS, YS)
+        live.knn(1.2, 0.1, 1)
+
+        temporary = Engine.from_coords(XS, YS)
+        temporary.range_query(0.0, 0.0, 1.0, 1.0)
+        del temporary  # metrics are drained by lifecycle capture without retaining the Engine
+
+        metrics = capture.take_metrics()
+
+    assert len(metrics) == 2
+    names = {operation["name"] for engine in metrics for operation in engine["operations"]}
+    assert names == {"knn", "range_query"}
 
 
 # knn

@@ -65,6 +65,7 @@ def _user_data(
         "REPO_BRANCH": cfg["repo_branch"],
         "SCALE_FACTOR": str(scale_factor),
         "MAX_RUNTIME_MIN": str(cfg["max_runtime_min"]),
+        "PROFILE_MODE": "1" if profile else "0",
         "BENCH_FLAGS": " ".join(bench_flags),
         "OUT_SUFFIX": suffix,
     }
@@ -172,7 +173,7 @@ def _wait_for_success(s3, ec2, cfg: dict, run_id: str, instance_id: str) -> bool
 
 
 def _download(s3, cfg: dict, run_id: str) -> list[Path]:
-    # Download the chart PNG / profile.txt into assets/ and the log into tmp, skipping markers
+    # Download benchmark/profile artifacts into assets/ and the log into tmp, skipping markers
     prefix = f"{_RESULT_PREFIX}/{run_id}/"
     objs = s3.list_objects_v2(Bucket=cfg["result_bucket"], Prefix=prefix).get("Contents", [])
     paths: list[Path] = []
@@ -180,7 +181,7 @@ def _download(s3, cfg: dict, run_id: str) -> list[Path]:
         name = obj["Key"].rsplit("/", 1)[-1]
         if name in ("_SUCCESS", "progress.log"):
             continue
-        keep = name.endswith(".png") or name.endswith(".txt")
+        keep = name.endswith((".png", ".txt", ".json"))
         dest = _ASSETS_DIR if keep else Path(tempfile.gettempdir())
         dest.mkdir(parents=True, exist_ok=True)
         local = dest / name
@@ -229,7 +230,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--profile",
         action="store_true",
-        help="SF1 profiling mode (one run, per-stage time + memory + verify); takes no other flags.",
+        help="SF1 profiling mode (one run/query, Engine metrics + RSS + verify); takes no other flags.",
     )
     parser.add_argument(
         "--query",

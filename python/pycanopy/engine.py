@@ -7,6 +7,9 @@ Normalizes varied point input to contiguous float64 arrays, with standard 2D LE 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
+from weakref import WeakSet
 
 import numpy as np
 import pyarrow as pa
@@ -21,6 +24,66 @@ except ImportError:
 
 _SHAPELY_POLYGON_TYPE_ID = 3
 _SHAPELY_MULTIPOLYGON_TYPE_ID = 6
+_ACTIVE_METRICS_CAPTURE: ContextVar[_EngineMetricsCapture | None] = ContextVar(
+    "pycanopy_engine_metrics_capture", default=None
+)
+
+
+class _EngineMetricsCapture:
+    """Discover profiled Engines weakly and retain only their drained metric dictionaries."""
+
+    def __init__(self) -> None:
+        self._engines: WeakSet[Engine] = WeakSet()
+        self._metrics: dict[int, dict[str, object]] = {}
+        self._next_id = 0
+
+    def register(self, engine: Engine) -> None:
+        engine._metrics_capture = self
+        engine._metrics_capture_id = self._next_id
+        self._next_id += 1
+        self._engines.add(engine)
+
+    def collect(self, engine: Engine) -> None:
+        capture_id = engine._metrics_capture_id
+        self._metrics[capture_id] = {
+            "engine_id": capture_id,
+            "n": engine.n,
+            **engine._core.take_metrics(),
+        }
+        engine._metrics_capture = None
+
+    def take_metrics(self) -> list[dict[str, object]]:
+        for engine in list(self._engines):
+            self.collect(engine)
+        self._engines.clear()
+        metrics = [self._metrics[key] for key in sorted(self._metrics)]
+        self._metrics.clear()
+        return metrics
+
+    def clear(self) -> None:
+        for engine in list(self._engines):
+            engine._metrics_capture = None
+        self._engines.clear()
+        self._metrics.clear()
+
+
+@contextmanager
+def _capture_engine_metrics():
+    """Collect every Engine created in this context for SpatialBench profile mode."""
+    capture = _EngineMetricsCapture()
+    token = _ACTIVE_METRICS_CAPTURE.set(capture)
+    try:
+        yield capture
+    finally:
+        _ACTIVE_METRICS_CAPTURE.reset(token)
+        capture.clear()
+
+
+def _register_metrics_engine(engine: Engine) -> Engine:
+    capture = _ACTIVE_METRICS_CAPTURE.get()
+    if capture is not None:
+        capture.register(engine)
+    return engine
 
 
 def _to_numpy_xy(geometries) -> tuple[np.ndarray, np.ndarray]:
@@ -334,9 +397,20 @@ class Engine:
 
     def __init__(self, geometries=None):
         self._core = None
+        self._metrics_capture = None
+        self._metrics_capture_id = -1
         if geometries is not None:
             xs, ys = _to_numpy_xy(geometries)
             self._core = _CoreEngine.from_points(xs, ys)
+            _register_metrics_engine(self)
+
+    def __del__(self):
+        capture = getattr(self, "_metrics_capture", None)
+        if capture is not None and getattr(self, "_core", None) is not None:
+            try:
+                capture.collect(self)
+            except Exception:
+                pass  # interpreter shutdown or an already-closed profiling scope
 
     @classmethod
     def from_polygons(cls, geometries) -> Engine:
@@ -352,8 +426,10 @@ class Engine:
         """
         xs, ys, ring_offsets, poly_offsets, part_poly = _extract_polygon_rings(geometries)
         eng = cls.__new__(cls)
+        eng._metrics_capture = None
+        eng._metrics_capture_id = -1
         eng._core = _CoreEngine.from_polygon_rings(xs, ys, ring_offsets, poly_offsets, part_poly)
-        return eng
+        return _register_metrics_engine(eng)
 
     @classmethod
     def from_wkb_polygons(cls, column) -> Engine:
@@ -367,11 +443,13 @@ class Engine:
             Engine object over polygon data.
         """
         eng = cls.__new__(cls)
+        eng._metrics_capture = None
+        eng._metrics_capture_id = -1
         buffers = _wkb_binary_buffers(column)
         if buffers is not None:
             try:
                 eng._core = _CoreEngine.from_wkb_polygons(*buffers)
-                return eng
+                return _register_metrics_engine(eng)
             except ValueError:
                 pass  # unusual WKB variant -> shapely fallback
         raw = column.to_numpy() if hasattr(column, "to_numpy") else np.asarray(column)
@@ -406,11 +484,13 @@ class Engine:
             Engine object over coord data.
         """
         eng = cls.__new__(cls)
+        eng._metrics_capture = None
+        eng._metrics_capture_id = -1
         eng._core = _CoreEngine.from_points(
             np.ascontiguousarray(xs, dtype=np.float64),
             np.ascontiguousarray(ys, dtype=np.float64),
         )
-        return eng
+        return _register_metrics_engine(eng)
 
     def build_index(self) -> None:
         """Build the spatial index ahead of any query (idempotent)."""
