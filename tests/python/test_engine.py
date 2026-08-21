@@ -231,6 +231,7 @@ def test_batch_metrics_aggregate_streamed_style_calls_and_reuse_indexes():
     first = eng.batch_contains(np.array([0.5]), np.array([0.5]), total_q_count=2)
     second = eng.batch_contains(np.array([1.5]), np.array([0.5]), total_q_count=2)
     assert len(first) == len(second) == 2
+    assert first.dtype == second.dtype == np.uint32
 
     metrics = eng.take_metrics()
     operation = _metric(metrics, "batch_contains", "r_tree")

@@ -4,7 +4,7 @@
 ///
 /// Pairs whose two parts belong to the same polygon are dropped, and the remaining
 /// logical pairs are sorted and deduplicated so each intersecting polygon pair appears once.
-pub fn dedup_self_pairs(pairs: Vec<u64>, part_poly: &[u32]) -> Vec<u64> {
+pub fn dedup_self_pairs(pairs: Vec<u32>, part_poly: &[u32]) -> Vec<u32> {
     let mut logical: Vec<(u32, u32)> = pairs
         .as_chunks::<2>()
         .0
@@ -18,8 +18,8 @@ pub fn dedup_self_pairs(pairs: Vec<u64>, part_poly: &[u32]) -> Vec<u64> {
     logical.dedup();
     let mut out = Vec::with_capacity(logical.len() * 2);
     for (a, b) in logical {
-        out.push(a as u64);
-        out.push(b as u64);
+        out.push(a);
+        out.push(b);
     }
     out
 }

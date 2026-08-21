@@ -11,7 +11,7 @@ use rdst::{RadixKey, RadixSort};
 const TILE_GRID: usize = 16;
 
 /// Per-tile kNN results
-type TileResults = Vec<Vec<(u32, Vec<(u64, f64)>)>>;
+type TileResults = Vec<Vec<(u32, Vec<(u32, f64)>)>>;
 
 use crate::index::kdtree::PackedKdTree;
 use crate::index::{point_box_dist2, SpatialIndex};
@@ -20,12 +20,17 @@ use crate::query::geometry::point_to_polygon_distance;
 use crate::query::prepared::PreparedPolygons;
 use crate::query::range::pip_raw;
 
-/// For each query point, find the k nearest neighbours in the index.
+/// For each query point, find the k nearest neighbours in the index as native join indices.
 /// Returns a flat array of shape (n_queries * k,): block i holds results for query i.
-pub fn par_knn<I: SpatialIndex + Sync>(index: &I, qxs: &[f64], qys: &[f64], k: usize) -> Vec<u64> {
+pub fn par_knn_join<I: SpatialIndex + Sync>(
+    index: &I,
+    qxs: &[f64],
+    qys: &[f64],
+    k: usize,
+) -> Vec<u32> {
     qxs.par_iter()
         .zip(qys.par_iter())
-        .flat_map_iter(|(&qx, &qy)| index.nearest(qx, qy, k).into_iter().map(|i| i as u64))
+        .flat_map_iter(|(&qx, &qy)| index.nearest(qx, qy, k).into_iter().map(|i| i as u32))
         .collect()
 }
 
@@ -41,7 +46,7 @@ pub fn par_knn_with_delta<I: SpatialIndex + Sync>(
     ys: &[f64],
     delta_xs: &[f64],
     delta_ys: &[f64],
-) -> Vec<u64> {
+) -> Vec<u32> {
     let n_main = xs.len();
     qxs.par_iter()
         .zip(qys.par_iter())
@@ -64,7 +69,7 @@ pub fn par_knn_with_delta<I: SpatialIndex + Sync>(
                 a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
             });
             candidates.truncate(k);
-            candidates.into_iter().map(|(i, _)| i as u64)
+            candidates.into_iter().map(|(i, _)| i as u32)
         })
         .collect()
 }
@@ -82,13 +87,13 @@ pub fn par_contains<I: SpatialIndex + Sync>(
     poly_offsets: &[i64],
     prepared: Option<&PreparedPolygons>,
     part_poly: Option<&[u32]>,
-) -> Vec<u64> {
+) -> Vec<u32> {
     qxs.par_iter()
         .zip(qys.par_iter())
         .enumerate()
         .flat_map_iter(|(qi, (&qx, &qy))| {
             // MBR pre-filter via index, then exact PIP, mapping parts to polygons
-            let mut out: Vec<u64> = Vec::new();
+            let mut out: Vec<u32> = Vec::new();
             let mut seen: Vec<u32> = Vec::new();
             for ei in index.range(qx, qy, qx, qy) {
                 let hit = match prepared {
@@ -102,12 +107,12 @@ pub fn par_contains<I: SpatialIndex + Sync>(
                     Some(pp) if seen.contains(&pp[ei]) => {}
                     Some(pp) => {
                         seen.push(pp[ei]);
-                        out.push(qi as u64);
-                        out.push(pp[ei] as u64);
+                        out.push(qi as u32);
+                        out.push(pp[ei]);
                     }
                     None => {
-                        out.push(qi as u64);
-                        out.push(ei as u64);
+                        out.push(qi as u32);
+                        out.push(ei as u32);
                     }
                 }
             }
@@ -167,7 +172,7 @@ pub fn par_within_distance<I: SpatialIndex + Sync>(
     ys: &[f64],
     distance: f64,
     metric: DistanceMetric,
-) -> Vec<u64> {
+) -> Vec<u32> {
     // Dispatch once per call, never per candidate, so the planar path compiles as it always did
     match metric {
         DistanceMetric::Planar => within_distance_planar(index, qxs, qys, xs, ys, distance),
@@ -183,7 +188,7 @@ fn within_distance_planar<I: SpatialIndex + Sync>(
     xs: &[f64],
     ys: &[f64],
     distance: f64,
-) -> Vec<u64> {
+) -> Vec<u32> {
     let d2 = distance * distance;
     // Single probe parallelises the refinement over candidates, multi-probe over queries
     if qxs.len() == 1 {
@@ -197,7 +202,7 @@ fn within_distance_planar<I: SpatialIndex + Sync>(
                 let dy = ys[ei] - qy;
                 dx * dx + dy * dy <= d2
             })
-            .flat_map_iter(|ei| [0u64, ei as u64])
+            .flat_map_iter(|ei| [0u32, ei as u32])
             .collect();
     }
     qxs.par_iter()
@@ -212,7 +217,7 @@ fn within_distance_planar<I: SpatialIndex + Sync>(
                     let dy = ys[ei] - qy;
                     dx * dx + dy * dy <= d2
                 })
-                .flat_map(move |ei| [qi as u64, ei as u64])
+                .flat_map(move |ei| [qi as u32, ei as u32])
         })
         .collect()
 }
@@ -225,7 +230,7 @@ fn within_distance_haversine<I: SpatialIndex + Sync>(
     xs: &[f64],
     ys: &[f64],
     distance: f64,
-) -> Vec<u64> {
+) -> Vec<u32> {
     // Single probe parallelises the refinement over candidates, multi-probe over queries
     if qxs.len() == 1 {
         let qx = qxs[0];
@@ -236,7 +241,7 @@ fn within_distance_haversine<I: SpatialIndex + Sync>(
             .range(min_x, min_y, max_x, max_y)
             .into_par_iter()
             .filter(move |&ei| haversine_distance_m(qx, qy, cos_lat, xs[ei], ys[ei]) <= distance)
-            .flat_map_iter(|ei| [0u64, ei as u64])
+            .flat_map_iter(|ei| [0u32, ei as u32])
             .collect();
     }
     qxs.par_iter()
@@ -252,7 +257,7 @@ fn within_distance_haversine<I: SpatialIndex + Sync>(
                 .filter(move |&ei| {
                     haversine_distance_m(qx, qy, cos_lat, xs[ei], ys[ei]) <= distance
                 })
-                .flat_map(move |ei| [qi as u64, ei as u64])
+                .flat_map(move |ei| [qi as u32, ei as u32])
         })
         .collect()
 }
@@ -266,7 +271,7 @@ pub fn par_within_distance_flipped(
     ys: &[f64],
     distance: f64,
     metric: DistanceMetric,
-) -> Vec<u64> {
+) -> Vec<u32> {
     // Build a KD-tree on the (smaller) query side
     let q_index = PackedKdTree::build(Arc::from(qxs.to_vec()), Arc::from(qys.to_vec()));
     // Dispatch once per call, never per candidate, so the planar path compiles as it always did
@@ -285,7 +290,7 @@ pub fn par_within_distance_flipped(
                             let dy = qys[qi] - sy;
                             dx * dx + dy * dy <= d2
                         })
-                        .flat_map(move |qi| [qi as u64, ei as u64])
+                        .flat_map(move |qi| [qi as u32, ei as u32])
                 })
                 .collect()
         }
@@ -303,7 +308,7 @@ pub fn par_within_distance_flipped(
                     .filter(move |&qi| {
                         haversine_distance_m(sx, sy, cos_lat, qxs[qi], qys[qi]) <= distance
                     })
-                    .flat_map(move |qi| [qi as u64, ei as u64])
+                    .flat_map(move |qi| [qi as u32, ei as u32])
             })
             .collect(),
     }
@@ -322,13 +327,13 @@ pub fn par_within_distance_to_polygons<I: SpatialIndex + Sync>(
     poly_offsets: &[i64],
     distance: f64,
     part_poly: Option<&[u32]>,
-) -> Vec<u64> {
+) -> Vec<u32> {
     qxs.par_iter()
         .zip(qys.par_iter())
         .enumerate()
         .flat_map_iter(|(qi, (&qx, &qy))| {
             // MBR pre-filter, exact distance, then map parts to polygons (dedup per query)
-            let mut out: Vec<u64> = Vec::new();
+            let mut out: Vec<u32> = Vec::new();
             let mut seen: Vec<u32> = Vec::new();
             for ei in index.range(qx - distance, qy - distance, qx + distance, qy + distance) {
                 if point_to_polygon_distance(qx, qy, xs, ys, ring_offsets, poly_offsets, ei)
@@ -340,12 +345,12 @@ pub fn par_within_distance_to_polygons<I: SpatialIndex + Sync>(
                     Some(pp) if seen.contains(&pp[ei]) => {}
                     Some(pp) => {
                         seen.push(pp[ei]);
-                        out.push(qi as u64);
-                        out.push(pp[ei] as u64);
+                        out.push(qi as u32);
+                        out.push(pp[ei]);
                     }
                     None => {
-                        out.push(qi as u64);
-                        out.push(ei as u64);
+                        out.push(qi as u32);
+                        out.push(ei as u32);
                     }
                 }
             }
@@ -386,10 +391,10 @@ fn part_mbrs(xs: &[f64], ys: &[f64], ring_offsets: &[i64], poly_offsets: &[i64])
 
 /// Logical polygon owning a part, the identity when the dataset has no multi-part mapping
 #[inline]
-fn logical_poly(part_poly: Option<&[u32]>, ei: usize) -> u64 {
+fn logical_poly(part_poly: Option<&[u32]>, ei: usize) -> u32 {
     match part_poly {
-        Some(pp) => pp[ei] as u64,
-        None => ei as u64,
+        Some(pp) => pp[ei],
+        None => ei as u32,
     }
 }
 
@@ -397,7 +402,7 @@ fn logical_poly(part_poly: Option<&[u32]>, ei: usize) -> u64 {
 ///
 /// Candidates arrive in lower-bound order rather than exact order, so a later part of a polygon
 /// already held can still be the nearer one and has to displace the entry that is there.
-fn insert_nearest(kept: &mut Vec<(u64, f64)>, pid: u64, d: f64, k: usize) {
+fn insert_nearest(kept: &mut Vec<(u32, f64)>, pid: u32, d: f64, k: usize) {
     match kept.iter().position(|c| c.0 == pid) {
         Some(pos) if kept[pos].1 <= d => return,
         Some(pos) => {
@@ -423,7 +428,7 @@ fn insert_nearest(kept: &mut Vec<(u64, f64)>, pid: u64, d: f64, k: usize) {
 /// cannot make that guarantee: any cutoff can drop a polygon whose MBR ranks poorly.
 ///
 /// The sweep re-refines the seed's own parts, which costs k distances and saves tracking which
-/// parts were already seen. Padded with `(u64::MAX, inf)` when fewer than k polygons exist.
+/// parts were already seen. Padded with `(u32::MAX, inf)` when fewer than k polygons exist.
 #[allow(clippy::too_many_arguments)]
 fn knn_polys_exact<I: SpatialIndex>(
     index: &I,
@@ -437,8 +442,8 @@ fn knn_polys_exact<I: SpatialIndex>(
     bbox: &[[f64; 4]],
     part_poly: Option<&[u32]>,
     n_parts: usize,
-) -> Vec<(u64, f64)> {
-    let mut kept: Vec<(u64, f64)> = Vec::with_capacity(k + 1);
+) -> Vec<(u32, f64)> {
+    let mut kept: Vec<(u32, f64)> = Vec::with_capacity(k + 1);
     // Seed pass. One fetch of k parts covers k polygons unless parts share a logical polygon,
     // so grow the fetch until it does or until every part has been seen.
     let mut fetch = k;
@@ -455,7 +460,7 @@ fn knn_polys_exact<I: SpatialIndex>(
     }
     if kept.len() < k {
         // The seed swept every part, so the dataset holds fewer than k polygons
-        kept.resize(k, (u64::MAX, f64::INFINITY));
+        kept.resize(k, (u32::MAX, f64::INFINITY));
         return kept;
     }
 
@@ -554,7 +559,7 @@ pub fn par_knn_to_polygons<I: SpatialIndex + Sync>(
     k: usize,
     n_parts: usize,
     part_poly: Option<&[u32]>,
-) -> (Vec<u64>, Vec<f64>) {
+) -> (Vec<u32>, Vec<f64>) {
     let n = qxs.len();
     let bbox = part_mbrs(xs, ys, ring_offsets, poly_offsets);
 
@@ -587,7 +592,7 @@ pub fn par_knn_to_polygons<I: SpatialIndex + Sync>(
         })
         .collect();
 
-    let mut idx = vec![0u64; n * k];
+    let mut idx = vec![0u32; n * k];
     let mut dist = vec![0f64; n * k];
     for tile in tile_results {
         for (qi, cands) in tile {
@@ -602,23 +607,23 @@ pub fn par_knn_to_polygons<I: SpatialIndex + Sync>(
 }
 
 // dist_bits = f64::to_bits(): non-negative floats sort identically as u64.
-// LSD levels 0-7 = target_idx (secondary key), 8-15 = dist_bits (primary key).
+// LSD levels 0-3 = target_idx (secondary key), 4-11 = dist_bits (primary key).
 #[derive(Clone, Copy)]
 struct KnnTriple {
     dist_bits: u64,
-    target_idx: u64,
-    query_idx: u64,
+    target_idx: u32,
+    query_idx: u32,
 }
 
 impl RadixKey for KnnTriple {
-    const LEVELS: usize = 16;
+    const LEVELS: usize = 12;
 
     #[inline]
     fn get_level(&self, level: usize) -> u8 {
-        if level < 8 {
+        if level < 4 {
             (self.target_idx >> (level * 8)) as u8
         } else {
-            (self.dist_bits >> ((level - 8) * 8)) as u8
+            (self.dist_bits >> ((level - 4) * 8)) as u8
         }
     }
 }
@@ -660,7 +665,7 @@ fn build_query_tiles(qxs: &[f64], qys: &[f64], order: &[u32], grid_n: usize) -> 
 fn kway_merge(tiles: Vec<Vec<KnnTriple>>) -> Vec<KnnTriple> {
     let total: usize = tiles.iter().map(|v| v.len()).sum();
     let mut out = Vec::with_capacity(total);
-    let mut heap: BinaryHeap<Reverse<(u64, u64, usize, usize)>> = BinaryHeap::new();
+    let mut heap: BinaryHeap<Reverse<(u64, u32, usize, usize)>> = BinaryHeap::new();
     for (ti, v) in tiles.iter().enumerate() {
         if !v.is_empty() {
             heap.push(Reverse((v[0].dist_bits, v[0].target_idx, ti, 0)));
@@ -695,7 +700,7 @@ pub fn par_knn_to_polygons_sorted<I: SpatialIndex + Sync>(
     k: usize,
     n_parts: usize,
     part_poly: Option<&[u32]>,
-) -> (Vec<u64>, Vec<u64>, Vec<f64>) {
+) -> (Vec<u32>, Vec<u32>, Vec<f64>) {
     let bbox = part_mbrs(xs, ys, ring_offsets, poly_offsets);
     let order = morton_order(qxs, qys);
     let tiles = build_query_tiles(qxs, qys, &order, TILE_GRID);
@@ -722,11 +727,11 @@ pub fn par_knn_to_polygons_sorted<I: SpatialIndex + Sync>(
                     );
                     cands
                         .into_iter()
-                        .filter(|(t_idx, _)| *t_idx != u64::MAX)
+                        .filter(|(t_idx, _)| *t_idx != u32::MAX)
                         .map(move |(t_idx, dist)| KnnTriple {
                             dist_bits: dist.to_bits(),
                             target_idx: t_idx,
-                            query_idx: qi as u64,
+                            query_idx: qi,
                         })
                 })
                 .collect();
@@ -756,7 +761,7 @@ pub fn par_polygon_intersects_join<I: SpatialIndex + Sync>(
     ys: &[f64],
     ring_offsets: &[i64],
     poly_offsets: &[i64],
-) -> Vec<u64> {
+) -> Vec<u32> {
     use crate::query::geometry::polygons_intersect;
     let n_polys = poly_offsets.len().saturating_sub(1);
     (0..n_polys)
@@ -779,7 +784,7 @@ pub fn par_polygon_intersects_join<I: SpatialIndex + Sync>(
                 // Keep ordered pairs i < j to emit each unordered pair once
                 .filter(move |&j| j > i)
                 .filter(move |&j| polygons_intersect(xs, ys, ring_offsets, poly_offsets, i, j))
-                .flat_map(move |j| [i as u64, j as u64])
+                .flat_map(move |j| [i as u32, j as u32])
         })
         .collect()
 }
@@ -936,15 +941,18 @@ mod tests {
             DistanceMetric::Haversine,
         );
         for qi in 0..qxs.len() {
-            let mut got: Vec<u64> = flat
+            let mut got: Vec<u32> = flat
                 .as_chunks::<2>()
                 .0
                 .iter()
-                .filter(|p| p[0] == qi as u64)
+                .filter(|p| p[0] == qi as u32)
                 .map(|p| p[1])
                 .collect();
             got.sort_unstable();
-            let want = brute_haversine(&xs, &ys, qxs[qi], qys[qi], distance);
+            let want: Vec<u32> = brute_haversine(&xs, &ys, qxs[qi], qys[qi], distance)
+                .into_iter()
+                .map(|i| i as u32)
+                .collect();
             assert_eq!(got, want, "query {qi} at ({}, {})", qxs[qi], qys[qi]);
         }
     }
@@ -987,9 +995,13 @@ mod tests {
             distance,
             DistanceMetric::Haversine,
         );
-        let mut got: Vec<u64> = single.as_chunks::<2>().0.iter().map(|p| p[1]).collect();
+        let mut got: Vec<u32> = single.as_chunks::<2>().0.iter().map(|p| p[1]).collect();
         got.sort_unstable();
-        assert_eq!(got, brute_haversine(&xs, &ys, qx, qy, distance));
+        let want: Vec<u32> = brute_haversine(&xs, &ys, qx, qy, distance)
+            .into_iter()
+            .map(|i| i as u32)
+            .collect();
+        assert_eq!(got, want);
     }
 
     // A grid of g*g unit squares spaced 2 apart, as flat single-part polygon ring arrays
@@ -1139,7 +1151,7 @@ mod tests {
         k: usize,
     ) -> Vec<f64> {
         let n_parts = poly_offsets.len() - 1;
-        let mut best: Vec<(u64, f64)> = Vec::new();
+        let mut best: Vec<(u32, f64)> = Vec::new();
         for p in 0..n_parts {
             let d = point_to_polygon_distance(qx, qy, xs, ys, ring_offsets, poly_offsets, p);
             let pid = logical_poly(part_poly, p);
@@ -1306,7 +1318,7 @@ mod tests {
             1,
             None,
         );
-        assert_eq!(idx, vec![0, u64::MAX, u64::MAX]);
+        assert_eq!(idx, vec![0, u32::MAX, u32::MAX]);
         assert!((dist[0] - 4.0).abs() < 1e-12);
         assert!(dist[1].is_infinite() && dist[2].is_infinite());
     }
@@ -1355,12 +1367,12 @@ mod tests {
 
         assert_eq!(q_idx.len(), n * k);
         // The sorted path emits globally ordered pairs, so regroup by query to compare
-        let mut grouped: Vec<Vec<(u64, f64)>> = vec![Vec::new(); n];
+        let mut grouped: Vec<Vec<(u32, f64)>> = vec![Vec::new(); n];
         for i in 0..q_idx.len() {
             grouped[q_idx[i] as usize].push((t_idx[i], dists[i]));
         }
         // Only the sorted path promises a tie-break, so normalise both sides to (dist, idx)
-        let by_dist_then_idx = |v: &mut Vec<(u64, f64)>| {
+        let by_dist_then_idx = |v: &mut Vec<(u32, f64)>| {
             v.sort_unstable_by(|a, b| {
                 a.1.partial_cmp(&b.1)
                     .unwrap_or(Ordering::Equal)
@@ -1368,7 +1380,7 @@ mod tests {
             })
         };
         for (q, got) in grouped.iter_mut().enumerate() {
-            let mut want: Vec<(u64, f64)> = (0..k)
+            let mut want: Vec<(u32, f64)> = (0..k)
                 .map(|j| (blocked_idx[q * k + j], blocked_dist[q * k + j]))
                 .collect();
             by_dist_then_idx(got);

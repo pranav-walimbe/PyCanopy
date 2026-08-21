@@ -760,7 +760,7 @@ class Engine:
             total_q_count: True probe count to plan against, if this is one streamed morsel.
 
         Returns:
-            uint64 array of shape (N * k,). Block i holds k result indices for query i.
+            uint32 array of shape (N * k,). Block i holds k result indices for query i.
         """
         return self._core.batch_knn_join(
             np.ascontiguousarray(query_xs, dtype=np.float64),
@@ -788,7 +788,7 @@ class Engine:
             total_q_count: True probe count to plan against, if this is one streamed morsel.
 
         Returns:
-            Flat uint64 array of shape (M * 2,) interleaved [q0, e0, q1, e1, ...].
+            Flat uint32 array of shape (M * 2,) interleaved [q0, e0, q1, e1, ...].
         """
         return self._core.batch_within_distance(
             np.ascontiguousarray(query_xs, dtype=np.float64),
@@ -843,7 +843,7 @@ class Engine:
             total_q_count: True probe count to plan against, if this is one streamed morsel.
 
         Returns:
-            uint64 array of shape (M * 2,) where M is the total number of matches.
+            uint32 array of shape (M * 2,) where M is the total number of matches.
             Reshape to (-1, 2) to get [query_idx, engine_idx] pairs.
         """
         return self._core.batch_contains(
@@ -871,7 +871,7 @@ class Engine:
             total_q_count: True probe count to plan against, if this is one streamed morsel.
 
         Returns:
-            uint64 array of shape (M * 2,) interleaved [q0, e0, q1, e1, ...].
+            uint32 array of shape (M * 2,) interleaved [q0, e0, q1, e1, ...].
         """
         return self._core.batch_within_distance_to_polygons(
             np.ascontiguousarray(query_xs, dtype=np.float64),
@@ -897,7 +897,7 @@ class Engine:
 
         Returns:
             Pair (engine_indices, distances), each a flat array of shape (N * k,) in
-            per-query blocks. Padding slots use 2**64 - 1 and inf when fewer than k exist.
+            per-query blocks. Padding slots use 2**32 - 1 and inf when fewer than k exist.
         """
         return self._core.batch_knn_to_polygons(
             np.ascontiguousarray(query_xs, dtype=np.float64),
@@ -923,7 +923,7 @@ class Engine:
             k: Number of nearest polygons per query point.
 
         Returns:
-            Tuple (query_indices, target_indices, distances) as three flat uint64/uint64/float64
+            Tuple (query_indices, target_indices, distances) as three flat uint32/uint32/float64
             arrays. No per-query block structure, no padding slots.
         """
         return self._core.batch_knn_to_polygons_sorted(
@@ -936,7 +936,7 @@ class Engine:
         """Return all intersecting polygon pairs (i, j) with i < j. Polygon datasets only.
 
         Returns:
-            uint64 array of shape (M * 2,) interleaved [i0, j0, i1, j1, ...].
+            uint32 array of shape (M * 2,) interleaved [i0, j0, i1, j1, ...].
         """
         return self._core.polygon_intersects_self_join()
 
@@ -956,15 +956,15 @@ class Engine:
         """Return the unsigned intersection area for each (i, j) polygon pair.
 
         Args:
-            i_idx: uint64 array of left polygon indices.
-            j_idx: uint64 array of right polygon indices, same length as i_idx.
+            i_idx: uint32 array of left polygon indices.
+            j_idx: uint32 array of right polygon indices, same length as i_idx.
 
         Returns:
             float64 array of intersection areas, one per pair.
         """
         return self._core.polygon_pairs_intersection_area(
-            np.ascontiguousarray(i_idx, dtype=np.uint64),
-            np.ascontiguousarray(j_idx, dtype=np.uint64),
+            np.ascontiguousarray(i_idx, dtype=np.uint32),
+            np.ascontiguousarray(j_idx, dtype=np.uint32),
         )
 
     def radius_query(self, cx: float, cy: float, distance: float) -> np.ndarray:

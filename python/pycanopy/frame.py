@@ -288,8 +288,8 @@ class SpatialFrame:
 
         return pl.DataFrame(
             {
-                "left": i_idx.astype(np.uint32),
-                "right": j_idx.astype(np.uint32),
+                "left": i_idx,
+                "right": j_idx,
                 "area_left": area_i,
                 "area_right": area_j,
                 "overlap_area": overlap,

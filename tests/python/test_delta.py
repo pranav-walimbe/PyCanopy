@@ -53,7 +53,8 @@ def test_batch_knn_returns_delta_point_as_nearest(engine):
     engine.append_delta(np.array([4000.0], dtype=np.float64), np.array([4000.0], dtype=np.float64))
     qxs = np.array([4000.0], dtype=np.float64)
     qys = np.array([4000.0], dtype=np.float64)
-    engine.batch_knn_join(qxs, qys, 1)
+    result = engine.batch_knn_join(qxs, qys, 1)
+    assert result.dtype == np.uint32
     # verify the returned index points back into our region
     assert engine.range_query(3999.5, 3999.5, 4000.5, 4000.5)
 

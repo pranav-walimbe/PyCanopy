@@ -52,6 +52,7 @@ def test_within_distance_to_polygons():
     qy = np.array([0.5, 0.5], dtype=np.float64)
 
     near = eng.batch_within_distance_to_polygons(qx, qy, 1.5).reshape(-1, 2)
+    assert near.dtype == np.uint32
     pairs = {(int(q), int(e)) for q, e in near}
     assert (0, 0) in pairs  # outside point matches at d<=1.5
     assert (1, 0) in pairs  # inside point matches
@@ -68,11 +69,22 @@ def test_knn_to_polygons():
     qx = np.array([10.5], dtype=np.float64)
     qy = np.array([0.5], dtype=np.float64)
     idx, dist = eng.batch_knn_to_polygons(qx, qy, 2)
+    assert idx.dtype == np.uint32
     idx = idx.reshape(1, 2)[0]
     dist = dist.reshape(1, 2)[0]
     assert int(idx[0]) == 1  # nearest is the middle square (contains the point)
     assert abs(float(dist[0])) < 1e-9  # inside -> distance 0
     assert int(idx[1]) in (0, 2)  # next nearest is one of the flanking squares
+
+    q_idx, t_idx, sorted_dist = eng.batch_knn_to_polygons_sorted(qx, qy, 2)
+    assert q_idx.dtype == t_idx.dtype == np.uint32
+    assert sorted_dist.dtype == np.float64
+
+
+def test_point_distance_join_indices_are_uint32():
+    eng = Engine.from_coords(np.array([0.0, 1.0]), np.array([0.0, 1.0]))
+    pairs = eng.batch_within_distance(np.array([0.0]), np.array([0.0]), 0.5)
+    assert pairs.dtype == np.uint32
 
 
 def _annulus(cx: float, cy: float, outer: float, hole: float):
@@ -131,12 +143,13 @@ def test_polygon_self_intersection_and_iou():
     # Square A (0,0)-(2,2) and square B (1,1)-(3,3) overlap in a 1x1 region.
     eng = _poly_engine([(0, 0, 2, 2), (1, 1, 3, 3)])
     pairs = eng.polygon_intersects_self_join().reshape(-1, 2)
+    assert pairs.dtype == np.uint32
     assert pairs.shape[0] == 1
     i, j = int(pairs[0][0]), int(pairs[0][1])
     assert (i, j) == (0, 1)
 
     overlap = eng.polygon_pairs_intersection_area(
-        np.array([i], dtype=np.uint64), np.array([j], dtype=np.uint64)
+        np.array([i], dtype=np.uint32), np.array([j], dtype=np.uint32)
     )
     assert abs(float(overlap[0]) - 1.0) < 1e-9
 

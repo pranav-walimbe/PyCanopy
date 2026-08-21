@@ -475,7 +475,7 @@ class SpatialExecutor:
         # batch_knn_join returns a flat (n_queries * k,) array, each query row repeats k times
         match_indices = sf.engine.batch_knn_join(query_xs, query_ys, node.k, total_q)
         q_idx = pl.Series("", np.repeat(np.arange(n_queries, dtype=np.uint32), node.k))
-        t_idx = pl.Series("", match_indices.astype(np.uint32))
+        t_idx = pl.Series("", match_indices)
         return self._assemble_join(node, sf, q_idx, t_idx).lazy()
 
     def _emit_within_join(self, node: WithinJoinNode, sf, lf: pl.LazyFrame) -> pl.LazyFrame:
@@ -486,8 +486,8 @@ class SpatialExecutor:
 
         # batch_contains returns flat (M * 2,) array: [q0, e0, q1, e1, ...].
         pairs = sf.engine.batch_contains(query_xs, query_ys, total_q).reshape(-1, 2)
-        q_idx = pl.Series("", pairs[:, 0].astype(np.uint32))
-        t_idx = pl.Series("", pairs[:, 1].astype(np.uint32))
+        q_idx = pl.Series("", pairs[:, 0])
+        t_idx = pl.Series("", pairs[:, 1])
         return self._assemble_join(node, sf, q_idx, t_idx).lazy()
 
     def _emit_within_distance_join(
@@ -501,8 +501,8 @@ class SpatialExecutor:
         pairs = sf.engine.batch_within_distance(
             query_xs, query_ys, node.distance, node.flip, total_q
         ).reshape(-1, 2)
-        q_idx = pl.Series("", pairs[:, 0].astype(np.uint32))
-        t_idx = pl.Series("", pairs[:, 1].astype(np.uint32))
+        q_idx = pl.Series("", pairs[:, 0])
+        t_idx = pl.Series("", pairs[:, 1])
         return self._assemble_join(node, sf, q_idx, t_idx).lazy()
 
     def _emit_polygon_within_distance_join(
@@ -516,8 +516,8 @@ class SpatialExecutor:
         pairs = sf.engine.batch_within_distance_to_polygons(
             query_xs, query_ys, node.distance, total_q
         ).reshape(-1, 2)
-        q_idx = pl.Series("", pairs[:, 0].astype(np.uint32))
-        t_idx = pl.Series("", pairs[:, 1].astype(np.uint32))
+        q_idx = pl.Series("", pairs[:, 0])
+        t_idx = pl.Series("", pairs[:, 1])
         return self._assemble_join(node, sf, q_idx, t_idx).lazy()
 
     def _emit_polygon_knn_join(
@@ -531,11 +531,11 @@ class SpatialExecutor:
 
         indices, dists = sf.engine.batch_knn_to_polygons(query_xs, query_ys, node.k, total_q)
 
-        q_idx_full = np.repeat(np.arange(n_queries, dtype=np.uint64), node.k)
+        q_idx_full = np.repeat(np.arange(n_queries, dtype=np.uint32), node.k)
         # Drop padding slots (no polygon for that rank)
-        keep = indices != np.iinfo(np.uint64).max
-        q_idx = pl.Series("", q_idx_full[keep].astype(np.uint32))
-        t_idx = pl.Series("", indices[keep].astype(np.uint32))
+        keep = indices != np.iinfo(np.uint32).max
+        q_idx = pl.Series("", q_idx_full[keep])
+        t_idx = pl.Series("", indices[keep])
 
         joined = self._assemble_join(node, sf, q_idx, t_idx)
         dist_series = pl.Series("distance_to_polygon", dists[keep])
@@ -558,8 +558,8 @@ class SpatialExecutor:
         q_indices, t_indices, dists = sf.engine.batch_knn_to_polygons_sorted(
             query_xs, query_ys, node.k
         )
-        q_idx = pl.Series("", q_indices.astype(np.uint32))
-        t_idx = pl.Series("", t_indices.astype(np.uint32))
+        q_idx = pl.Series("", q_indices)
+        t_idx = pl.Series("", t_indices)
 
         joined = self._assemble_join(node, sf, q_idx, t_idx)
         dist_series = pl.Series("distance_to_polygon", dists)

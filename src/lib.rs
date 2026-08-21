@@ -35,9 +35,9 @@ use planner::{
 };
 use query::{
     batch::{
-        par_bbox_filter, par_contains, par_knn, par_knn_to_polygons, par_knn_to_polygons_sorted,
-        par_knn_with_delta, par_points_within_distance_of_polygon, par_polygon_intersects_join,
-        par_radius, par_within_distance, par_within_distance_flipped,
+        par_bbox_filter, par_contains, par_knn_join, par_knn_to_polygons,
+        par_knn_to_polygons_sorted, par_knn_with_delta, par_points_within_distance_of_polygon,
+        par_polygon_intersects_join, par_radius, par_within_distance, par_within_distance_flipped,
         par_within_distance_to_polygons,
     },
     geodesy::{conservative_degree_box, haversine_distance_m, DistanceMetric},
@@ -78,6 +78,16 @@ const DELTA_FLUSH_FRACTION: f64 = 0.1;
 
 fn elapsed_ns(started: Instant) -> u64 {
     started.elapsed().as_nanos().min(u64::MAX as u128) as u64
+}
+
+fn ensure_u32_indexable(len: usize, label: &str) -> PyResult<()> {
+    if len > u32::MAX as usize {
+        return Err(PyValueError::new_err(format!(
+            "{label} has {len} rows; PyCanopy's single-node join indices support at most {}",
+            u32::MAX
+        )));
+    }
+    Ok(())
 }
 
 impl Engine {
@@ -380,6 +390,7 @@ impl Engine {
         if xs_sl.len() != ys_sl.len() {
             return Err(PyValueError::new_err("xs and ys must have the same length"));
         }
+        ensure_u32_indexable(xs_sl.len(), "point dataset")?;
         let stats_started = Instant::now();
         let stats = collector::collect_points(xs_sl, ys_sl);
         let statistics_ns = elapsed_ns(stats_started);
@@ -456,6 +467,7 @@ impl Engine {
             }
         }
         let n_polys = poly_sl.len() - 1;
+        ensure_u32_indexable(n_polys, "polygon dataset")?;
         for i in 0..n_polys {
             let end = poly_sl[i + 1] as usize;
             if end > n_rings {
@@ -477,6 +489,7 @@ impl Engine {
                     ));
                 }
                 let n_logical = pp_sl.iter().copied().max().map_or(0, |m| m as usize + 1);
+                ensure_u32_indexable(n_logical, "logical polygon dataset")?;
                 (Some(pp_sl.iter().map(|&v| v as u32).collect()), n_logical)
             }
             None => (None, n_polys),
@@ -513,6 +526,11 @@ impl Engine {
             Some(pp) => pp.iter().copied().max().map_or(0, |m| m as usize + 1),
             None => parsed.poly_offsets.len().saturating_sub(1),
         };
+        ensure_u32_indexable(
+            parsed.poly_offsets.len().saturating_sub(1),
+            "polygon dataset",
+        )?;
+        ensure_u32_indexable(n_polygons, "logical polygon dataset")?;
         let mut engine = Engine::new_polygons(
             parsed.xs.into(),
             parsed.ys.into(),
@@ -1113,6 +1131,13 @@ impl Engine {
         if xs_sl.len() != ys_sl.len() {
             return Err(PyValueError::new_err("xs and ys must have the same length"));
         }
+        ensure_u32_indexable(
+            self.xs
+                .len()
+                .saturating_add(self.delta_xs.len())
+                .saturating_add(xs_sl.len()),
+            "point dataset after append",
+        )?;
         self.delta_xs.extend_from_slice(xs_sl);
         self.delta_ys.extend_from_slice(ys_sl);
 
@@ -1143,7 +1168,7 @@ impl Engine {
         query_ys: PyReadonlyArray1<f64>,
         k: usize,
         total_q_count: Option<usize>,
-    ) -> PyResult<Bound<'py, PyArray1<u64>>> {
+    ) -> PyResult<Bound<'py, PyArray1<u32>>> {
         let qxs = query_xs
             .as_slice()
             .map_err(|_| PyValueError::new_err("query_xs must be a contiguous float64 array"))?;
@@ -1155,6 +1180,7 @@ impl Engine {
                 "query_xs and query_ys must have the same length",
             ));
         }
+        ensure_u32_indexable(qxs.len(), "join query")?;
 
         let started = Instant::now();
         let kind = self.plan_index(
@@ -1168,10 +1194,10 @@ impl Engine {
 
         let results = if self.delta_xs.is_empty() {
             match kind {
-                IndexKind::BruteForce => par_knn(self.brute.as_ref().unwrap(), qxs, qys, k),
-                IndexKind::RTree => par_knn(self.rtree.as_ref().unwrap(), qxs, qys, k),
-                IndexKind::KdTree => par_knn(self.kdtree.as_ref().unwrap(), qxs, qys, k),
-                IndexKind::Grid => par_knn(self.grid.as_ref().unwrap(), qxs, qys, k),
+                IndexKind::BruteForce => par_knn_join(self.brute.as_ref().unwrap(), qxs, qys, k),
+                IndexKind::RTree => par_knn_join(self.rtree.as_ref().unwrap(), qxs, qys, k),
+                IndexKind::KdTree => par_knn_join(self.kdtree.as_ref().unwrap(), qxs, qys, k),
+                IndexKind::Grid => par_knn_join(self.grid.as_ref().unwrap(), qxs, qys, k),
             }
         } else {
             let out = match kind {
@@ -1245,7 +1271,7 @@ impl Engine {
         distance: f64,
         flipped: bool,
         total_q_count: Option<usize>,
-    ) -> PyResult<Bound<'py, PyArray1<u64>>> {
+    ) -> PyResult<Bound<'py, PyArray1<u32>>> {
         if self.ring_offsets.is_some() {
             return Err(PyValueError::new_err(
                 "batch_within_distance requires a point dataset",
@@ -1262,6 +1288,7 @@ impl Engine {
                 "query_xs and query_ys must have the same length",
             ));
         }
+        ensure_u32_indexable(qxs.len(), "join query")?;
         let started = Instant::now();
         if flipped {
             let pairs =
@@ -1387,7 +1414,7 @@ impl Engine {
         query_xs: PyReadonlyArray1<f64>,
         query_ys: PyReadonlyArray1<f64>,
         total_q_count: Option<usize>,
-    ) -> PyResult<Bound<'py, PyArray1<u64>>> {
+    ) -> PyResult<Bound<'py, PyArray1<u32>>> {
         let qxs = query_xs
             .as_slice()
             .map_err(|_| PyValueError::new_err("query_xs must be a contiguous float64 array"))?;
@@ -1399,6 +1426,7 @@ impl Engine {
                 "query_xs and query_ys must have the same length",
             ));
         }
+        ensure_u32_indexable(qxs.len(), "join query")?;
         if self.ring_offsets.is_none() {
             return Err(PyValueError::new_err(
                 "batch_contains requires a polygon dataset",
@@ -1456,7 +1484,7 @@ impl Engine {
     /// For each query point, return (query_idx, polygon_idx) pairs for every Engine
     /// polygon within `distance` of it. Engine must be a polygon dataset.
     ///
-    /// Returns a flat u64 array interleaved [q0, e0, q1, e1, ...] for reshaping to (-1, 2).
+    /// Returns a flat u32 array interleaved [q0, e0, q1, e1, ...] for reshaping to (-1, 2).
     #[pyo3(signature = (query_xs, query_ys, distance, total_q_count=None))]
     fn batch_within_distance_to_polygons<'py>(
         &mut self,
@@ -1465,7 +1493,7 @@ impl Engine {
         query_ys: PyReadonlyArray1<f64>,
         distance: f64,
         total_q_count: Option<usize>,
-    ) -> PyResult<Bound<'py, PyArray1<u64>>> {
+    ) -> PyResult<Bound<'py, PyArray1<u32>>> {
         let qxs = query_xs
             .as_slice()
             .map_err(|_| PyValueError::new_err("query_xs must be a contiguous float64 array"))?;
@@ -1477,6 +1505,7 @@ impl Engine {
                 "query_xs and query_ys must have the same length",
             ));
         }
+        ensure_u32_indexable(qxs.len(), "join query")?;
         if self.ring_offsets.is_none() {
             return Err(PyValueError::new_err(
                 "batch_within_distance_to_polygons requires a polygon dataset",
@@ -1535,7 +1564,7 @@ impl Engine {
     /// point-to-polygon distance. Engine must be a polygon dataset.
     ///
     /// Returns (engine_indices, distances), each a flat array of shape (n_queries * k,)
-    /// in per-query blocks. Padding slots (fewer than k candidates) use u64::MAX and inf.
+    /// in per-query blocks. Padding slots (fewer than k candidates) use u32::MAX and inf.
     #[allow(clippy::type_complexity)]
     #[pyo3(signature = (query_xs, query_ys, k, total_q_count=None))]
     fn batch_knn_to_polygons<'py>(
@@ -1545,7 +1574,7 @@ impl Engine {
         query_ys: PyReadonlyArray1<f64>,
         k: usize,
         total_q_count: Option<usize>,
-    ) -> PyResult<(Bound<'py, PyArray1<u64>>, Bound<'py, PyArray1<f64>>)> {
+    ) -> PyResult<(Bound<'py, PyArray1<u32>>, Bound<'py, PyArray1<f64>>)> {
         let qxs = query_xs
             .as_slice()
             .map_err(|_| PyValueError::new_err("query_xs must be a contiguous float64 array"))?;
@@ -1557,6 +1586,7 @@ impl Engine {
                 "query_xs and query_ys must have the same length",
             ));
         }
+        ensure_u32_indexable(qxs.len(), "join query")?;
         if self.ring_offsets.is_none() {
             return Err(PyValueError::new_err(
                 "batch_knn_to_polygons requires a polygon dataset",
@@ -1628,8 +1658,8 @@ impl Engine {
         query_ys: PyReadonlyArray1<f64>,
         k: usize,
     ) -> PyResult<(
-        Bound<'py, PyArray1<u64>>,
-        Bound<'py, PyArray1<u64>>,
+        Bound<'py, PyArray1<u32>>,
+        Bound<'py, PyArray1<u32>>,
         Bound<'py, PyArray1<f64>>,
     )> {
         let qxs = query_xs
@@ -1643,6 +1673,7 @@ impl Engine {
                 "query_xs and query_ys must have the same length",
             ));
         }
+        ensure_u32_indexable(qxs.len(), "join query")?;
         if self.ring_offsets.is_none() {
             return Err(PyValueError::new_err(
                 "batch_knn_to_polygons_sorted requires a polygon dataset",
@@ -1704,11 +1735,11 @@ impl Engine {
     /// Self-join: unordered pairs (i, j) with i < j of Engine polygons that intersect.
     /// Engine must be a polygon dataset.
     ///
-    /// Returns a flat u64 array interleaved [i0, j0, i1, j1, ...] for reshaping to (-1, 2).
+    /// Returns a flat u32 array interleaved [i0, j0, i1, j1, ...] for reshaping to (-1, 2).
     fn polygon_intersects_self_join<'py>(
         &mut self,
         py: Python<'py>,
-    ) -> PyResult<Bound<'py, PyArray1<u64>>> {
+    ) -> PyResult<Bound<'py, PyArray1<u32>>> {
         if self.ring_offsets.is_none() {
             return Err(PyValueError::new_err(
                 "polygon_intersects_self_join requires a polygon dataset",
@@ -1783,8 +1814,8 @@ impl Engine {
     fn polygon_pairs_intersection_area<'py>(
         &self,
         py: Python<'py>,
-        i_idx: PyReadonlyArray1<u64>,
-        j_idx: PyReadonlyArray1<u64>,
+        i_idx: PyReadonlyArray1<u32>,
+        j_idx: PyReadonlyArray1<u32>,
     ) -> PyResult<Bound<'py, PyArray1<f64>>> {
         if self.ring_offsets.is_none() {
             return Err(PyValueError::new_err(
@@ -1793,10 +1824,10 @@ impl Engine {
         }
         let is = i_idx
             .as_slice()
-            .map_err(|_| PyValueError::new_err("i_idx must be a contiguous uint64 array"))?;
+            .map_err(|_| PyValueError::new_err("i_idx must be a contiguous uint32 array"))?;
         let js = j_idx
             .as_slice()
-            .map_err(|_| PyValueError::new_err("j_idx must be a contiguous uint64 array"))?;
+            .map_err(|_| PyValueError::new_err("j_idx must be a contiguous uint32 array"))?;
         if is.len() != js.len() {
             return Err(PyValueError::new_err(
                 "i_idx and j_idx must have the same length",
