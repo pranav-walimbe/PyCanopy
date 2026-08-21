@@ -923,6 +923,19 @@ class Engine:
         """Force the delta buffer to be merged into the main index immediately."""
         self._core.flush()
 
+    def take_metrics(self) -> dict[str, object]:
+        """Return accumulated production metrics and reset the Engine counters.
+
+        Operation metrics are aggregated by operation and selected index. Index-build
+        metrics count only actual builds, not cache hits. All elapsed values are integer
+        nanoseconds measured at Rust Engine boundaries. An ``index`` value of ``"none"``
+        means the operation completed without consulting an Engine-owned index.
+
+        Returns:
+            A dictionary containing ``operations``, ``index_builds``, and ``construction``.
+        """
+        return self._core.take_metrics()
+
     @property
     def delta_len(self) -> int:
         """Report how many points are currently in the delta buffer.

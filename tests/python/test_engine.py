@@ -132,6 +132,90 @@ def test_stats_returns_string(engine):
     assert "n=5" in s
 
 
+# production metrics
+
+
+def _metric(metrics, name, index):
+    return next(
+        item for item in metrics["operations"] if item["name"] == name and item["index"] == index
+    )
+
+
+def test_take_metrics_accumulates_operations_and_resets():
+    eng = Engine.from_coords(XS, YS)
+    initial = eng.take_metrics()
+    assert initial["construction"]["statistics_ns"] > 0
+    assert initial["operations"] == []
+
+    assert eng.knn(1.2, 0.1, 1) == [1]
+    assert len(eng.knn(1.2, 0.1, 2)) == 2
+
+    metrics = eng.take_metrics()
+    operation = _metric(metrics, "knn", "brute_force")
+    assert operation["calls"] == 2
+    assert operation["output_rows"] == 3
+    assert operation["elapsed_compute_ns"] > 0
+    assert metrics["index_builds"][0]["index"] == "brute_force"
+    assert metrics["index_builds"][0]["build_count"] == 1
+
+    reset = eng.take_metrics()
+    assert reset == {
+        "operations": [],
+        "index_builds": [],
+        "construction": {"wkb_decode_ns": 0, "statistics_ns": 0},
+    }
+
+
+def test_take_metrics_records_early_exit_without_an_index():
+    eng = Engine.from_coords(XS, YS)
+    eng.take_metrics()
+
+    assert eng.range_query(10.0, 10.0, 20.0, 20.0) == []
+
+    operation = _metric(eng.take_metrics(), "range_query", "none")
+    assert operation["calls"] == 1
+    assert operation["output_rows"] == 0
+
+
+def test_wkb_polygon_construction_metrics_are_reported():
+    eng = Engine.from_wkb_polygons(pa.array([polygon.wkb for polygon in SQUARES]))
+
+    construction = eng.take_metrics()["construction"]
+    assert construction["wkb_decode_ns"] > 0
+    assert construction["statistics_ns"] > 0
+
+
+def test_none_index_mode_reports_brute_force_selection():
+    xs = np.arange(1000, dtype=np.float64)
+    eng = Engine.from_coords(xs, np.zeros_like(xs))
+    eng.set_index_mode("none")
+    eng.take_metrics()
+
+    assert eng.range_query(0.0, -1.0, 10.0, 1.0) == list(range(11))
+
+    operation = _metric(eng.take_metrics(), "range_query", "brute_force")
+    assert operation["calls"] == 1
+    assert operation["output_rows"] == 11
+
+
+def test_batch_metrics_aggregate_streamed_style_calls_and_reuse_indexes():
+    polygons = [Polygon([(i, 0), (i + 0.9, 0), (i + 0.9, 0.9), (i, 0.9)]) for i in range(600)]
+    eng = Engine.from_polygons(polygons)
+    eng.take_metrics()
+
+    first = eng.batch_contains(np.array([0.5]), np.array([0.5]), total_q_count=2)
+    second = eng.batch_contains(np.array([1.5]), np.array([0.5]), total_q_count=2)
+    assert len(first) == len(second) == 2
+
+    metrics = eng.take_metrics()
+    operation = _metric(metrics, "batch_contains", "r_tree")
+    assert operation["calls"] == 2
+    assert operation["output_rows"] == 2
+    builds = {item["index"]: item for item in metrics["index_builds"]}
+    assert builds["r_tree"]["build_count"] == 1
+    assert builds["prepared_polygons"]["build_count"] == 1
+
+
 # knn
 
 
