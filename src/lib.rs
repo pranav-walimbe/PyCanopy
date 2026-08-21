@@ -35,10 +35,10 @@ use planner::{
 };
 use query::{
     batch::{
-        par_bbox_filter, par_contains, par_knn_join, par_knn_to_polygons,
+        par_bbox_filter, par_contains, par_contains_aggregate, par_knn_join, par_knn_to_polygons,
         par_knn_to_polygons_sorted, par_knn_with_delta, par_points_within_distance_of_polygon,
         par_polygon_intersects_join, par_radius, par_within_distance, par_within_distance_flipped,
-        par_within_distance_to_polygons,
+        par_within_distance_to_polygons, par_within_distance_to_polygons_aggregate,
     },
     geodesy::{conservative_degree_box, haversine_distance_m, DistanceMetric},
     geometry::{convex_hull_area, polygon_area, polygon_intersection_area},
@@ -1481,6 +1481,123 @@ impl Engine {
         Ok(output)
     }
 
+    /// Aggregate a point-in-polygon join directly into per-polygon count/sum state.
+    /// Value and validity arrays are parallel columns aligned with the query coordinates.
+    #[allow(clippy::type_complexity)]
+    #[pyo3(signature = (query_xs, query_ys, value_columns, validity_columns))]
+    fn batch_contains_aggregate<'py>(
+        &mut self,
+        py: Python<'py>,
+        query_xs: PyReadonlyArray1<f64>,
+        query_ys: PyReadonlyArray1<f64>,
+        value_columns: Vec<PyReadonlyArray1<f64>>,
+        validity_columns: Vec<PyReadonlyArray1<u8>>,
+    ) -> PyResult<(
+        Bound<'py, PyArray1<u32>>,
+        Bound<'py, PyArray1<u64>>,
+        Bound<'py, PyArray1<f64>>,
+        Bound<'py, PyArray1<u64>>,
+    )> {
+        let qxs = query_xs
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("query_xs must be a contiguous float64 array"))?;
+        let qys = query_ys
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("query_ys must be a contiguous float64 array"))?;
+        if qxs.len() != qys.len() {
+            return Err(PyValueError::new_err(
+                "query_xs and query_ys must have the same length",
+            ));
+        }
+        ensure_u32_indexable(qxs.len(), "join query")?;
+        if value_columns.len() != validity_columns.len() {
+            return Err(PyValueError::new_err(
+                "value_columns and validity_columns must have the same length",
+            ));
+        }
+        let mut values = Vec::with_capacity(value_columns.len());
+        let mut validities = Vec::with_capacity(validity_columns.len());
+        for (column, validity) in value_columns.iter().zip(&validity_columns) {
+            let column = column.as_slice().map_err(|_| {
+                PyValueError::new_err("aggregate values must be contiguous float64 arrays")
+            })?;
+            let validity = validity.as_slice().map_err(|_| {
+                PyValueError::new_err("aggregate validities must be contiguous uint8 arrays")
+            })?;
+            if column.len() != qxs.len() || validity.len() != qxs.len() {
+                return Err(PyValueError::new_err(
+                    "aggregate value and validity arrays must match the query length",
+                ));
+            }
+            values.push(column);
+            validities.push(validity);
+        }
+        if self.ring_offsets.is_none() {
+            return Err(PyValueError::new_err(
+                "batch_contains_aggregate requires a polygon dataset",
+            ));
+        }
+
+        let started = Instant::now();
+        let kind = self.plan_index_kind(
+            &Query::Contains {
+                point: Point::new(0.0, 0.0),
+            },
+            qxs.len(),
+            IndexKind::RTree,
+        );
+        let build_ns = self.build_index_if_needed(kind);
+        let prepared_build_ns = self.build_prepared_if_needed();
+        let ring_off = self.ring_offsets.as_deref().unwrap();
+        let poly_off = self.poly_offsets.as_deref().unwrap();
+        let prepared = self.prepared_polys.as_ref();
+        let part_poly = self.part_poly.as_deref();
+        let state = match kind {
+            IndexKind::BruteForce => par_contains_aggregate(
+                self.brute.as_ref().unwrap(),
+                qxs,
+                qys,
+                &self.xs,
+                &self.ys,
+                ring_off,
+                poly_off,
+                prepared,
+                part_poly,
+                self.n_polygons,
+                &values,
+                &validities,
+            ),
+            _ => par_contains_aggregate(
+                self.rtree.as_ref().unwrap(),
+                qxs,
+                qys,
+                &self.xs,
+                &self.ys,
+                ring_off,
+                poly_off,
+                prepared,
+                part_poly,
+                self.n_polygons,
+                &values,
+                &validities,
+            ),
+        };
+        let (groups, counts, sums, value_counts) = state.compact();
+        let output_rows = groups.len();
+        self.metrics.record_operation(
+            Operation::BatchContainsAggregate,
+            Some(kind),
+            elapsed_ns(started).saturating_sub(build_ns.saturating_add(prepared_build_ns)),
+            output_rows,
+        );
+        Ok((
+            PyArray1::from_vec(py, groups),
+            PyArray1::from_vec(py, counts),
+            PyArray1::from_vec(py, sums),
+            PyArray1::from_vec(py, value_counts),
+        ))
+    }
+
     /// For each query point, return (query_idx, polygon_idx) pairs for every Engine
     /// polygon within `distance` of it. Engine must be a polygon dataset.
     ///
@@ -1558,6 +1675,119 @@ impl Engine {
             output_rows,
         );
         Ok(output)
+    }
+
+    /// Aggregate a point-to-polygon distance join directly into per-polygon state.
+    #[allow(clippy::type_complexity)]
+    #[pyo3(signature = (query_xs, query_ys, distance, value_columns, validity_columns))]
+    fn batch_within_distance_to_polygons_aggregate<'py>(
+        &mut self,
+        py: Python<'py>,
+        query_xs: PyReadonlyArray1<f64>,
+        query_ys: PyReadonlyArray1<f64>,
+        distance: f64,
+        value_columns: Vec<PyReadonlyArray1<f64>>,
+        validity_columns: Vec<PyReadonlyArray1<u8>>,
+    ) -> PyResult<(
+        Bound<'py, PyArray1<u32>>,
+        Bound<'py, PyArray1<u64>>,
+        Bound<'py, PyArray1<f64>>,
+        Bound<'py, PyArray1<u64>>,
+    )> {
+        let qxs = query_xs
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("query_xs must be a contiguous float64 array"))?;
+        let qys = query_ys
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("query_ys must be a contiguous float64 array"))?;
+        if qxs.len() != qys.len() {
+            return Err(PyValueError::new_err(
+                "query_xs and query_ys must have the same length",
+            ));
+        }
+        ensure_u32_indexable(qxs.len(), "join query")?;
+        if value_columns.len() != validity_columns.len() {
+            return Err(PyValueError::new_err(
+                "value_columns and validity_columns must have the same length",
+            ));
+        }
+        let mut values = Vec::with_capacity(value_columns.len());
+        let mut validities = Vec::with_capacity(validity_columns.len());
+        for (column, validity) in value_columns.iter().zip(&validity_columns) {
+            let column = column.as_slice().map_err(|_| {
+                PyValueError::new_err("aggregate values must be contiguous float64 arrays")
+            })?;
+            let validity = validity.as_slice().map_err(|_| {
+                PyValueError::new_err("aggregate validities must be contiguous uint8 arrays")
+            })?;
+            if column.len() != qxs.len() || validity.len() != qxs.len() {
+                return Err(PyValueError::new_err(
+                    "aggregate value and validity arrays must match the query length",
+                ));
+            }
+            values.push(column);
+            validities.push(validity);
+        }
+        if self.ring_offsets.is_none() {
+            return Err(PyValueError::new_err(
+                "batch_within_distance_to_polygons_aggregate requires a polygon dataset",
+            ));
+        }
+
+        let started = Instant::now();
+        let bbox = Rect::new(
+            coord! { x: 0.0, y: 0.0 },
+            coord! { x: 2.0 * distance, y: 2.0 * distance },
+        );
+        let kind = self.plan_index_kind(&Query::Range { bbox }, qxs.len(), IndexKind::RTree);
+        let build_ns = self.build_index_if_needed(kind);
+        let ring_off = self.ring_offsets.as_deref().unwrap();
+        let poly_off = self.poly_offsets.as_deref().unwrap();
+        let part_poly = self.part_poly.as_deref();
+        let state = match kind {
+            IndexKind::BruteForce => par_within_distance_to_polygons_aggregate(
+                self.brute.as_ref().unwrap(),
+                qxs,
+                qys,
+                &self.xs,
+                &self.ys,
+                ring_off,
+                poly_off,
+                distance,
+                part_poly,
+                self.n_polygons,
+                &values,
+                &validities,
+            ),
+            _ => par_within_distance_to_polygons_aggregate(
+                self.rtree.as_ref().unwrap(),
+                qxs,
+                qys,
+                &self.xs,
+                &self.ys,
+                ring_off,
+                poly_off,
+                distance,
+                part_poly,
+                self.n_polygons,
+                &values,
+                &validities,
+            ),
+        };
+        let (groups, counts, sums, value_counts) = state.compact();
+        let output_rows = groups.len();
+        self.metrics.record_operation(
+            Operation::BatchWithinDistanceToPolygonsAggregate,
+            Some(kind),
+            elapsed_ns(started).saturating_sub(build_ns),
+            output_rows,
+        );
+        Ok((
+            PyArray1::from_vec(py, groups),
+            PyArray1::from_vec(py, counts),
+            PyArray1::from_vec(py, sums),
+            PyArray1::from_vec(py, value_counts),
+        ))
     }
 
     /// For each query point, return the k nearest Engine polygons by exact

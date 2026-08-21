@@ -10,6 +10,10 @@ use rdst::{RadixKey, RadixSort};
 // Spatial tile grid dimension
 const TILE_GRID: usize = 16;
 
+// Bound the aggregate states replicated across rayon workers. One state is always
+// required, even when a very large target makes it exceed this soft budget.
+const AGG_WORKER_STATE_BUDGET: usize = 64 * 1024 * 1024;
+
 /// Per-tile kNN results
 type TileResults = Vec<Vec<(u32, Vec<(u32, f64)>)>>;
 
@@ -119,6 +123,149 @@ pub fn par_contains<I: SpatialIndex + Sync>(
             out.into_iter()
         })
         .collect()
+}
+
+/// Mergeable per-target-row state for fused count/sum/mean spatial join aggregation
+pub struct GroupedAgg {
+    counts: Vec<u64>,
+    sums: Vec<f64>,
+    valid_counts: Vec<u64>,
+    n_groups: usize,
+}
+
+impl GroupedAgg {
+    fn new(n_groups: usize, n_values: usize) -> Self {
+        Self {
+            counts: vec![0; n_groups],
+            sums: vec![0.0; n_groups * n_values],
+            valid_counts: vec![0; n_groups * n_values],
+            n_groups,
+        }
+    }
+
+    #[inline]
+    fn add(&mut self, group: u32, query: usize, values: &[&[f64]], validities: &[&[u8]]) {
+        let group = group as usize;
+        self.counts[group] += 1;
+        for column in 0..values.len() {
+            if validities[column][query] != 0 {
+                let offset = column * self.n_groups + group;
+                self.sums[offset] += values[column][query];
+                self.valid_counts[offset] += 1;
+            }
+        }
+    }
+
+    fn merge(mut self, other: Self) -> Self {
+        for (left, right) in self.counts.iter_mut().zip(other.counts) {
+            *left += right;
+        }
+        for (left, right) in self.sums.iter_mut().zip(other.sums) {
+            *left += right;
+        }
+        for (left, right) in self.valid_counts.iter_mut().zip(other.valid_counts) {
+            *left += right;
+        }
+        self
+    }
+
+    /// Drop target rows with no matches and return column-major aggregate value state
+    pub fn compact(self) -> (Vec<u32>, Vec<u64>, Vec<f64>, Vec<u64>) {
+        let groups: Vec<usize> = self
+            .counts
+            .iter()
+            .enumerate()
+            .filter_map(|(group, &count)| (count != 0).then_some(group))
+            .collect();
+        let mut group_indices = Vec::with_capacity(groups.len());
+        let mut counts = Vec::with_capacity(groups.len());
+        for &group in &groups {
+            group_indices.push(group as u32);
+            counts.push(self.counts[group]);
+        }
+
+        let n_values = self.sums.len().checked_div(self.n_groups).unwrap_or(0);
+        let mut sums = Vec::with_capacity(groups.len() * n_values);
+        let mut valid_counts = Vec::with_capacity(groups.len() * n_values);
+        for column in 0..n_values {
+            let base = column * self.n_groups;
+            for &group in &groups {
+                sums.push(self.sums[base + group]);
+                valid_counts.push(self.valid_counts[base + group]);
+            }
+        }
+        (group_indices, counts, sums, valid_counts)
+    }
+}
+
+fn aggregate_chunks<F>(n_queries: usize, n_groups: usize, values: &[&[f64]], visit: F) -> GroupedAgg
+where
+    F: Fn(usize, &mut GroupedAgg) + Sync,
+{
+    if n_queries == 0 {
+        return GroupedAgg::new(n_groups, values.len());
+    }
+    let bytes_per_group = size_of::<u64>().saturating_add(
+        values
+            .len()
+            .saturating_mul(size_of::<f64>() + size_of::<u64>()),
+    );
+    let state_bytes = n_groups.saturating_mul(bytes_per_group).max(1);
+    let workers_by_memory = (AGG_WORKER_STATE_BUDGET / state_bytes).max(1);
+    let chunks = rayon::current_num_threads()
+        .min(n_queries)
+        .min(workers_by_memory);
+    let chunk_size = n_queries.div_ceil(chunks);
+    (0..chunks)
+        .into_par_iter()
+        .map(|chunk| {
+            let mut state = GroupedAgg::new(n_groups, values.len());
+            let end = ((chunk + 1) * chunk_size).min(n_queries);
+            for query in chunk * chunk_size..end {
+                visit(query, &mut state);
+            }
+            state
+        })
+        .reduce(
+            || GroupedAgg::new(n_groups, values.len()),
+            GroupedAgg::merge,
+        )
+}
+
+/// Fused point-in-polygon join aggregation, retaining state per logical Engine polygon
+#[allow(clippy::too_many_arguments)]
+pub fn par_contains_aggregate<I: SpatialIndex + Sync>(
+    index: &I,
+    qxs: &[f64],
+    qys: &[f64],
+    xs: &[f64],
+    ys: &[f64],
+    ring_offsets: &[i64],
+    poly_offsets: &[i64],
+    prepared: Option<&PreparedPolygons>,
+    part_poly: Option<&[u32]>,
+    n_groups: usize,
+    values: &[&[f64]],
+    validities: &[&[u8]],
+) -> GroupedAgg {
+    aggregate_chunks(qxs.len(), n_groups, values, |query, state| {
+        let (qx, qy) = (qxs[query], qys[query]);
+        let mut seen = Vec::new();
+        for part in index.range(qx, qy, qx, qy) {
+            let hit = match prepared {
+                Some(p) => p.contains(part, qx, qy, xs, ys),
+                None => pip_raw(qx, qy, xs, ys, ring_offsets, poly_offsets, part),
+            };
+            if !hit {
+                continue;
+            }
+            let group = part_poly.map_or(part as u32, |mapping| mapping[part]);
+            if !seen.contains(&group) {
+                seen.push(group);
+                state.add(group, query, values, validities);
+            }
+        }
+    })
 }
 
 /// Bare engine point indices within `distance` of a single center. Box candidates from the
@@ -357,6 +504,40 @@ pub fn par_within_distance_to_polygons<I: SpatialIndex + Sync>(
             out.into_iter()
         })
         .collect()
+}
+
+/// Fused point-to-polygon distance join aggregation per logical Engine polygon
+#[allow(clippy::too_many_arguments)]
+pub fn par_within_distance_to_polygons_aggregate<I: SpatialIndex + Sync>(
+    index: &I,
+    qxs: &[f64],
+    qys: &[f64],
+    xs: &[f64],
+    ys: &[f64],
+    ring_offsets: &[i64],
+    poly_offsets: &[i64],
+    distance: f64,
+    part_poly: Option<&[u32]>,
+    n_groups: usize,
+    values: &[&[f64]],
+    validities: &[&[u8]],
+) -> GroupedAgg {
+    aggregate_chunks(qxs.len(), n_groups, values, |query, state| {
+        let (qx, qy) = (qxs[query], qys[query]);
+        let mut seen = Vec::new();
+        for part in index.range(qx - distance, qy - distance, qx + distance, qy + distance) {
+            if point_to_polygon_distance(qx, qy, xs, ys, ring_offsets, poly_offsets, part)
+                > distance
+            {
+                continue;
+            }
+            let group = part_poly.map_or(part as u32, |mapping| mapping[part]);
+            if !seen.contains(&group) {
+                seen.push(group);
+                state.add(group, query, values, validities);
+            }
+        }
+    })
 }
 
 /// Per-part exterior-ring MBR as `[min_x, min_y, max_x, max_y]`, one entry per part.

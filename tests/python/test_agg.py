@@ -1,8 +1,8 @@
-"""
-Tests for the fused aggregate-join (SpatialLazyFrame.group_by().agg()).
+"""Tests for grouped spatial aggregation.
 
-The reduced result must equal a single-shot join followed by an equivalent Polars
-group_by/agg, including when the join is streamed in small morsels.
+Supported target-side polygon aggregations fuse matching and reduction in Rust.
+Other plan shapes continue through per-morsel partials. Both paths must match an
+equivalent materialized join followed by a Polars group_by/agg.
 """
 
 from __future__ import annotations
@@ -179,6 +179,110 @@ def test_multi_key_group_by_polygons(sf_polygons):
         .agg(n=pl.len())
     )
     _assert_frames_equal(result, ref, ["poly_id"])
+
+
+def test_target_grouped_count_uses_fused_contains_kernel(sf_polygons):
+    query_df = pl.DataFrame({"qx": [0.5, 1.5, 2.5, 0.5], "qy": [0.5, 0.5, 0.5, 0.5]})
+    sf_polygons.engine.take_metrics()
+
+    result = (
+        sf_polygons.lazy()
+        .within_join(query_df, "qx", "qy")
+        .group_by("poly_id")
+        .agg(n=pc.agg.count())
+    )
+
+    assert result.sort("poly_id")["n"].to_list() == [2, 1, 1]
+    operations = {metric["name"] for metric in sf_polygons.engine.take_metrics()["operations"]}
+    assert "batch_contains_aggregate" in operations
+    assert "batch_contains" not in operations
+
+
+def test_target_grouped_sum_and_mean_use_fused_contains_kernel():
+    polygons = [box(0, 0, 1, 1), box(1, 0, 2, 1)]
+    sf = SpatialFrame.from_polygons(
+        pl.DataFrame({"poly_id": [0, 1], "geom": polygons}), geometry_col="geom"
+    )
+    query_df = pl.DataFrame(
+        {
+            "qx": [0.5, 0.6, 1.5, 10.0],
+            "qy": [0.5, 0.5, 0.5, 10.0],
+            "value": [2.0, None, 4.0, 8.0],
+        }
+    )
+    result = (
+        sf.lazy()
+        .within_join(query_df, "qx", "qy")
+        .group_by("poly_id")
+        .agg(n=pc.agg.count(), total=pc.agg.sum("value"), avg=pc.agg.mean("value"))
+    )
+    reference = (
+        sf.lazy()
+        .within_join(query_df, "qx", "qy")
+        .collect()
+        .group_by("poly_id")
+        .agg(n=pl.len(), total=pl.col("value").sum(), avg=pl.col("value").mean())
+    )
+    _assert_frames_equal(result, reference, ["poly_id"])
+
+
+def test_fused_target_rows_with_duplicate_keys_are_combined():
+    polygons = [box(0, 0, 1, 1), box(1, 0, 2, 1)]
+    sf = SpatialFrame.from_polygons(
+        pl.DataFrame({"bucket": ["same", "same"], "geom": polygons}), geometry_col="geom"
+    )
+    query_df = pl.DataFrame({"qx": [0.5, 1.5], "qy": [0.5, 0.5]})
+    result = sf.lazy().within_join(query_df, "qx", "qy").group_by("bucket").agg(n=pc.agg.count())
+    assert result.to_dicts() == [{"bucket": "same", "n": 2}]
+
+
+def test_target_grouped_count_uses_fused_polygon_distance_kernel():
+    polygons = [box(0, 0, 1, 1), box(2, 0, 3, 1)]
+    sf = SpatialFrame.from_polygons(
+        pl.DataFrame({"poly_id": [0, 1], "geom": polygons}), geometry_col="geom"
+    )
+    query_df = pl.DataFrame({"qx": [1.1, 1.9, 10.0], "qy": [0.5, 0.5, 10.0]})
+    sf.engine.take_metrics()
+
+    result = (
+        sf.lazy()
+        .polygon_within_distance_join(query_df, "qx", "qy", distance=0.2)
+        .group_by("poly_id")
+        .agg(n=pc.agg.count())
+    )
+
+    assert result.sort("poly_id")["n"].to_list() == [1, 1]
+    operations = {metric["name"] for metric in sf.engine.take_metrics()["operations"]}
+    assert "batch_within_distance_to_polygons_aggregate" in operations
+    assert "batch_within_distance_to_polygons" not in operations
+
+
+def test_unsupported_target_aggregate_falls_back_to_pair_join():
+    polygons = [box(0, 0, 1, 1), box(1, 0, 2, 1)]
+    sf = SpatialFrame.from_polygons(
+        pl.DataFrame({"poly_id": [0, 1], "geom": polygons}), geometry_col="geom"
+    )
+    query_df = pl.DataFrame({"qx": [0.5, 1.5], "qy": [0.5, 0.5], "value": [2.0, 4.0]})
+    sf.engine.take_metrics()
+
+    result = (
+        sf.lazy().within_join(query_df, "qx", "qy").group_by("poly_id").agg(lo=pc.agg.min("value"))
+    )
+
+    assert result.sort("poly_id")["lo"].to_list() == [2.0, 4.0]
+    operations = {metric["name"] for metric in sf.engine.take_metrics()["operations"]}
+    assert "batch_contains" in operations
+    assert "batch_contains_aggregate" not in operations
+
+
+def test_fused_target_aggregate_empty_match_has_stable_schema():
+    sf = SpatialFrame.from_polygons(
+        pl.DataFrame({"poly_id": [0], "geom": [box(0, 0, 1, 1)]}), geometry_col="geom"
+    )
+    query_df = pl.DataFrame({"qx": [10.0], "qy": [10.0]})
+    result = sf.lazy().within_join(query_df, "qx", "qy").group_by("poly_id").agg(n=pc.agg.count())
+    assert result.is_empty()
+    assert result.schema == pl.Schema({"poly_id": pl.Int64, "n": pl.UInt32})
 
 
 def test_group_by_accepts_list_form(sf):

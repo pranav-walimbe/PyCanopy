@@ -11,7 +11,7 @@ import polars as pl
 import pyarrow.parquet as pq
 from polars.io.plugins import register_io_source
 
-from pycanopy.agg import AggSpec, _partial_agg, _reduce_partials
+from pycanopy.agg import AggSpec, _partial_agg, _reduce_partials, _try_fused_join_agg
 from pycanopy.executor import _ROW_IDX, SpatialExecutor
 from pycanopy.nodes import (
     ContainsNode,
@@ -589,7 +589,10 @@ class SpatialGroupBy:
         self._keys = keys
 
     def agg(self, **named_aggs: AggSpec) -> pl.DataFrame:
-        """Run the grouped aggregation, reducing each join morsel into per-group partials.
+        """Run a grouped aggregation over the spatial plan.
+
+        Supported target-side polygon join aggregations accumulate directly in Rust.
+        Other plans reduce each join morsel into per-group partials.
 
         Args:
             named_aggs: Output column name to aggregation spec (pycanopy.agg.count, sum, etc).
@@ -602,6 +605,9 @@ class SpatialGroupBy:
         """
         if not named_aggs:
             raise ValueError("agg requires at least one aggregation")
+        fused = _try_fused_join_agg(self._slf._sf, self._slf._plan, self._keys, named_aggs)
+        if fused is not None:
+            return fused
         keep = list(
             dict.fromkeys([*self._keys, *(c for spec in named_aggs.values() for c in spec.inputs)])
         )

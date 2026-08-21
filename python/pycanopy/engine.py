@@ -852,6 +852,31 @@ class Engine:
             total_q_count,
         )
 
+    def batch_contains_aggregate(
+        self,
+        query_xs: np.ndarray,
+        query_ys: np.ndarray,
+        value_columns: Sequence[np.ndarray],
+        validity_columns: Sequence[np.ndarray],
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Aggregate a point-in-polygon join directly by target polygon row.
+
+        Args:
+            query_xs: Contiguous float64 array of query x coordinates.
+            query_ys: Contiguous float64 array of query y coordinates.
+            value_columns: Float64 value arrays aligned with the query coordinates.
+            validity_columns: UInt8 non-null masks aligned with the value arrays.
+
+        Returns:
+            Target indices, pair counts, and column-major sum and non-null-count arrays.
+        """
+        return self._core.batch_contains_aggregate(
+            np.ascontiguousarray(query_xs, dtype=np.float64),
+            np.ascontiguousarray(query_ys, dtype=np.float64),
+            [np.ascontiguousarray(column, dtype=np.float64) for column in value_columns],
+            [np.ascontiguousarray(column, dtype=np.uint8) for column in validity_columns],
+        )
+
     def batch_within_distance_to_polygons(
         self,
         query_xs: np.ndarray,
@@ -878,6 +903,34 @@ class Engine:
             np.ascontiguousarray(query_ys, dtype=np.float64),
             distance,
             total_q_count,
+        )
+
+    def batch_within_distance_to_polygons_aggregate(
+        self,
+        query_xs: np.ndarray,
+        query_ys: np.ndarray,
+        distance: float,
+        value_columns: Sequence[np.ndarray],
+        validity_columns: Sequence[np.ndarray],
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Aggregate a point-to-polygon distance join directly by target polygon row.
+
+        Args:
+            query_xs: Contiguous float64 array of query x coordinates.
+            query_ys: Contiguous float64 array of query y coordinates.
+            distance: Maximum Euclidean point-to-polygon distance for a match.
+            value_columns: Float64 value arrays aligned with the query coordinates.
+            validity_columns: UInt8 non-null masks aligned with the value arrays.
+
+        Returns:
+            Target indices, pair counts, and column-major sum and non-null-count arrays.
+        """
+        return self._core.batch_within_distance_to_polygons_aggregate(
+            np.ascontiguousarray(query_xs, dtype=np.float64),
+            np.ascontiguousarray(query_ys, dtype=np.float64),
+            distance,
+            [np.ascontiguousarray(column, dtype=np.float64) for column in value_columns],
+            [np.ascontiguousarray(column, dtype=np.uint8) for column in validity_columns],
         )
 
     def batch_knn_to_polygons(

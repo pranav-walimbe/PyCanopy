@@ -15,6 +15,8 @@ pub(crate) enum Operation {
     BatchWithinDistance,
     BatchContains,
     BatchWithinDistanceToPolygons,
+    BatchContainsAggregate,
+    BatchWithinDistanceToPolygonsAggregate,
     BatchKnnToPolygons,
     BatchKnnToPolygonsSorted,
     PolygonIntersectsSelfJoin,
@@ -22,7 +24,7 @@ pub(crate) enum Operation {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 12] = [
+    pub(crate) const ALL: [Self; 14] = [
         Self::Knn,
         Self::RangeQuery,
         Self::RadiusQuery,
@@ -31,6 +33,8 @@ impl Operation {
         Self::BatchWithinDistance,
         Self::BatchContains,
         Self::BatchWithinDistanceToPolygons,
+        Self::BatchContainsAggregate,
+        Self::BatchWithinDistanceToPolygonsAggregate,
         Self::BatchKnnToPolygons,
         Self::BatchKnnToPolygonsSorted,
         Self::PolygonIntersectsSelfJoin,
@@ -47,6 +51,10 @@ impl Operation {
             Self::BatchWithinDistance => "batch_within_distance",
             Self::BatchContains => "batch_contains",
             Self::BatchWithinDistanceToPolygons => "batch_within_distance_to_polygons",
+            Self::BatchContainsAggregate => "batch_contains_aggregate",
+            Self::BatchWithinDistanceToPolygonsAggregate => {
+                "batch_within_distance_to_polygons_aggregate"
+            }
             Self::BatchKnnToPolygons => "batch_knn_to_polygons",
             Self::BatchKnnToPolygonsSorted => "batch_knn_to_polygons_sorted",
             Self::PolygonIntersectsSelfJoin => "polygon_intersects_self_join",
