@@ -4,6 +4,8 @@ Define SpatialFrame which is the entry point for spatial query planning.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 import numpy as np
@@ -14,11 +16,16 @@ from pycanopy.engine import Engine, wkb_points_to_xy
 from pycanopy.lazy import SpatialLazyFrame
 
 
-class SpatialFrame:
-    """Owns a materialized DataFrame, a spatial index Engine, and cached column stats.
+@dataclass(frozen=True)
+class _LazySpatialSource:
+    frame: pl.LazyFrame
+    geometry_col: str
+    geometry_kind: Literal["point", "polygon"]
+    index_mode: str
 
-    All spatial query planning begins with .lazy(). The DataFrame must be materialized
-    before construction since the Engine and its dataset statistics are built here.
+
+class SpatialFrame:
+    """Own materialized or deferred spatial data for query planning.
 
     Args:
         df: Materialized Polars DataFrame.
@@ -52,6 +59,7 @@ class SpatialFrame:
         self._engine.set_index_mode(index_mode)
         self._engine.set_coordinate_system(resolve_coordinate_system(coordinate_system, xs, ys))
         self._geometry_kind: Literal["point", "polygon"] = "point"
+        self._lazy_source: _LazySpatialSource | None = None
 
     @classmethod
     def _from_engine(
@@ -69,7 +77,107 @@ class SpatialFrame:
         sf._y_col = y_col
         sf._engine = engine
         sf._geometry_kind = geometry_kind
+        sf._lazy_source = None
         return sf
+
+    @classmethod
+    def from_lazy(
+        cls,
+        frame: pl.LazyFrame,
+        geometry_col: str,
+        geometry_kind: Literal["point", "polygon"],
+        index_mode: str = "auto",
+    ) -> SpatialFrame:
+        """Construct a deferred polygon SpatialFrame from a Polars LazyFrame.
+
+        Args:
+            frame: Lazy source of spatial rows.
+            geometry_col: Name of the Binary WKB geometry column.
+            geometry_kind: Geometry kind. Must be ``"polygon"``.
+            index_mode: Index build policy ("eager" / "none" / "auto").
+
+        Returns:
+            A SpatialFrame materialized when its query is collected.
+        """
+        if not isinstance(frame, pl.LazyFrame):
+            raise TypeError("frame must be a polars LazyFrame")
+        if geometry_kind != "polygon":
+            raise NotImplementedError("lazy sources currently support geometry_kind='polygon'")
+        sf = object.__new__(cls)
+        sf._df = None
+        sf._x_col = "_x"
+        sf._y_col = "_y"
+        sf._engine = None
+        sf._geometry_kind = geometry_kind
+        sf._lazy_source = _LazySpatialSource(frame, geometry_col, geometry_kind, index_mode)
+        return sf
+
+    @classmethod
+    def scan_parquet(
+        cls,
+        source: str | Path | list[str] | list[Path],
+        geometry_col: str,
+        geometry_kind: Literal["point", "polygon"],
+        index_mode: str = "auto",
+        storage_options: dict[str, str] | None = None,
+        **scan_options: object,
+    ) -> SpatialFrame:
+        """Construct a deferred polygon SpatialFrame from Parquet.
+
+        Args:
+            source: Parquet path, glob, cloud URI, or list of paths.
+            geometry_col: Name of the Binary WKB geometry column.
+            geometry_kind: Geometry kind. Must be ``"polygon"``.
+            index_mode: Index build policy ("eager" / "none" / "auto").
+            storage_options: Cloud connection options for Polars.
+            **scan_options: Options forwarded to ``polars.scan_parquet``.
+
+        Returns:
+            A SpatialFrame materialized when its query is collected.
+        """
+        frame = pl.scan_parquet(source, storage_options=storage_options, **scan_options)
+        return cls.from_lazy(frame, geometry_col, geometry_kind, index_mode)
+
+    @property
+    def _is_deferred(self) -> bool:
+        # Report whether this frame still owns a lazy source instead of materialized data
+        return self._lazy_source is not None
+
+    def _lazy_schema(self) -> pl.Schema:
+        # Resolve source schema only during execution preparation
+        if self._lazy_source is None:
+            raise RuntimeError("materialized SpatialFrame has no lazy source schema")
+        return self._lazy_source.frame.collect_schema()
+
+    def _materialize_lazy(
+        self,
+        required_columns: set[str] | None,
+        schema: pl.Schema,
+    ) -> SpatialFrame:
+        # Collect projected input, build native geometry, and retain WKB only when required
+        source = self._lazy_source
+        if source is None:
+            return self
+        if source.geometry_col not in schema:
+            raise ValueError(f"geometry_col {source.geometry_col!r} not found in LazyFrame")
+        if schema[source.geometry_col] != pl.Binary:
+            raise TypeError(
+                f"geometry_col {source.geometry_col!r} must have Binary dtype, "
+                f"got {schema[source.geometry_col]}"
+            )
+
+        schema_columns = list(schema.names())
+        if required_columns is None:
+            retained_columns = schema_columns
+        else:
+            retained_columns = [name for name in schema_columns if name in required_columns]
+        scan_columns = list(dict.fromkeys([*retained_columns, source.geometry_col]))
+        collected = source.frame.select(scan_columns).collect()
+        engine = Engine.from_wkb_polygons(collected[source.geometry_col])
+        engine.set_index_mode(source.index_mode)
+        if source.geometry_col not in retained_columns:
+            collected = collected.drop(source.geometry_col)
+        return self._from_engine(collected, engine, self._x_col, self._y_col, "polygon")
 
     @classmethod
     def from_wkb_points(
@@ -194,13 +302,14 @@ class SpatialFrame:
             New SpatialFrame with compact matching geometry. Its index builds on demand
             according to the inherited index policy.
         """
-        indices = self._engine.range_query(min_x, min_y, max_x, max_y)
+        engine = self.engine
+        indices = engine.range_query(min_x, min_y, max_x, max_y)
         idx_s = pl.Series(np.asarray(indices, dtype=np.uint32))
         filtered = self._df[idx_s] if indices else self._df.clear()
         if self._geometry_kind == "polygon":
             return self._from_engine(
                 filtered,
-                self._engine.subset(indices),
+                engine.subset(indices),
                 self._x_col,
                 self._y_col,
                 "polygon",
@@ -220,7 +329,7 @@ class SpatialFrame:
         Returns:
             The frame's DataFrame with an appended unsigned 'area' column.
         """
-        areas = self._engine.polygon_areas()
+        areas = self.engine.polygon_areas()
         return self._df.with_columns(pl.Series("area", areas))
 
     def intersects_pairs(self, key_col: str | None = None) -> pl.DataFrame:
@@ -235,7 +344,7 @@ class SpatialFrame:
             DataFrame with columns left/right (or key_1/key_2 if key_col given),
             area_left, area_right, overlap_area, iou. Empty with correct schema when none intersect.
         """
-        flat = self._engine.polygon_intersects_self_join()
+        flat = self.engine.polygon_intersects_self_join()
         if len(flat) == 0:
             if key_col is not None:
                 dtype = self._df[key_col].dtype
@@ -263,8 +372,8 @@ class SpatialFrame:
         pairs = flat.reshape(-1, 2)
         i_idx = pairs[:, 0]
         j_idx = pairs[:, 1]
-        areas = self._engine.polygon_areas()
-        overlap = self._engine.polygon_pairs_intersection_area(i_idx, j_idx)
+        areas = self.engine.polygon_areas()
+        overlap = self.engine.polygon_pairs_intersection_area(i_idx, j_idx)
         area_i = areas[i_idx]
         area_j = areas[j_idx]
         union = area_i + area_j - overlap
@@ -316,7 +425,7 @@ class SpatialFrame:
         Returns:
             The subset of this frame's DataFrame within the radius.
         """
-        idx = self._engine.radius_query(cx, cy, distance)
+        idx = self.engine.radius_query(cx, cy, distance)
         return self._df[pl.Series(idx.astype(np.uint32))]
 
     def points_within_distance_of_polygon(self, polygon, distance: float) -> pl.DataFrame:
@@ -329,7 +438,7 @@ class SpatialFrame:
         Returns:
             The subset of this frame's DataFrame matching the distance predicate.
         """
-        idx = self._engine.points_within_distance_of_polygon(polygon, distance)
+        idx = self.engine.points_within_distance_of_polygon(polygon, distance)
         return self._df[pl.Series(idx.astype(np.uint32))]
 
     @staticmethod
@@ -352,6 +461,8 @@ class SpatialFrame:
         Returns:
             The underlying Polars DataFrame.
         """
+        if self._is_deferred:
+            raise RuntimeError("deferred SpatialFrame data is available only through lazy queries")
         return self._df
 
     @property
@@ -361,6 +472,8 @@ class SpatialFrame:
         Returns:
             The underlying Engine.
         """
+        if self._is_deferred:
+            raise RuntimeError("deferred SpatialFrame Engine is built when a lazy query collects")
         return self._engine
 
     @property
@@ -370,7 +483,7 @@ class SpatialFrame:
         Returns:
             Either "planar" or "geographic".
         """
-        return self._engine.coordinate_system
+        return self.engine.coordinate_system
 
     @property
     def x_col(self) -> str:

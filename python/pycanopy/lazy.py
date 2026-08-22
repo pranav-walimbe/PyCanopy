@@ -93,13 +93,19 @@ def _fmt_node(node) -> str:
     return f"UNKNOWN [{type(node).__name__}]"
 
 
-def _fmt_plan(plan: Plan, path: PluginPath | None, n: int) -> str:
+def _fmt_plan(
+    plan: Plan,
+    path: PluginPath | None,
+    n: int | None,
+    source_name: str = "DF",
+) -> str:
     # Format the full plan as Polars-style indented explain() text
     path_suffix = ""
     if path is not None:
         path_label = "EXPR" if path == PluginPath.EXPR else "IO"
         path_suffix = f"; path: {path_label}"
-    df_line = f"DF [N={n:,}{path_suffix}]"
+    row_count = "?" if n is None else f"{n:,}"
+    df_line = f"{source_name} [N={row_count}{path_suffix}]"
 
     if not plan:
         return df_line
@@ -120,6 +126,57 @@ def _fmt_plan(plan: Plan, path: PluginPath | None, n: int) -> str:
     return "\n".join(lines)
 
 
+_SOURCE_JOIN_TYPES = (
+    KnnJoinNode,
+    WithinJoinNode,
+    WithinDistanceJoinNode,
+    PolygonWithinDistanceJoinNode,
+    PolygonKnnJoinNode,
+)
+
+
+def _source_columns_for_plan(plan: Plan, schema: pl.Schema) -> set[str] | None:
+    # Return source columns needed during execution, or None when all columns are output
+    if not plan or not isinstance(plan[-1], SelectNode):
+        if plan and isinstance(plan[-1], IntersectsSelfJoinNode):
+            return set()
+        return None
+
+    body = plan[:-1]
+    join_position = next(
+        (position for position, node in enumerate(body) if isinstance(node, _SOURCE_JOIN_TYPES)),
+        None,
+    )
+    query_columns = set() if join_position is None else set(body[join_position].query_df.columns)
+    source_columns = set(schema.names())
+
+    def source_name(output_name: str) -> str | None:
+        # Map a post-join output name back to its source-side column
+        if output_name.startswith("right_"):
+            candidate = output_name.removeprefix("right_")
+            if candidate in query_columns and candidate in source_columns:
+                return candidate
+            return None
+        if output_name in source_columns and output_name not in query_columns:
+            return output_name
+        return None
+
+    required = set()
+    for output in plan[-1].columns:
+        source = source_name(output) if join_position is not None else output
+        if source in source_columns:
+            required.add(source)
+    for position, node in enumerate(body):
+        if not isinstance(node, ScalarNode):
+            continue
+        roots = node.expr.meta.root_names()
+        if join_position is None or position < join_position:
+            required.update(root for root in roots if root in source_columns)
+        else:
+            required.update(source for root in roots if (source := source_name(root)) is not None)
+    return required
+
+
 class SpatialLazyFrame:
     """Builds a spatial query plan declaratively. Declaration order is not execution order.
 
@@ -127,13 +184,21 @@ class SpatialLazyFrame:
     Join and kNN nodes act as barriers and are never reordered by the cost sort.
 
     Args:
-        sf: The SpatialFrame that owns the Engine and DataFrame.
+        sf: SpatialFrame owning materialized data or a deferred source.
         plan: Current list of plan nodes (do not mutate directly).
     """
 
     def __init__(self, sf: SpatialFrame, plan: Plan) -> None:  # noqa: F821
         self._sf = sf
         self._plan = plan
+
+    def _prepare(self) -> SpatialFrame:  # noqa: F821
+        # Materialize a deferred source using the complete plan's required columns
+        if not self._sf._is_deferred:
+            return self._sf
+        schema = self._sf._lazy_schema()
+        required = _source_columns_for_plan(self._plan, schema)
+        return self._sf._materialize_lazy(required, schema)
 
     def filter(self, expr: pl.Expr) -> SpatialLazyFrame:
         """Add a scalar Polars expression filter.
@@ -414,14 +479,13 @@ class SpatialLazyFrame:
         return SpatialLazyFrame(self._sf, [*self._plan, IntersectsSelfJoinNode()])
 
     def explain(self) -> str:
-        """Return a human-readable description of the computed query plan.
-
-        Shows the optimised plan that collect() will execute (reordered operations, fused
-        predicates, chosen EXPR or IO path) rather than the declaration order.
+        """Return the physical plan, or the logical plan for a deferred source.
 
         Returns:
-            Multi-line string describing the plan. Print it for readable output.
+            A human-readable plan description.
         """
+        if self._sf._is_deferred:
+            return _fmt_plan(self._plan, None, None, "LAZY SOURCE")
         engine = self._sf.engine
         opt = SpatialOptimizer()
         plan = opt.optimize(self._plan, engine)
@@ -441,11 +505,12 @@ class SpatialLazyFrame:
         Returns:
             The executed result as a Polars DataFrame.
         """
+        sf = self._prepare()
         optimizer = SpatialOptimizer()
         executor = SpatialExecutor()
-        optimized = optimizer.optimize(self._plan, self._sf.engine)
-        plugin_path = optimizer._select_plugin_path(optimized, self._sf.engine)
-        return executor.execute(optimized, self._sf, plugin_path, batch_size)
+        optimized = optimizer.optimize(self._plan, sf.engine)
+        plugin_path = optimizer._select_plugin_path(optimized, sf.engine)
+        return executor.execute(optimized, sf, plugin_path, batch_size)
 
     def collect_batched(self, batch_size: int | None = None) -> Iterator[pl.DataFrame]:
         """Execute the plan and yield the result one morsel-frame at a time.
@@ -459,24 +524,26 @@ class SpatialLazyFrame:
         Returns:
             An iterator of DataFrames, one per probe morsel.
         """
+        sf = self._prepare()
         optimizer = SpatialOptimizer()
         executor = SpatialExecutor()
-        optimized = optimizer.optimize(self._plan, self._sf.engine)
-        return executor.stream(optimized, self._sf, batch_size)
+        optimized = optimizer.optimize(self._plan, sf.engine)
+        return executor.stream(optimized, sf, batch_size)
 
     def sink_parquet(self, path: str | Path, batch_size: int | None = None) -> None:
-        """Execute the plan and stream its result to a Parquet file in bounded memory.
+        """Execute the plan and stream result morsels to a Parquet file.
 
         Args:
             path: Destination Parquet file path.
             batch_size: Probe rows per morsel. Defaults to MORSEL_ROWS.
         """
+        sf = self._prepare()
         optimizer = SpatialOptimizer()
         executor = SpatialExecutor()
-        optimized = optimizer.optimize(self._plan, self._sf.engine)
+        optimized = optimizer.optimize(self._plan, sf.engine)
         writer: pq.ParquetWriter | None = None
         try:
-            for morsel in executor.stream(optimized, self._sf, batch_size):
+            for morsel in executor.stream(optimized, sf, batch_size):
                 table = morsel.to_arrow()
                 if writer is None:
                     writer = pq.ParquetWriter(str(path), table.schema)
@@ -497,17 +564,18 @@ class SpatialLazyFrame:
         Returns:
             A Polars LazyFrame that streams this plan's output.
         """
+        sf = self._prepare()
         optimizer = SpatialOptimizer()
         executor = SpatialExecutor()
-        optimized = optimizer.optimize(self._plan, self._sf.engine)
+        optimized = optimizer.optimize(self._plan, sf.engine)
 
-        sample = next(executor.stream(optimized, self._sf, batch_size=1), None)
+        sample = next(executor.stream(optimized, sf, batch_size=1), None)
         schema = sample.schema if sample is not None else pl.Schema({})
 
         def source(with_columns, predicate, n_rows, batch_size_hint):
             # Stream plan morsels, applying Polars predicate, projection, and row-count pushdown
             produced = 0
-            for morsel in executor.stream(optimized, self._sf, batch_size):
+            for morsel in executor.stream(optimized, sf, batch_size):
                 if predicate is not None:
                     morsel = morsel.filter(predicate)
                 if with_columns is not None:
@@ -523,10 +591,7 @@ class SpatialLazyFrame:
 
     @staticmethod
     def collect_all(frames: list[SpatialLazyFrame]) -> list[pl.DataFrame]:
-        """Collect multiple SpatialLazyFrames, caching any shared plan prefix.
-
-        Caches the plan prefix shared by frames branched from the same base, emitting it
-        once and building each branch's suffix from it.
+        """Collect frames while caching a shared materialized plan prefix.
 
         Args:
             frames: SpatialLazyFrames to collect. Must share a SpatialFrame.
@@ -545,6 +610,8 @@ class SpatialLazyFrame:
         sf = frames[0]._sf
         if not all(f._sf is sf for f in frames[1:]):
             raise ValueError("All frames in collect_all must belong to the same SpatialFrame")
+        if sf._is_deferred:
+            return [frame.collect() for frame in frames]
 
         optimizer = SpatialOptimizer()
         executor = SpatialExecutor()
@@ -605,13 +672,14 @@ class SpatialGroupBy:
         """
         if not named_aggs:
             raise ValueError("agg requires at least one aggregation")
-        fused = _try_fused_join_agg(self._slf._sf, self._slf._plan, self._keys, named_aggs)
-        if fused is not None:
-            return fused
         keep = list(
             dict.fromkeys([*self._keys, *(c for spec in named_aggs.values() for c in spec.inputs)])
         )
-        projected = self._slf.select(keep)
+        prepared = self._slf.select(keep)._prepare()
+        fused = _try_fused_join_agg(prepared, self._slf._plan, self._keys, named_aggs)
+        if fused is not None:
+            return fused
+        projected = SpatialLazyFrame(prepared, self._slf._plan).select(keep)
         partials = [_partial_agg(m, self._keys, named_aggs) for m in projected.collect_batched()]
         if not partials:
             partials = [_partial_agg(projected.collect(), self._keys, named_aggs)]
