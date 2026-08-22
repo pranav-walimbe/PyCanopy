@@ -61,10 +61,28 @@ flowchart LR
 
 Used for:
 
-- polygon rings (`ring_offsets` into `xs`/`ys`, `poly_offsets` into rings)
+- polygon rings (two coordinate arrays plus `ring_offsets` into coordinates and
+  `poly_offsets` into rings)
 - `UniformGrid` cells (`cell_offsets` into `indices`)
 - `PreparedPolygons` Y-bands (`band_ptr` into `band_edges`, `edge_base` into `edge_verts`)
-- MultiPolygon parts (`polygon_parts_csr`, part indices grouped by logical polygon)
+- MultiPolygon parts when an operation needs grouped lookup (`polygon_parts_csr` is built
+  temporarily from the engine's persistent `part_poly` mapping)
+
+## Geometry ownership and subsets
+
+Polygon WKB is an ingestion format rather than the engine's retained geometry. The Rust decoder
+creates the coordinate and offset arrays above, and `SpatialFrame.from_wkb_polygons` drops its WKB
+column reference. The caller's input DataFrame is not modified and continues to own WKB if the
+caller retains it.
+
+Derived polygon frames copy matching native geometry into compact arrays. They do not gather and
+decode WKB again. Existing indexes are not copied because their item positions refer to the source
+arrays. The subset inherits the source index policy and builds a smaller index on demand when that
+policy selects one.
+
+Point frames currently retain their tabular coordinate columns alongside the Rust coordinate
+buffers. Frames constructed from WKB points also retain the WKB column unless the caller projects
+it out.
 
 ## Polygon kNN join: spatial tiling and Z-order
 

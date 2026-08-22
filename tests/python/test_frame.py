@@ -253,11 +253,57 @@ def test_range_filter_polygon_frame_returns_matching_polygon():
     assert result.df["id"].to_list() == [1]
     assert result.engine.n == 1
 
+    construction = result.engine.take_metrics()["construction"]
+    assert construction["wkb_decode_ns"] == 0
+    assert construction["statistics_ns"] > 0
+
 
 def test_range_filter_polygon_frame_empty_bbox():
     sf = SpatialFrame.from_wkb_polygons(_wkb_polygon_frame(), "geom")
     result = sf.range_filter(5.0, 5.0, 6.0, 6.0)
     assert result.engine.n == 0
+
+
+def test_wkb_polygon_frame_does_not_retain_hidden_wkb():
+    source = _wkb_polygon_frame()
+    original_wkb = source["geom"].to_list()
+
+    sf = SpatialFrame.from_wkb_polygons(source, "geom")
+
+    assert "geom" not in sf.df.columns
+    assert not hasattr(sf, "_wkb_series")
+    assert source["geom"].to_list() == original_wkb
+
+
+def test_range_filter_native_subset_preserves_index_mode():
+    sf = SpatialFrame.from_wkb_polygons(_wkb_polygon_frame(), "geom", index_mode="none")
+
+    result = sf.range_filter(0.0, 0.0, 2.0, 2.0)
+
+    assert result.engine.set_index_mode("auto") == "none"
+
+
+def test_range_filter_from_polygons_preserves_holes_and_multipolygons():
+    donut = shapely.Polygon(
+        [(0, 0), (4, 0), (4, 4), (0, 4)],
+        [[(1, 1), (3, 1), (3, 3), (1, 3)]],
+    )
+    multipolygon = shapely.MultiPolygon([shapely.box(10, 0, 11, 1), shapely.box(12, 0, 13, 1)])
+    df = pl.DataFrame({"id": ["donut", "multi"]}).with_columns(
+        pl.Series("geom", [donut, multipolygon], dtype=pl.Object)
+    )
+    sf = SpatialFrame.from_polygons(df, "geom")
+
+    multi = sf.range_filter(9.0, -1.0, 14.0, 2.0)
+    assert multi.df["id"].to_list() == ["multi"]
+    assert multi.engine.contains(10.5, 0.5) == [0]
+    assert multi.engine.contains(12.5, 0.5) == [0]
+    assert multi.engine.polygon_areas().tolist() == pytest.approx([2.0])
+
+    filtered_donut = sf.range_filter(-1.0, -1.0, 5.0, 5.0).range_filter(0.0, 0.0, 4.0, 4.0)
+    assert filtered_donut.df["id"].to_list() == ["donut"]
+    assert filtered_donut.engine.contains(0.5, 0.5) == [0]
+    assert filtered_donut.engine.contains(2.0, 2.0) == []
 
 
 # radius_query tests

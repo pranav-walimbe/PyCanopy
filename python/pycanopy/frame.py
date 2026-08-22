@@ -51,8 +51,25 @@ class SpatialFrame:
         self._engine = Engine.from_coords(xs, ys)
         self._engine.set_index_mode(index_mode)
         self._engine.set_coordinate_system(resolve_coordinate_system(coordinate_system, xs, ys))
-        self._wkb_col: str | None = None
-        self._wkb_series: pl.Series | None = None
+        self._geometry_kind: Literal["point", "polygon"] = "point"
+
+    @classmethod
+    def _from_engine(
+        cls,
+        df: pl.DataFrame,
+        engine: Engine,
+        x_col: str,
+        y_col: str,
+        geometry_kind: Literal["point", "polygon"],
+    ) -> SpatialFrame:
+        # Construct a derived frame from already-aligned attributes and native geometry
+        sf = object.__new__(cls)
+        sf._df = df
+        sf._x_col = x_col
+        sf._y_col = y_col
+        sf._engine = engine
+        sf._geometry_kind = geometry_kind
+        return sf
 
     @classmethod
     def from_wkb_points(
@@ -118,12 +135,7 @@ class SpatialFrame:
         geometries = df[geometry_col].to_list()
         engine = Engine.from_polygons(geometries)
         engine.set_index_mode(index_mode)
-        sf = object.__new__(cls)
-        sf._df = df
-        sf._x_col = x_col
-        sf._y_col = y_col
-        sf._engine = engine
-        return sf
+        return cls._from_engine(df, engine, x_col, y_col, "polygon")
 
     @classmethod
     def from_wkb_polygons(
@@ -137,7 +149,7 @@ class SpatialFrame:
         """Construct a polygon SpatialFrame from a WKB polygon column of ``df``.
 
         The WKB Polygon / MultiPolygon bytes are decoded directly in Rust, and the raw
-        WKB column is dropped from the retained DataFrame once the index is built.
+        WKB column is dropped from the retained DataFrame once native geometry is built.
 
         Args:
             df: Materialized Polars DataFrame with a WKB polygon column.
@@ -153,14 +165,7 @@ class SpatialFrame:
             raise ValueError(f"wkb_col {wkb_col!r} not found in DataFrame")
         engine = Engine.from_wkb_polygons(df[wkb_col])
         engine.set_index_mode(index_mode)
-        sf = object.__new__(cls)
-        sf._df = df.drop(wkb_col)
-        sf._x_col = x_col
-        sf._y_col = y_col
-        sf._engine = engine
-        sf._wkb_col = wkb_col
-        sf._wkb_series = df[wkb_col]
-        return sf
+        return cls._from_engine(df.drop(wkb_col), engine, x_col, y_col, "polygon")
 
     def lazy(self) -> SpatialLazyFrame:
         """Start a declarative spatial query plan over this frame.
@@ -186,27 +191,22 @@ class SpatialFrame:
             max_y: Top edge of the query rectangle.
 
         Returns:
-            New SpatialFrame with the matching rows and a freshly built index.
+            New SpatialFrame with compact matching geometry. Its index builds on demand
+            according to the inherited index policy.
         """
         indices = self._engine.range_query(min_x, min_y, max_x, max_y)
-        if not indices:
-            if self._wkb_col is not None:
-                empty = self._df.clear().with_columns(pl.Series(self._wkb_col, [], dtype=pl.Binary))
-                return SpatialFrame.from_wkb_polygons(
-                    empty, self._wkb_col, self._x_col, self._y_col
-                )
-            return SpatialFrame(
-                self._df.clear(),
+        idx_s = pl.Series(np.asarray(indices, dtype=np.uint32))
+        filtered = self._df[idx_s] if indices else self._df.clear()
+        if self._geometry_kind == "polygon":
+            return self._from_engine(
+                filtered,
+                self._engine.subset(indices),
                 self._x_col,
                 self._y_col,
-                coordinate_system=self.coordinate_system,
+                "polygon",
             )
-        idx_s = pl.Series(np.asarray(indices, dtype=np.uint32))
-        if self._wkb_col is not None:
-            filtered = self._df[idx_s].with_columns(self._wkb_series[idx_s].alias(self._wkb_col))
-            return SpatialFrame.from_wkb_polygons(filtered, self._wkb_col, self._x_col, self._y_col)
         return SpatialFrame(
-            self._df[idx_s],
+            filtered,
             self._x_col,
             self._y_col,
             coordinate_system=self.coordinate_system,
