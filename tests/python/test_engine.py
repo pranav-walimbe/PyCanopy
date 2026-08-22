@@ -210,6 +210,35 @@ def test_wkb_polygon_construction_metrics_are_reported():
     assert construction["statistics_ns"] > 0
 
 
+def test_batched_wkb_polygon_construction_preserves_metrics_and_order():
+    batches = [
+        pa.array([polygon.wkb for polygon in SQUARES[:2]]),
+        pa.array([polygon.wkb for polygon in SQUARES[2:]]),
+    ]
+    eng = Engine._from_wkb_polygon_batches(iter(batches))
+
+    assert eng.n == len(SQUARES)
+    assert eng.polygon_areas().tolist() == pytest.approx([1.0] * len(SQUARES))
+    construction = eng.take_metrics()["construction"]
+    assert construction["wkb_decode_ns"] > 0
+    assert construction["statistics_ns"] > 0
+
+
+def test_batched_wkb_point_construction_preserves_metrics_and_order():
+    wkbs = [ShapelyPoint(x, y).wkb for x, y in zip(XS, YS, strict=True)]
+    batches = [
+        pa.array(wkbs[:2]),
+        pa.array(wkbs[2:]),
+    ]
+    eng = Engine._from_wkb_point_batches(iter(batches))
+
+    assert eng.n == len(XS)
+    assert eng.knn(1.2, 0.1, len(XS)) == [1, 2, 4, 0, 3]
+    construction = eng.take_metrics()["construction"]
+    assert construction["wkb_decode_ns"] > 0
+    assert construction["statistics_ns"] > 0
+
+
 def test_none_index_mode_reports_brute_force_selection():
     xs = np.arange(1000, dtype=np.float64)
     eng = Engine.from_coords(xs, np.zeros_like(xs))

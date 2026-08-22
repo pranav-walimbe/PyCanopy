@@ -20,6 +20,91 @@ pub struct ParsedPolygons {
     pub part_poly: Option<Vec<u32>>, // logical polygon per part, None if no MultiPolygons
 }
 
+/// Accumulates decoded polygon batches before constructing an immutable Engine.
+pub struct PolygonBuilder {
+    xs: Vec<f64>,
+    ys: Vec<f64>,
+    ring_offsets: Vec<i64>,
+    poly_offsets: Vec<i64>,
+    part_poly: Vec<u32>,
+    n_polygons: usize,
+    multipart: bool,
+}
+
+impl PolygonBuilder {
+    pub fn new() -> Self {
+        Self {
+            xs: Vec::new(),
+            ys: Vec::new(),
+            ring_offsets: vec![0],
+            poly_offsets: vec![0],
+            part_poly: Vec::new(),
+            n_polygons: 0,
+            multipart: false,
+        }
+    }
+
+    pub fn append(&mut self, parsed: ParsedPolygons) -> Result<(), String> {
+        let coord_base = self.xs.len() as i64;
+        let ring_base = self.ring_offsets.len().saturating_sub(1) as i64;
+        let part_count = parsed.poly_offsets.len().saturating_sub(1);
+        let local_polygons = parsed
+            .part_poly
+            .as_ref()
+            .and_then(|mapping| mapping.iter().copied().max())
+            .map_or(part_count, |maximum| maximum as usize + 1);
+        let logical_base = u32::try_from(self.n_polygons)
+            .map_err(|_| "polygon count exceeds the u32 row limit".to_string())?;
+
+        self.xs.extend_from_slice(&parsed.xs);
+        self.ys.extend_from_slice(&parsed.ys);
+        self.ring_offsets.extend(
+            parsed.ring_offsets[1..]
+                .iter()
+                .map(|offset| offset + coord_base),
+        );
+        self.poly_offsets.extend(
+            parsed.poly_offsets[1..]
+                .iter()
+                .map(|offset| offset + ring_base),
+        );
+        for part in 0..part_count {
+            let local_polygon = parsed
+                .part_poly
+                .as_ref()
+                .map_or(part as u32, |mapping| mapping[part]);
+            self.part_poly.push(
+                logical_base
+                    .checked_add(local_polygon)
+                    .ok_or("polygon count exceeds the u32 row limit")?,
+            );
+        }
+        self.n_polygons = self
+            .n_polygons
+            .checked_add(local_polygons)
+            .ok_or("polygon count overflow")?;
+        self.multipart |= parsed.part_poly.is_some();
+        Ok(())
+    }
+
+    pub fn finish(self) -> (ParsedPolygons, usize) {
+        let parsed = ParsedPolygons {
+            xs: self.xs,
+            ys: self.ys,
+            ring_offsets: self.ring_offsets,
+            poly_offsets: self.poly_offsets,
+            part_poly: self.multipart.then_some(self.part_poly),
+        };
+        (parsed, self.n_polygons)
+    }
+}
+
+impl Default for PolygonBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 struct Reader<'a> {
     bytes: &'a [u8],
     pos: usize,
@@ -455,6 +540,37 @@ mod tests {
                 "part_poly differ at chunk_size {chunk_size}"
             );
         }
+    }
+
+    #[test]
+    fn polygon_builder_matches_whole_column_decode() {
+        let geometries = [
+            le_square(0.0, 0.0),
+            le_multipolygon(&[le_square(10.0, 0.0), le_square(20.0, 0.0)]),
+            square_with_hole(30.0),
+        ];
+        let mut whole_data = Vec::new();
+        let mut whole_offsets = vec![0i64];
+        for geometry in &geometries {
+            whole_data.extend_from_slice(geometry);
+            whole_offsets.push(whole_data.len() as i64);
+        }
+        let expected = parse_polygons(&whole_data, &whole_offsets).unwrap();
+
+        let mut builder = PolygonBuilder::new();
+        for geometry in &geometries {
+            builder
+                .append(parse_polygons(geometry, &[0, geometry.len() as i64]).unwrap())
+                .unwrap();
+        }
+        let (actual, n_polygons) = builder.finish();
+
+        assert_eq!(n_polygons, geometries.len());
+        assert_eq!(actual.xs, expected.xs);
+        assert_eq!(actual.ys, expected.ys);
+        assert_eq!(actual.ring_offsets, expected.ring_offsets);
+        assert_eq!(actual.poly_offsets, expected.poly_offsets);
+        assert_eq!(actual.part_poly, expected.part_poly);
     }
 
     #[test]

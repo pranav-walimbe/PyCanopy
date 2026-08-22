@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import lru_cache
 from importlib.resources import files
+from time import perf_counter_ns
 from weakref import WeakSet
 
 import numpy as np
@@ -20,6 +21,8 @@ import shapely
 
 try:
     from pycanopy._core import Engine as _CoreEngine
+    from pycanopy._core import _PointBuilder as _CorePointBuilder
+    from pycanopy._core import _PolygonBuilder as _CorePolygonBuilder
 except ImportError:
     raise ImportError(
         "pycanopy native extension not found. Build it first with: maturin develop"
@@ -321,8 +324,8 @@ def _wkb_points_fast(arr: pa.Array) -> tuple[np.ndarray, np.ndarray] | None:
     ):
         return None
     return (
-        np.ascontiguousarray(records["x"], dtype=np.float64),
-        np.ascontiguousarray(records["y"], dtype=np.float64),
+        np.array(records["x"], dtype=np.float64, copy=True, order="C"),
+        np.array(records["y"], dtype=np.float64, copy=True, order="C"),
     )
 
 
@@ -493,6 +496,28 @@ class Engine:
         return cls.from_polygons(shapely.from_wkb(raw))
 
     @classmethod
+    def _from_wkb_polygon_batches(cls, columns) -> Engine:
+        # Decode and append WKB batches without retaining their source buffers
+        builder = _CorePolygonBuilder()
+        for column in columns:
+            buffers = _wkb_binary_buffers(column)
+            if buffers is not None:
+                try:
+                    builder.append_wkb(*buffers)
+                    continue
+                except ValueError:
+                    pass  # unusual WKB variant falls back to shapely for this batch
+            raw = column.to_numpy() if hasattr(column, "to_numpy") else np.asarray(column)
+            rings = _extract_polygon_rings(shapely.from_wkb(raw))
+            builder.append_polygon_rings(*rings)
+
+        eng = cls.__new__(cls)
+        eng._metrics_capture = None
+        eng._metrics_capture_id = -1
+        eng._core = _configure_core(builder.finish())
+        return _register_metrics_engine(eng)
+
+    @classmethod
     def from_wkb_points(cls, points) -> Engine:
         """Construct from a column of WKB point geometries.
 
@@ -508,6 +533,21 @@ class Engine:
         """
         xs, ys = wkb_points_to_xy(points)
         return cls.from_coords(xs, ys)
+
+    @classmethod
+    def _from_wkb_point_batches(cls, columns) -> Engine:
+        # Decode and append point batches without retaining their WKB buffers
+        builder = _CorePointBuilder()
+        for column in columns:
+            started = perf_counter_ns()
+            xs, ys = wkb_points_to_xy(column)
+            builder.append(xs, ys, perf_counter_ns() - started)
+
+        eng = cls.__new__(cls)
+        eng._metrics_capture = None
+        eng._metrics_capture_id = -1
+        eng._core = _configure_core(builder.finish())
+        return _register_metrics_engine(eng)
 
     @classmethod
     def from_coords(cls, xs: Sequence[float], ys: Sequence[float]) -> Engine:

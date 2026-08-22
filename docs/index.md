@@ -44,5 +44,5 @@ Full results tables with per-query times are on the [Benchmarks](benchmarks.md) 
 | Separate coordinate sequences | `Engine.from_coords(xs, ys)` |
 | WKB point column (Binary) | `SpatialFrame.from_wkb_points(df, "geom")` |
 | WKB polygon column (Binary) | `SpatialFrame.from_wkb_polygons(df, "geom")` |
-| Polars lazy WKB source | `SpatialFrame.from_lazy(lf, "geom", "polygon")` |
+| Polars lazy point/polygon WKB | `SpatialFrame.from_lazy(lf, "geom", "point")` |
 | Lazy local or S3 Parquet | `SpatialFrame.scan_parquet(path, "geom", "polygon")` |

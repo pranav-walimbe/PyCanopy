@@ -15,6 +15,8 @@ from pycanopy.coordinates import resolve_coordinate_system
 from pycanopy.engine import Engine, wkb_points_to_xy
 from pycanopy.lazy import SpatialLazyFrame
 
+_DEFAULT_INGEST_BATCH_SIZE = 32_768
+
 
 @dataclass(frozen=True)
 class _LazySpatialSource:
@@ -22,6 +24,8 @@ class _LazySpatialSource:
     geometry_col: str
     geometry_kind: Literal["point", "polygon"]
     index_mode: str
+    coordinate_system: Literal["planar", "geographic"]
+    ingest_batch_size: int
 
 
 class SpatialFrame:
@@ -87,29 +91,51 @@ class SpatialFrame:
         geometry_col: str,
         geometry_kind: Literal["point", "polygon"],
         index_mode: str = "auto",
+        coordinate_system: Literal["planar", "geographic"] | None = None,
+        ingest_batch_size: int = _DEFAULT_INGEST_BATCH_SIZE,
     ) -> SpatialFrame:
-        """Construct a deferred polygon SpatialFrame from a Polars LazyFrame.
+        """Construct a deferred SpatialFrame from a Polars LazyFrame.
 
         Args:
             frame: Lazy source of spatial rows.
             geometry_col: Name of the Binary WKB geometry column.
-            geometry_kind: Geometry kind. Must be ``"polygon"``.
+            geometry_kind: WKB geometry kind, ``"point"`` or ``"polygon"``.
             index_mode: Index build policy ("eager" / "none" / "auto").
+            coordinate_system: Point distance system ("planar" / "geographic").
+            ingest_batch_size: Source rows decoded per batch.
 
         Returns:
             A SpatialFrame materialized when its query is collected.
         """
         if not isinstance(frame, pl.LazyFrame):
             raise TypeError("frame must be a polars LazyFrame")
-        if geometry_kind != "polygon":
-            raise NotImplementedError("lazy sources currently support geometry_kind='polygon'")
+        if geometry_kind not in ("point", "polygon"):
+            raise ValueError("geometry_kind must be 'point' or 'polygon'")
+        if isinstance(ingest_batch_size, bool) or not isinstance(ingest_batch_size, int):
+            raise TypeError("ingest_batch_size must be an integer")
+        if ingest_batch_size <= 0:
+            raise ValueError("ingest_batch_size must be positive")
+        if geometry_kind == "polygon" and coordinate_system not in (None, "planar"):
+            raise ValueError("polygon sources support only planar coordinates")
+        resolved_system = resolve_coordinate_system(
+            coordinate_system,
+            np.empty(0, dtype=np.float64),
+            np.empty(0, dtype=np.float64),
+        )
         sf = object.__new__(cls)
         sf._df = None
         sf._x_col = "_x"
         sf._y_col = "_y"
         sf._engine = None
         sf._geometry_kind = geometry_kind
-        sf._lazy_source = _LazySpatialSource(frame, geometry_col, geometry_kind, index_mode)
+        sf._lazy_source = _LazySpatialSource(
+            frame,
+            geometry_col,
+            geometry_kind,
+            index_mode,
+            resolved_system,
+            ingest_batch_size,
+        )
         return sf
 
     @classmethod
@@ -120,23 +146,34 @@ class SpatialFrame:
         geometry_kind: Literal["point", "polygon"],
         index_mode: str = "auto",
         storage_options: dict[str, str] | None = None,
+        coordinate_system: Literal["planar", "geographic"] | None = None,
+        ingest_batch_size: int = _DEFAULT_INGEST_BATCH_SIZE,
         **scan_options: object,
     ) -> SpatialFrame:
-        """Construct a deferred polygon SpatialFrame from Parquet.
+        """Construct a deferred SpatialFrame from Parquet.
 
         Args:
             source: Parquet path, glob, cloud URI, or list of paths.
             geometry_col: Name of the Binary WKB geometry column.
-            geometry_kind: Geometry kind. Must be ``"polygon"``.
+            geometry_kind: WKB geometry kind, ``"point"`` or ``"polygon"``.
             index_mode: Index build policy ("eager" / "none" / "auto").
             storage_options: Cloud connection options for Polars.
+            coordinate_system: Point distance system ("planar" / "geographic").
+            ingest_batch_size: Source rows decoded per batch.
             **scan_options: Options forwarded to ``polars.scan_parquet``.
 
         Returns:
             A SpatialFrame materialized when its query is collected.
         """
         frame = pl.scan_parquet(source, storage_options=storage_options, **scan_options)
-        return cls.from_lazy(frame, geometry_col, geometry_kind, index_mode)
+        return cls.from_lazy(
+            frame,
+            geometry_col,
+            geometry_kind,
+            index_mode,
+            coordinate_system,
+            ingest_batch_size,
+        )
 
     @property
     def _is_deferred(self) -> bool:
@@ -154,7 +191,7 @@ class SpatialFrame:
         required_columns: set[str] | None,
         schema: pl.Schema,
     ) -> SpatialFrame:
-        # Collect projected input, build native geometry, and retain WKB only when required
+        # Stream projected input into native geometry and retain only required columns
         source = self._lazy_source
         if source is None:
             return self
@@ -172,12 +209,46 @@ class SpatialFrame:
         else:
             retained_columns = [name for name in schema_columns if name in required_columns]
         scan_columns = list(dict.fromkeys([*retained_columns, source.geometry_col]))
-        collected = source.frame.select(scan_columns).collect()
-        engine = Engine.from_wkb_polygons(collected[source.geometry_col])
+        retained_batches: list[pl.DataFrame] = []
+
+        def geometry_batches():
+            # Yield geometry for native decoding after saving the requested attributes
+            for batch in source.frame.select(scan_columns).collect_batches(
+                chunk_size=source.ingest_batch_size,
+                maintain_order=True,
+            ):
+                if retained_columns:
+                    retained_batches.append(batch.select(retained_columns))
+                geometry = batch[source.geometry_col]
+                del batch
+                yield geometry
+                del geometry
+
+        if source.geometry_kind == "point":
+            engine = Engine._from_wkb_point_batches(geometry_batches())
+            extent = engine.extent
+            if extent is None:
+                xs = ys = np.empty(0, dtype=np.float64)
+            else:
+                xs = np.asarray([extent[0], extent[2]])
+                ys = np.asarray([extent[1], extent[3]])
+            engine.set_coordinate_system(
+                resolve_coordinate_system(source.coordinate_system, xs, ys)
+            )
+        else:
+            engine = Engine._from_wkb_polygon_batches(geometry_batches())
         engine.set_index_mode(source.index_mode)
-        if source.geometry_col not in retained_columns:
-            collected = collected.drop(source.geometry_col)
-        return self._from_engine(collected, engine, self._x_col, self._y_col, "polygon")
+        if retained_batches:
+            collected = pl.concat(retained_batches, how="vertical", rechunk=False)
+        else:
+            collected = pl.DataFrame(schema={name: schema[name] for name in retained_columns})
+        return self._from_engine(
+            collected,
+            engine,
+            self._x_col,
+            self._y_col,
+            source.geometry_kind,
+        )
 
     @classmethod
     def from_wkb_points(

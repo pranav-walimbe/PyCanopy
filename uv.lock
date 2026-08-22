@@ -1054,7 +1054,7 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "numpy", specifier = ">=1.24" },
-    { name = "polars", specifier = ">=0.20" },
+    { name = "polars", specifier = ">=1.34" },
     { name = "pyarrow", specifier = ">=12.0" },
     { name = "shapely", specifier = ">=2.0" },
 ]
@@ -1071,7 +1071,7 @@ bench = [
 dev = [
     { name = "maturin", specifier = ">=1.0,<2.0" },
     { name = "numpy", specifier = ">=1.24" },
-    { name = "polars", specifier = ">=0.20" },
+    { name = "polars", specifier = ">=1.34" },
     { name = "pyarrow", specifier = ">=12.0" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "ruff", specifier = ">=0.4" },

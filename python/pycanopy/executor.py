@@ -211,9 +211,8 @@ class SpatialExecutor:
                 frames = self._stream_join_frames(plan, sf, morsel)
                 return pl.concat(frames, how="vertical", rechunk=False)
 
-        # EXPR needs x_col/y_col as real columns (point datasets). Polygon frames use
-        # synthetic coord names absent from df and degrade to IO.
-        if plugin_path == PluginPath.EXPR and sf.x_col not in sf.df.columns and not has_joins:
+        # Polygon filters use the direct IO path while point filters can mask native row indices
+        if plugin_path == PluginPath.EXPR and sf._geometry_kind == "polygon" and not has_joins:
             plugin_path = PluginPath.IO
 
         if plugin_path == PluginPath.IO:

@@ -9,6 +9,7 @@ from polars.io.plugins import register_io_source
 
 import pycanopy as pc
 from pycanopy import SpatialFrame, SpatialLazyFrame
+from pycanopy.engine import Engine
 
 
 def _polygon_data() -> pl.DataFrame:
@@ -21,6 +22,23 @@ def _polygon_data() -> pl.DataFrame:
                 shapely.box(0, 0, 1, 1).wkb,
                 shapely.box(10, 10, 11, 11).wkb,
                 shapely.box(20, 20, 21, 21).wkb,
+            ],
+        }
+    )
+
+
+def _point_data() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "id": [1, 2, 3, 4, 5],
+            "value": [10, 20, 30, 40, 50],
+            "unused": ["a", "b", "c", "d", "e"],
+            "geometry": [
+                shapely.Point(0, 0).wkb,
+                shapely.Point(1, 0).wkb,
+                shapely.Point(2, 0).wkb,
+                shapely.Point(3, 0).wkb,
+                shapely.Point(4, 0).wkb,
             ],
         }
     )
@@ -117,9 +135,16 @@ def test_scan_parquet_wraps_polars_lazy_scan(tmp_path):
     path = tmp_path / "polygons.parquet"
     source.write_parquet(path)
 
-    sf = SpatialFrame.scan_parquet(path, "geometry", "polygon", parallel="none")
+    sf = SpatialFrame.scan_parquet(
+        path,
+        "geometry",
+        "polygon",
+        ingest_batch_size=3,
+        parallel="none",
+    )
     result = sf.lazy().range_query(0, 0, 2, 2).select("id", "geometry").collect()
 
+    assert sf._lazy_source.ingest_batch_size == 3
     assert result["id"].to_list() == [1]
     assert result["geometry"].to_list() == [source["geometry"][0]]
 
@@ -176,8 +201,30 @@ def test_lazy_source_validation_is_deferred_until_collection():
 def test_lazy_source_rejects_unsupported_inputs():
     with pytest.raises(TypeError, match="polars LazyFrame"):
         SpatialFrame.from_lazy(_polygon_data(), "geometry", "polygon")
-    with pytest.raises(NotImplementedError, match="geometry_kind='polygon'"):
-        SpatialFrame.from_lazy(_polygon_data().lazy(), "geometry", "point")
+    with pytest.raises(ValueError, match=r"point.*polygon"):
+        SpatialFrame.from_lazy(_polygon_data().lazy(), "geometry", "line")
+    with pytest.raises(ValueError, match="only planar"):
+        SpatialFrame.from_lazy(
+            _polygon_data().lazy(),
+            "geometry",
+            "polygon",
+            coordinate_system="geographic",
+        )
+
+
+def test_lazy_source_validates_ingestion_batch_size():
+    source = _polygon_data().lazy()
+
+    assert (
+        SpatialFrame.from_lazy(source, "geometry", "polygon")._lazy_source.ingest_batch_size
+        == 32_768
+    )
+    for value in (0, -1):
+        with pytest.raises(ValueError, match="must be positive"):
+            SpatialFrame.from_lazy(source, "geometry", "polygon", ingest_batch_size=value)
+    for value in (True, 1.5, None):
+        with pytest.raises(TypeError, match="must be an integer"):
+            SpatialFrame.from_lazy(source, "geometry", "polygon", ingest_batch_size=value)
 
 
 def test_deferred_frame_requires_lazy_query_access():
@@ -201,3 +248,200 @@ def test_collect_all_executes_deferred_projections_independently():
     assert results[0]["id"].to_list() == [1]
     assert results[1]["geometry"].to_list() == [source["geometry"][0]]
     assert len(projections) == 2
+
+
+def test_lazy_ingestion_decodes_bounded_batches_in_order(monkeypatch):
+    source = pl.DataFrame(
+        {
+            "id": list(range(7)),
+            "geometry": [shapely.box(i, 0, i + 0.5, 0.5).wkb for i in range(7)],
+        }
+    )
+    batch_lengths: list[int] = []
+    original = Engine._from_wkb_polygon_batches.__func__
+
+    def tracked(cls, columns):
+        # Record each geometry batch before forwarding it to the native builder
+        def inspected():
+            for column in columns:
+                batch_lengths.append(len(column))
+                yield column
+
+        return original(cls, inspected())
+
+    monkeypatch.setattr(Engine, "_from_wkb_polygon_batches", classmethod(tracked))
+
+    result = (
+        SpatialFrame.from_lazy(source.lazy(), "geometry", "polygon", ingest_batch_size=2)
+        .lazy()
+        .range_query(-1, -1, 10, 10)
+        .select("id")
+        .collect()
+    )
+
+    assert batch_lengths == [2, 2, 2, 1]
+    assert result["id"].to_list() == source["id"].to_list()
+
+
+def test_lazy_batched_ingestion_preserves_multipolygons_and_holes():
+    polygon = shapely.box(0, 0, 1, 1)
+    multipolygon = shapely.MultiPolygon([shapely.box(10, 0, 11, 1), shapely.box(20, 0, 21, 1)])
+    polygon_with_hole = shapely.Polygon(
+        [(30, 0), (34, 0), (34, 4), (30, 4), (30, 0)],
+        [[(31, 1), (32, 1), (32, 2), (31, 1)]],
+    )
+    source = pl.DataFrame(
+        {
+            "id": ["polygon", "multipolygon", "hole"],
+            "geometry": [polygon.wkb, multipolygon.wkb, polygon_with_hole.wkb],
+        }
+    )
+    sf = SpatialFrame.from_lazy(source.lazy(), "geometry", "polygon", ingest_batch_size=1)
+
+    assert sf.lazy().contains(20.5, 0.5).select("id").collect()["id"].to_list() == ["multipolygon"]
+    assert sf.lazy().contains(31.5, 1.25).select("id").collect().is_empty()
+    retained = sf.lazy().range_query(-1, -1, 40, 10).select("id", "geometry").collect()
+    assert retained.to_dict(as_series=False) == source.to_dict(as_series=False)
+
+
+def test_lazy_batched_ingestion_supports_empty_sources():
+    source = pl.DataFrame(
+        schema={
+            "id": pl.Int64,
+            "geometry": pl.Binary,
+        }
+    )
+    result = (
+        SpatialFrame.from_lazy(source.lazy(), "geometry", "polygon")
+        .lazy()
+        .range_query(0, 0, 1, 1)
+        .select("id")
+        .collect()
+    )
+
+    assert result.schema == pl.Schema({"id": pl.Int64})
+    assert result.is_empty()
+
+
+def test_lazy_batched_ingestion_keeps_unusual_wkb_fallback():
+    polygon_3d = shapely.Polygon([(0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 0, 1)])
+    source = pl.DataFrame(
+        {
+            "id": [1, 2],
+            "geometry": [
+                shapely.to_wkb(polygon_3d, output_dimension=3),
+                shapely.box(10, 10, 11, 11).wkb,
+            ],
+        }
+    )
+    result = (
+        SpatialFrame.from_lazy(source.lazy(), "geometry", "polygon", ingest_batch_size=1)
+        .lazy()
+        .contains(0.75, 0.25)
+        .select("id")
+        .collect()
+    )
+
+    assert result["id"].to_list() == [1]
+
+
+def test_lazy_point_ingestion_is_bounded_and_projection_aware(monkeypatch):
+    source = _point_data()
+    lazy_frame, projections = _tracked_source(source)
+    batch_lengths: list[int] = []
+    original = Engine._from_wkb_point_batches.__func__
+
+    def tracked(cls, columns):
+        # Record point batches before forwarding them to the native builder
+        def inspected():
+            for column in columns:
+                batch_lengths.append(len(column))
+                yield column
+
+        return original(cls, inspected())
+
+    monkeypatch.setattr(Engine, "_from_wkb_point_batches", classmethod(tracked))
+    result = (
+        SpatialFrame.from_lazy(lazy_frame, "geometry", "point", ingest_batch_size=2)
+        .lazy()
+        .range_query(0.5, -1, 3.5, 1)
+        .select("id")
+        .collect()
+    )
+
+    assert batch_lengths == [2, 2, 1]
+    assert result["id"].to_list() == [2, 3, 4]
+    assert set(projections[0]) == {"id", "geometry"}
+    assert "unused" not in projections[0]
+
+
+def test_lazy_point_ingestion_preserves_requested_wkb_and_order():
+    source = _point_data()
+
+    result = (
+        SpatialFrame.from_lazy(source.lazy(), "geometry", "point", ingest_batch_size=2)
+        .lazy()
+        .knn(2.1, 0, 3)
+        .select("id", "geometry")
+        .collect()
+    )
+
+    assert result["id"].to_list() == [2, 3, 4]
+    assert result["geometry"].to_list() == [
+        source["geometry"][1],
+        source["geometry"][2],
+        source["geometry"][3],
+    ]
+
+
+def test_lazy_point_scalar_filter_uses_native_row_alignment():
+    source = _point_data()
+    result = (
+        SpatialFrame.from_lazy(source.lazy(), "geometry", "point")
+        .lazy()
+        .filter(pl.col("value") >= 30)
+        .range_query(1.5, -1, 3.5, 1)
+        .select("id")
+        .collect()
+    )
+
+    assert result["id"].to_list() == [3, 4]
+
+
+def test_lazy_point_geographic_distance_system():
+    source = pl.DataFrame(
+        {
+            "id": [1, 2, 3],
+            "geometry": [
+                shapely.Point(0, 0).wkb,
+                shapely.Point(0, 1).wkb,
+                shapely.Point(0, 3).wkb,
+            ],
+        }
+    )
+    sf = SpatialFrame.from_lazy(
+        source.lazy(),
+        "geometry",
+        "point",
+        coordinate_system="geographic",
+    )
+
+    result = sf.lazy().within_distance_of_point(0, 0, 120_000).select("id").collect()
+
+    assert result["id"].to_list() == [1, 2]
+
+
+def test_scan_parquet_supports_lazy_points(tmp_path):
+    source = _point_data()
+    path = tmp_path / "points.parquet"
+    source.write_parquet(path)
+
+    result = (
+        SpatialFrame.scan_parquet(path, "geometry", "point", parallel="none")
+        .lazy()
+        .range_query(-1, -1, 1.5, 1)
+        .select("id")
+        .collect()
+    )
+
+    assert result["id"].to_list() == [1, 2]

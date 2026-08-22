@@ -91,7 +91,196 @@ fn ensure_u32_indexable(len: usize, label: &str) -> PyResult<()> {
     Ok(())
 }
 
+#[pyclass(name = "_PointBuilder")]
+struct PyPointBuilder {
+    coordinates: Option<(Vec<f64>, Vec<f64>)>,
+    wkb_decode_ns: u64,
+}
+
+#[pymethods]
+impl PyPointBuilder {
+    #[new]
+    fn new() -> Self {
+        Self {
+            coordinates: Some((Vec::new(), Vec::new())),
+            wkb_decode_ns: 0,
+        }
+    }
+
+    #[pyo3(signature = (xs, ys, wkb_decode_ns=0))]
+    fn append(
+        &mut self,
+        xs: PyReadonlyArray1<f64>,
+        ys: PyReadonlyArray1<f64>,
+        wkb_decode_ns: u64,
+    ) -> PyResult<()> {
+        let xs = xs
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("xs must be a contiguous float64 array"))?;
+        let ys = ys
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("ys must be a contiguous float64 array"))?;
+        if xs.len() != ys.len() {
+            return Err(PyValueError::new_err("xs and ys must have the same length"));
+        }
+        let (all_xs, all_ys) = self
+            .coordinates
+            .as_mut()
+            .ok_or_else(|| PyValueError::new_err("point builder is already finished"))?;
+        ensure_u32_indexable(all_xs.len().saturating_add(xs.len()), "point dataset")?;
+        all_xs.extend_from_slice(xs);
+        all_ys.extend_from_slice(ys);
+        self.wkb_decode_ns = self.wkb_decode_ns.saturating_add(wkb_decode_ns);
+        Ok(())
+    }
+
+    fn finish(&mut self) -> PyResult<Engine> {
+        let (xs, ys) = self
+            .coordinates
+            .take()
+            .ok_or_else(|| PyValueError::new_err("point builder is already finished"))?;
+        let mut engine = Engine::new_points(xs.into(), ys.into());
+        engine.metrics.wkb_decode_ns = self.wkb_decode_ns;
+        Ok(engine)
+    }
+}
+
+#[pyclass(name = "_PolygonBuilder")]
+struct PyPolygonBuilder {
+    builder: Option<wkb::PolygonBuilder>,
+    wkb_decode_ns: u64,
+}
+
+#[pymethods]
+impl PyPolygonBuilder {
+    #[new]
+    fn new() -> Self {
+        Self {
+            builder: Some(wkb::PolygonBuilder::new()),
+            wkb_decode_ns: 0,
+        }
+    }
+
+    fn append_wkb(
+        &mut self,
+        data: PyReadonlyArray1<u8>,
+        offsets: PyReadonlyArray1<i64>,
+    ) -> PyResult<()> {
+        let data = data
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("data must be a contiguous uint8 array"))?;
+        let offsets = offsets
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("offsets must be a contiguous int64 array"))?;
+        let started = Instant::now();
+        let parsed = wkb::parse_polygons(data, offsets).map_err(PyValueError::new_err)?;
+        self.wkb_decode_ns = self.wkb_decode_ns.saturating_add(elapsed_ns(started));
+        self.builder
+            .as_mut()
+            .ok_or_else(|| PyValueError::new_err("polygon builder is already finished"))?
+            .append(parsed)
+            .map_err(PyValueError::new_err)
+    }
+
+    #[pyo3(signature = (xs, ys, ring_offsets, poly_offsets, part_poly=None))]
+    fn append_polygon_rings(
+        &mut self,
+        xs: PyReadonlyArray1<f64>,
+        ys: PyReadonlyArray1<f64>,
+        ring_offsets: PyReadonlyArray1<i64>,
+        poly_offsets: PyReadonlyArray1<i64>,
+        part_poly: Option<PyReadonlyArray1<i64>>,
+    ) -> PyResult<()> {
+        let xs = xs
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("xs must be a contiguous float64 array"))?;
+        let ys = ys
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("ys must be a contiguous float64 array"))?;
+        let ring_offsets = ring_offsets
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("ring_offsets must be contiguous"))?;
+        let poly_offsets = poly_offsets
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("poly_offsets must be contiguous"))?;
+        if xs.len() != ys.len() {
+            return Err(PyValueError::new_err("xs and ys must have the same length"));
+        }
+        let mapping = part_poly
+            .map(|values| {
+                values
+                    .as_slice()
+                    .map_err(|_| PyValueError::new_err("part_poly must be contiguous"))?
+                    .iter()
+                    .map(|&value| {
+                        u32::try_from(value)
+                            .map_err(|_| PyValueError::new_err("part_poly values must fit u32"))
+                    })
+                    .collect::<PyResult<Vec<_>>>()
+            })
+            .transpose()?;
+        let parsed = wkb::ParsedPolygons {
+            xs: xs.to_vec(),
+            ys: ys.to_vec(),
+            ring_offsets: ring_offsets.to_vec(),
+            poly_offsets: poly_offsets.to_vec(),
+            part_poly: mapping,
+        };
+        self.builder
+            .as_mut()
+            .ok_or_else(|| PyValueError::new_err("polygon builder is already finished"))?
+            .append(parsed)
+            .map_err(PyValueError::new_err)
+    }
+
+    fn finish(&mut self) -> PyResult<Engine> {
+        let builder = self
+            .builder
+            .take()
+            .ok_or_else(|| PyValueError::new_err("polygon builder is already finished"))?;
+        let (parsed, n_polygons) = builder.finish();
+        ensure_u32_indexable(n_polygons, "logical polygon dataset")?;
+        let mut engine = Engine::new_polygons(
+            parsed.xs.into(),
+            parsed.ys.into(),
+            parsed.ring_offsets.into(),
+            parsed.poly_offsets.into(),
+            parsed.part_poly.map(Arc::from),
+            n_polygons,
+        );
+        engine.metrics.wkb_decode_ns = self.wkb_decode_ns;
+        Ok(engine)
+    }
+}
+
 impl Engine {
+    fn new_points(xs: Arc<[f64]>, ys: Arc<[f64]>) -> Engine {
+        let stats_started = Instant::now();
+        let stats = collector::collect_points(&xs, &ys);
+        let statistics_ns = elapsed_ns(stats_started);
+        Engine {
+            xs,
+            ys,
+            ring_offsets: None,
+            poly_offsets: None,
+            stats,
+            brute: None,
+            rtree: None,
+            kdtree: None,
+            grid: None,
+            delta_xs: Vec::new(),
+            delta_ys: Vec::new(),
+            delta_query_cost: 0,
+            index_mode: IndexMode::Eager,
+            cost_factors: CostFactors::default(),
+            prepared_polys: None,
+            part_poly: None,
+            n_polygons: 0,
+            metric: DistanceMetric::Planar,
+            metrics: EngineMetrics::with_construction(0, statistics_ns),
+        }
+    }
+
     fn new_polygons(
         xs: Arc<[f64]>,
         ys: Arc<[f64]>,
@@ -392,30 +581,7 @@ impl Engine {
             return Err(PyValueError::new_err("xs and ys must have the same length"));
         }
         ensure_u32_indexable(xs_sl.len(), "point dataset")?;
-        let stats_started = Instant::now();
-        let stats = collector::collect_points(xs_sl, ys_sl);
-        let statistics_ns = elapsed_ns(stats_started);
-        Ok(Engine {
-            xs: xs_sl.into(),
-            ys: ys_sl.into(),
-            ring_offsets: None,
-            poly_offsets: None,
-            stats,
-            brute: None,
-            rtree: None,
-            kdtree: None,
-            grid: None,
-            delta_xs: Vec::new(),
-            delta_ys: Vec::new(),
-            delta_query_cost: 0,
-            index_mode: IndexMode::Eager,
-            cost_factors: CostFactors::default(),
-            prepared_polys: None,
-            part_poly: None,
-            n_polygons: 0,
-            metric: DistanceMetric::Planar,
-            metrics: EngineMetrics::with_construction(0, statistics_ns),
-        })
+        Ok(Engine::new_points(xs_sl.into(), ys_sl.into()))
     }
 
     /// Construct from two-level polygon ring arrays (supports holes and MultiPolygons).
@@ -2458,5 +2624,7 @@ impl Engine {
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Engine>()?;
+    m.add_class::<PyPointBuilder>()?;
+    m.add_class::<PyPolygonBuilder>()?;
     Ok(())
 }

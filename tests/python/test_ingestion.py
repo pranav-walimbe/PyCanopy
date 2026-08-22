@@ -134,6 +134,13 @@ def test_wkb_points_returns_contiguous_float64():
     assert ys.flags["C_CONTIGUOUS"] and ys.dtype == np.float64
 
 
+def test_wkb_points_singleton_returns_aligned_owned_arrays():
+    xs, ys = wkb_points_to_xy(_wkb_point_array([1.0], [2.0]))
+
+    assert xs.flags.aligned and ys.flags.aligned
+    assert xs.flags.owndata and ys.flags.owndata
+
+
 def test_wkb_points_empty_column():
     xs, ys = wkb_points_to_xy(pa.array([], type=pa.binary()))
     assert xs.tolist() == [] and ys.tolist() == []
