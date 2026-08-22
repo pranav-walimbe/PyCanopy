@@ -16,8 +16,6 @@ THRESHOLD = 0.0045  # degrees (~500m)
 
 TABLES_NEEDED = {"building": ["b_buildingkey", "b_name", "b_boundary"], "trip": ["t_pickuploc"]}
 
-compare = {"keys": ["b_buildingkey"], "values": ["nearby_pickup_count"]}
-
 
 def pycanopy(tables) -> pl.DataFrame:
     tables.parallel_fetch(TABLES_NEEDED)
@@ -34,4 +32,5 @@ def pycanopy(tables) -> pl.DataFrame:
         .group_by(["b_buildingkey", "b_name"])
         .agg(nearby_pickup_count=pc.agg.count())
         .sort(["nearby_pickup_count", "b_buildingkey"], descending=[True, False])
+        .head(100)
     )

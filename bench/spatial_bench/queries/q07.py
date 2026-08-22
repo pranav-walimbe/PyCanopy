@@ -13,11 +13,6 @@ title = "Route detour ratio (reported vs straight-line distance)"
 
 DEG_PER_M = 0.000009  # 1 meter ~= 0.000009 degrees
 
-compare = {
-    "keys": ["t_tripkey"],
-    "values": ["reported_distance_m", "line_distance_m", "detour_ratio"],
-}
-
 
 def pycanopy(tables) -> pl.DataFrame:
     trip = tables.table("trip", ["t_tripkey", "t_distance", "t_pickuploc", "t_dropoffloc"])
@@ -32,8 +27,12 @@ def pycanopy(tables) -> pl.DataFrame:
         .then(pl.col("reported_distance_m") / pl.col("line_distance_m"))
         .otherwise(None)
     )
-    return df.select("t_tripkey", "reported_distance_m", "line_distance_m", "detour_ratio").sort(
-        ["detour_ratio", "reported_distance_m", "t_tripkey"],
-        descending=[True, True, False],
-        nulls_last=True,
+    return (
+        df.select("t_tripkey", "reported_distance_m", "line_distance_m", "detour_ratio")
+        .sort(
+            ["detour_ratio", "reported_distance_m", "t_tripkey"],
+            descending=[True, True, False],
+            nulls_last=True,
+        )
+        .head(100)
     )

@@ -12,9 +12,6 @@ title = "Trips starting within ~50km of Sedona center"
 CENTER = (-111.7610, 34.8697)
 RADIUS = 0.45  # degrees (~50km, planar)
 
-# SedonaDB returns t_tripkey, pickup_lon/lat, t_pickuptime, distance_to_center.
-compare = {"keys": ["t_tripkey"], "values": ["distance_to_center"]}
-
 
 def pycanopy(tables) -> pl.DataFrame:
     trip = tables.table("trip", ["t_tripkey", "t_pickuploc", "t_pickuptime"])
@@ -34,4 +31,5 @@ def pycanopy(tables) -> pl.DataFrame:
             "distance_to_center",
         )
         .sort(["distance_to_center", "t_tripkey"])
+        .head(100)
     )

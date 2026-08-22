@@ -4,7 +4,7 @@
 # required: S3 bucket to write charts and logs into
 result_bucket: pycanopy-bench-results
 
-# required: IAM instance profile the box assumes (read public S3 data + write result bucket)
+# required: IAM instance profile the box assumes (read benchmark data + write results)
 instance_profile: pycanopy-spatialbench
 
 # run

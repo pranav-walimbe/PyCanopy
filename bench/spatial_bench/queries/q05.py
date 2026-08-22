@@ -18,12 +18,6 @@ TABLES_NEEDED = {
     "customer": ["c_custkey", "c_name"],
 }
 
-compare = {
-    "keys": ["c_custkey", "pickup_month"],
-    "values": ["monthly_travel_hull_area"],
-    "rel_tol": 1e-4,
-}
-
 
 def pycanopy(tables) -> pl.DataFrame:
     tables.parallel_fetch(TABLES_NEEDED)
@@ -46,8 +40,21 @@ def pycanopy(tables) -> pl.DataFrame:
     areas = Engine.group_convex_hull_areas(grouped["dxs"], grouped["dys"])
     grouped = grouped.with_columns(
         monthly_travel_hull_area=pl.Series("monthly_travel_hull_area", areas, dtype=pl.Float64)
-    ).sort(["trip_count", "t_custkey"], descending=[True, False])
+    ).sort(
+        ["monthly_travel_hull_area", "t_custkey", "pickup_month"],
+        descending=[True, False, False],
+    )
 
-    return grouped.select(
-        ["t_custkey", "c_name", "pickup_month", "monthly_travel_hull_area"]
-    ).rename({"t_custkey": "c_custkey", "c_name": "customer_name"})
+    return (
+        grouped.select(
+            ["t_custkey", "c_name", "pickup_month", "monthly_travel_hull_area", "trip_count"]
+        )
+        .rename(
+            {
+                "t_custkey": "c_custkey",
+                "c_name": "customer_name",
+                "trip_count": "dropoff_count",
+            }
+        )
+        .head(100)
+    )

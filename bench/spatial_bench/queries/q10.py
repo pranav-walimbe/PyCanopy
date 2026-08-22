@@ -16,10 +16,6 @@ _TRIP_COLS = ["t_pickuploc", "t_pickuptime", "t_dropofftime", "t_distance"]
 
 TABLES_NEEDED = {"zone": ["z_zonekey", "z_name", "z_boundary"], "trip": _TRIP_COLS}
 
-# avg_duration is an interval in SedonaDB (Timedelta) vs float seconds here, so it is
-# left out of the value check; num_trips and avg_distance are compared.
-compare = {"keys": ["z_zonekey"], "values": ["num_trips", "avg_distance"]}
-
 
 def pycanopy(tables) -> pl.DataFrame:
     tables.parallel_fetch(TABLES_NEEDED)
@@ -31,6 +27,7 @@ def pycanopy(tables) -> pl.DataFrame:
     qdf = trip.with_columns(
         pl.Series("qx", qx),
         pl.Series("qy", qy),
+        t_distance=pl.col("t_distance").cast(pl.Float64),
         duration_seconds=(pl.col("t_dropofftime") - pl.col("t_pickuptime")).dt.total_seconds(),
     ).select(["qx", "qy", "t_distance", "duration_seconds"])
 
@@ -51,4 +48,6 @@ def pycanopy(tables) -> pl.DataFrame:
         .with_columns(num_trips=pl.col("num_trips").fill_null(0))
         .rename({"z_name": "pickup_zone"})
     )
-    return result.sort(["avg_duration", "z_zonekey"], descending=[True, False], nulls_last=True)
+    return result.sort(
+        ["avg_duration", "z_zonekey"], descending=[True, False], nulls_last=True
+    ).head(100)

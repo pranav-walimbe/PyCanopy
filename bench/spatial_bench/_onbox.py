@@ -17,7 +17,11 @@ _DATA_TEMPLATE = "s3://wherobots-examples/data/spatialbench/SpatialBench_sf{sf}"
 def _build_parser() -> argparse.ArgumentParser:
     # CLI for the on-box benchmark runner
     parser = argparse.ArgumentParser(description="Measure PyCanopy on SpatialBench.")
-    parser.add_argument("--scale-factor", type=int, required=True)
+    parser.add_argument("--scale-factor", type=int, choices=(1, 10), required=True)
+    parser.add_argument(
+        "--data-dir",
+        help="Dataset root, defaulting to the published SpatialBench S3 source.",
+    )
     index_group = parser.add_mutually_exclusive_group()
     index_group.add_argument(
         "--index-eager", action="store_const", const="eager", dest="index_mode"
@@ -43,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     if args.profile and args.scale_factor != 1:
         raise SystemExit("--profile runs the SF1 workload; pass --scale-factor 1")
-    data_dir = _DATA_TEMPLATE.replace("{sf}", str(args.scale_factor))
+    data_dir = args.data_dir or _DATA_TEMPLATE.replace("{sf}", str(args.scale_factor))
     qs = query_registry.ALL
     if args.query:
         ids = set(args.query)

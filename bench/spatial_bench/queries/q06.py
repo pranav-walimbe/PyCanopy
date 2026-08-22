@@ -15,12 +15,9 @@ title = "Zone stats for trips intersecting a bounding box"
 # Axis-aligned bounding box (min_x, min_y, max_x, max_y).
 BBOX = (-112.2110, 34.4197, -111.3110, 35.3197)
 
-_TRIP_COLS = ["t_pickuploc", "t_totalamount", "t_pickuptime", "t_dropofftime"]
+_TRIP_COLS = ["t_pickuploc", "t_distance", "t_pickuptime", "t_dropofftime"]
 
 TABLES_NEEDED = {"zone": ["z_zonekey", "z_name", "z_boundary"], "trip": _TRIP_COLS}
-
-# avg_distance here is AVG(t_totalamount) on both sides
-compare = {"keys": ["z_zonekey"], "values": ["total_pickups", "avg_distance"]}
 
 
 def pycanopy(tables) -> pl.DataFrame:
@@ -41,9 +38,10 @@ def pycanopy(tables) -> pl.DataFrame:
 
     trip = tables.table("trip", _TRIP_COLS)
     qx, qy = wkb_points_to_xy(trip["t_pickuploc"])
-    qdf = trip.select(["t_totalamount", "t_pickuptime", "t_dropofftime"]).with_columns(
+    qdf = trip.select(["t_distance", "t_pickuptime", "t_dropofftime"]).with_columns(
         pl.Series("qx", qx),
         pl.Series("qy", qy),
+        t_distance=pl.col("t_distance").cast(pl.Float64),
         duration_seconds=(pl.col("t_dropofftime") - pl.col("t_pickuptime")).dt.total_seconds(),
     )
 
@@ -53,7 +51,7 @@ def pycanopy(tables) -> pl.DataFrame:
         .group_by(["z_zonekey", "z_name"])
         .agg(
             total_pickups=pc.agg.count(),
-            avg_distance=pc.agg.mean("t_totalamount"),
+            avg_distance=pc.agg.mean("t_distance"),
             avg_duration=pc.agg.mean("duration_seconds"),
         )
         .sort(["total_pickups", "z_zonekey"], descending=[True, False])

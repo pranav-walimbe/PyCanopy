@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # User-data for an unattended PyCanopy SpatialBench run on Amazon Linux 2023.
-# Builds PyCanopy, reads data directly from S3, measures the scale factor, uploads the
+# Builds PyCanopy, reads the dataset from S3, measures the scale factor, uploads the
 # chart, then writes _SUCCESS. The EXIT trap always ships the log and shuts the box
 # down, and the launch terminates on shutdown. @@NAME@@ placeholders are substituted
 # before deployment. No AWS keys are injected (instance role).
@@ -26,15 +26,16 @@ LOG=/var/log/pycanopy-bootstrap.log
 exec > >(tee -a "$LOG") 2>&1
 log() { echo "[bootstrap] $*"; }
 
-# Always ship the log and any completed profile artifacts, then self-terminate.
+# Always ship the log and any completed result artifacts, then self-terminate.
 cleanup() {
-  if [ "$PROFILE_MODE" = "1" ]; then
-    for artifact in profile.txt profile.json; do
-      if [ -f "/opt/pycanopy/assets/$artifact" ]; then
-        aws s3 cp "/opt/pycanopy/assets/$artifact" "${S3_BASE}/$artifact" --region "$REGION" || true
-      fi
-    done
-  fi
+  for artifact in \
+    profile.txt \
+    "spatialbench_sf${SCALE_FACTOR}@@OUT_SUFFIX@@.png" \
+    "spatial-bench-sf${SCALE_FACTOR}@@OUT_SUFFIX@@-results.txt"; do
+    if [ -f "/opt/pycanopy/assets/$artifact" ]; then
+      aws s3 cp "/opt/pycanopy/assets/$artifact" "${S3_BASE}/$artifact" --region "$REGION" || true
+    fi
+  done
   aws s3 cp "$LOG" "${S3_BASE}/bootstrap.log" --region "$REGION" || true
   shutdown -h now
 }
@@ -87,7 +88,7 @@ export TMPDIR=/data/scratch
 export AWS_DEFAULT_REGION="$REGION"
 log "measuring sf${SCALE_FACTOR}"
 if [ "$PROFILE_MODE" = "1" ]; then
-  rm -f /opt/pycanopy/assets/profile.txt /opt/pycanopy/assets/profile.json
+  rm -f /opt/pycanopy/assets/profile.txt
 fi
 uv run python -m bench.spatial_bench._onbox --scale-factor "$SCALE_FACTOR" @@BENCH_FLAGS@@
 
@@ -102,11 +103,7 @@ if [ -f "/opt/pycanopy/assets/$RESULTS_TXT" ]; then
   aws s3 cp "/opt/pycanopy/assets/$RESULTS_TXT" "${S3_BASE}/$RESULTS_TXT" --region "$REGION"
 fi
 if [ "$PROFILE_MODE" = "1" ]; then
-  for artifact in profile.txt profile.json; do
-    if [ -f "/opt/pycanopy/assets/$artifact" ]; then
-      aws s3 cp "/opt/pycanopy/assets/$artifact" "${S3_BASE}/$artifact" --region "$REGION"
-    fi
-  done
+  aws s3 cp "/opt/pycanopy/assets/profile.txt" "${S3_BASE}/profile.txt" --region "$REGION"
 fi
 
 log "done"

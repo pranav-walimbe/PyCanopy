@@ -1,6 +1,4 @@
-"""
-Q3: Monthly trip stats within ~5km of a 10km bounding box around Sedona.
-"""
+"""Q3: Monthly trip stats within ~5km of a ~26.5 x 30km box around Sedona."""
 
 from __future__ import annotations
 
@@ -22,10 +20,6 @@ BASE_POLY = Polygon(
 )
 
 _COLS = ["t_pickuploc", "t_pickuptime", "t_dropofftime", "t_distance", "t_fare"]
-
-# avg_duration is an interval in SedonaDB (Timedelta) vs float seconds here, so it is
-# left out of the value check; the counts and other averages are compared.
-compare = {"keys": ["pickup_month"], "values": ["total_trips", "avg_distance", "avg_fare"]}
 
 
 def pycanopy(tables) -> pl.DataFrame:

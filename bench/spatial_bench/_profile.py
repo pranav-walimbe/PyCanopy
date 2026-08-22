@@ -11,6 +11,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+from bench.spatial_bench._verify import DATASET_VERSION, WORKLOAD_REVISION
 from bench.spatial_bench.utils import _ASSETS_DIR, SpatialBenchTables, spawn_query
 
 _STAGES = ("fetch", "execute", "materialize")
@@ -156,8 +157,8 @@ def profile_payload(profiler: _StageProfiler, elapsed: float, engines: list[dict
 
 
 def profile_query(query, data_dir: str, index_mode: str) -> dict:
-    """Run one profiled query in an isolated process and parse its oracle verdict."""
-    result = spawn_query(query.id, data_dir, index_mode, "--profile")
+    """Run one profiled SF1 query and parse its answer verification."""
+    result = spawn_query(query.id, data_dir, 1, index_mode, "--profile")
     if result["status"] != "ok":
         print(f"[testcase] {result['status']} {query.id}: {result.get('error', '')}", flush=True)
         return {
@@ -238,10 +239,11 @@ def _section(qid: str, result: dict) -> str:
 def write_profile(results: dict, index_mode: str, path: Path) -> None:
     """Write the human-readable profile report."""
     head = (
-        f"PyCanopy historical SpatialBench SF1 profile (index_mode={index_mode}, 1 run/query)\n"
+        f"PyCanopy Apache SpatialBench SF1 profile (index_mode={index_mode}, 1 run/query)\n"
+        f"Dataset {DATASET_VERSION}, workload revision {WORKLOAD_REVISION}\n"
         "Engine times are always-on production metrics. Harness stages are wall boundaries.\n"
         f"RSS is sampled every {int(_SAMPLE_INTERVAL * 1000)} ms. Verification uses the "
-        "SedonaDB oracle for this workload."
+        "committed upstream answers."
     )
     parts = [head, *[_section(qid, result) for qid, result in results.items()], _SEP]
     path.write_text("\n".join(parts) + "\n")
@@ -251,21 +253,7 @@ def run_profile_suite(query_modules: list, data_dir: str, index_mode: str = "aut
     """Profile and oracle-verify every selected SF1 query exactly once."""
     results = {query.id: profile_query(query, data_dir, index_mode) for query in query_modules}
     text_path = _ASSETS_DIR / "profile.txt"
-    json_path = _ASSETS_DIR / "profile.json"
     write_profile(results, index_mode, text_path)
-    json_path.write_text(
-        json.dumps(
-            {
-                "workload": "historical SpatialBench SF1",
-                "index_mode": index_mode,
-                "runs_per_query": 1,
-                "queries": results,
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n"
-    )
 
     invalid = [
         qid

@@ -11,7 +11,8 @@ import time as _time
 
 from bench.spatial_bench import queries
 from bench.spatial_bench._profile import ProfilingTables, profile_payload
-from bench.spatial_bench.utils import SpatialBenchTables, verify_outputs
+from bench.spatial_bench._verify import verify_output
+from bench.spatial_bench.utils import SpatialBenchTables
 from pycanopy.engine import _capture_engine_metrics
 
 
@@ -28,6 +29,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("query_id")
     parser.add_argument("data_dir")
+    parser.add_argument("scale_factor", type=int)
     parser.add_argument("index_mode")
     parser.add_argument("--profile", action="store_true")
     args = parser.parse_args()
@@ -70,8 +72,10 @@ def main() -> None:
             f"PYCANOPY_PROFILE={json.dumps(profile_payload(tables.profiler, elapsed, engine_metrics))}",
             flush=True,
         )
+
+    if args.profile:
         try:
-            ok, detail = verify_outputs(result, args.query_id, args.data_dir, **qmodule.compare)
+            ok, detail = verify_output(result, args.query_id, args.scale_factor)
             tag = "PYCANOPY_MATCH" if ok else "PYCANOPY_MISMATCH"
             print(f"{tag}={detail}", flush=True)
         except Exception as exc:

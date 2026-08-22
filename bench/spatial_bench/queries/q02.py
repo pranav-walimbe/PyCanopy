@@ -15,8 +15,6 @@ ZONE_NAME = "Coconino County"
 
 TABLES_NEEDED = {"zone": ["z_name", "z_boundary"], "trip": ["t_pickuploc"]}
 
-compare = {"keys": [], "values": ["trip_count_in_coconino_county"]}
-
 
 def pycanopy(tables) -> pl.DataFrame:
     tables.parallel_fetch(TABLES_NEEDED)

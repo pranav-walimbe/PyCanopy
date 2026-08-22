@@ -16,8 +16,6 @@ TABLES_NEEDED = {
     "zone": ["z_zonekey", "z_boundary"],
 }
 
-compare = {"keys": [], "values": ["cross_zone_trip_count"]}
-
 
 def pycanopy(tables) -> pl.DataFrame:
     tables.parallel_fetch(TABLES_NEEDED)

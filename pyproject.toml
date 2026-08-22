@@ -51,7 +51,6 @@ docs = [
     "mkdocstrings[python]>=0.25",
 ]
 bench = [
-    "sedonadb>=0.3",
     "geoarrow-pyarrow>=0.1",
     "shapely>=2.0",
     "matplotlib>=3.7",

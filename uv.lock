@@ -1033,7 +1033,6 @@ bench = [
     { name = "matplotlib", version = "3.10.9", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "matplotlib", version = "3.11.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pyyaml" },
-    { name = "sedonadb" },
     { name = "shapely" },
 ]
 dev = [
@@ -1065,7 +1064,6 @@ bench = [
     { name = "geoarrow-pyarrow", specifier = ">=0.1" },
     { name = "matplotlib", specifier = ">=3.7" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "sedonadb", specifier = ">=0.3" },
     { name = "shapely", specifier = ">=2.0" },
 ]
 dev = [
@@ -1241,28 +1239,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/11/b3/bcdc2f58fa92592db511beda154c2c08d28f21f6c4637f06a42a24b10c21/s3transfer-0.17.1.tar.gz", hash = "sha256:042dd5e3b1b512355e35a23f0223e426b7042e80b97830ea2680ddce327fc45e", size = 159439, upload-time = "2026-05-26T19:45:01.714Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/85/dd/904873250a6554fbae40cddbf9198e3cc37a2f1319d5e1a5ce82fe269c17/s3transfer-0.17.1-py3-none-any.whl", hash = "sha256:5b9827d1044159bbb01b86ef8902760ea39281927f5de31de75e1d657177bf4c", size = 88264, upload-time = "2026-05-26T19:45:00.452Z" },
-]
-
-[[package]]
-name = "sedonadb"
-version = "0.3.0"
-source = { registry = "https://pypi.org/simple" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/17/63/711917684a3c6f0a4e86287630c83a7f353d26b31547a78a79f85ea819c5/sedonadb-0.3.0-cp310-cp310-macosx_12_0_arm64.whl", hash = "sha256:6b93ea5711b3a1329ac5c6d5b1f2da530df6d1b7150bc78641010daf9e87357d", size = 48234896, upload-time = "2026-03-09T15:15:54.9Z" },
-    { url = "https://files.pythonhosted.org/packages/77/1c/2b98c1d1647f177aa5333fd600cdde86fc1e1e589560ea2b73660554c86b/sedonadb-0.3.0-cp310-cp310-macosx_12_0_x86_64.whl", hash = "sha256:e6af748f587deb8826e5801de41d133ad7861fac8051f1190dc64e3e312752d9", size = 52479320, upload-time = "2026-03-09T15:15:12.965Z" },
-    { url = "https://files.pythonhosted.org/packages/c6/5f/5452791fc79ffbdaa044d7a8743a205ac78a21df6aa9373f5d55a5b61cf3/sedonadb-0.3.0-cp310-cp310-manylinux_2_28_aarch64.whl", hash = "sha256:5e468bc3b43d807ee38e830ac4b0c528d98b767d9b47f86bd639c8b73bec3679", size = 54592548, upload-time = "2026-03-09T15:13:59.069Z" },
-    { url = "https://files.pythonhosted.org/packages/af/3e/876ee0bff11040804ef6084dbf4259271d0e25c207b4f1ad3ef0955d5010/sedonadb-0.3.0-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:60d92c720d39bf08cb6b88653e390f99f235e477e3c15262219c3aeb4ba72592", size = 56054546, upload-time = "2026-03-09T15:14:30.901Z" },
-    { url = "https://files.pythonhosted.org/packages/1b/23/eb59ff8eae674f8942be0360e684f1802ab78dd4df8ee23acfc45ccfe64d/sedonadb-0.3.0-cp310-cp310-win_amd64.whl", hash = "sha256:0c36aed7ad0d29e07d678fc52d97c58d4d3aa634aa71af6560666014ab952b8d", size = 47635510, upload-time = "2026-03-09T15:16:23.262Z" },
-    { url = "https://files.pythonhosted.org/packages/74/f5/0dbed9a7fe70e09f0c80ab41b5d533af13a8104af87d0fdfc3dbb294ba30/sedonadb-0.3.0-cp311-cp311-macosx_12_0_arm64.whl", hash = "sha256:1d04bf1320b547c0da74687bf14cba975ca8d9c1b1ff75cbab80bd4218cf6912", size = 48233781, upload-time = "2026-03-09T15:15:58.774Z" },
-    { url = "https://files.pythonhosted.org/packages/48/39/2b5c9e9283049908e27ed440b297faf251a0379434eac69d9534ad70d240/sedonadb-0.3.0-cp311-cp311-macosx_12_0_x86_64.whl", hash = "sha256:305eab7de7cf9250c95b285b487b844e21c608f7b7b06a2087e599070a81429d", size = 52479457, upload-time = "2026-03-09T15:15:17.104Z" },
-    { url = "https://files.pythonhosted.org/packages/f8/ae/afd2d910b6ca4917c2dc2bd378d5b312b162af4cd510e002e2b51ce8a910/sedonadb-0.3.0-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:6660555fdbe185f878c43ec74bdfcad8a944b46bdd57a579927579d8ce0089c9", size = 54590770, upload-time = "2026-03-09T15:14:02.93Z" },
-    { url = "https://files.pythonhosted.org/packages/01/8d/2d81e8f2be6b4432a1fd5aefbcbabbf6908bb441c4c29afe0383ca58ec13/sedonadb-0.3.0-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:2beea90a5cdf0af392c3aa34bdc273b5335f7579d16d8035e86e04e0a06e9d70", size = 56056340, upload-time = "2026-03-09T15:14:36.595Z" },
-    { url = "https://files.pythonhosted.org/packages/ab/f4/619e1dc0c23a46b37db1f2135190d9df2201bb251ca19d6d2951c22c57ec/sedonadb-0.3.0-cp311-cp311-win_amd64.whl", hash = "sha256:10b83038f1b4089fbe168c197b795ee3ef639b9d237c7043a069d9da86221069", size = 47636456, upload-time = "2026-03-09T15:16:27.8Z" },
-    { url = "https://files.pythonhosted.org/packages/af/fd/8d1f61d68c28748f6fd1ece7e9162916bcc3a119a2a0235a84ad41e7c509/sedonadb-0.3.0-cp312-cp312-macosx_12_0_arm64.whl", hash = "sha256:5c10a94bf740e1c52cfe2e96fa330883d4950eb7c459c5c6b9537be20be03f67", size = 48213350, upload-time = "2026-03-09T15:16:02.404Z" },
-    { url = "https://files.pythonhosted.org/packages/30/85/cb6dcf4c571956494e4af93f739a8a775b4c520508577576bfc55c6a3815/sedonadb-0.3.0-cp312-cp312-macosx_12_0_x86_64.whl", hash = "sha256:0722df9b75d2dd548ea42917eeeaf230fed8a4b17e3d6caaecba637fc220386c", size = 52469018, upload-time = "2026-03-09T15:15:23.286Z" },
-    { url = "https://files.pythonhosted.org/packages/db/f9/bbad62ce60543da6466d64b731b32817cc11dd23a9b019da3ab7133640e2/sedonadb-0.3.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:6fbbc7261a1df4791516a1072e2d0ab41fe1ed19bbabe1ef24376b8bcaf0af2e", size = 54594553, upload-time = "2026-03-09T15:14:07.094Z" },
-    { url = "https://files.pythonhosted.org/packages/6c/4f/e7267dbdf3590657b4d85aea8fea8da119e044bf69ee767a4c5aac3a83bd/sedonadb-0.3.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:15ba03b3db6efa6f10f0c29c81a0bcc7001648e768557e988f6e44cd24e49cd8", size = 56052505, upload-time = "2026-03-09T15:14:49.077Z" },
-    { url = "https://files.pythonhosted.org/packages/45/23/35020876c9774eceb97d001e7f13dde2e99d9d91773d75cba24577d8a41f/sedonadb-0.3.0-cp312-cp312-win_amd64.whl", hash = "sha256:219bb32c1790a8d1c6262c8d60d5abaee60a08234c916ff53c412e54330b23c6", size = 47648499, upload-time = "2026-03-09T15:16:34.959Z" },
 ]
 
 [[package]]

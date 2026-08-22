@@ -77,4 +77,4 @@ def test_profile_suite_writes_artifacts_then_rejects_oracle_mismatch(tmp_path, m
         _profile.run_profile_suite([SimpleNamespace(id="q1")], "s3://example")
 
     assert (tmp_path / "profile.txt").is_file()
-    assert (tmp_path / "profile.json").is_file()
+    assert not (tmp_path / "profile.json").exists()
