@@ -18,11 +18,10 @@ TABLES_NEEDED = {"zone": ["z_zonekey", "z_name", "z_boundary"], "trip": _TRIP_CO
 
 
 def pycanopy(tables) -> pl.DataFrame:
-    tables.parallel_fetch(TABLES_NEEDED)
-    zone = tables.table("zone", ["z_zonekey", "z_name", "z_boundary"])
+    inputs = tables.parallel_fetch(TABLES_NEEDED)
+    zone, trip = inputs["zone"], inputs["trip"]
     sf = tables.polygon_frame(zone, "z_boundary")
 
-    trip = tables.table("trip", _TRIP_COLS)
     qx, qy = wkb_points_to_xy(trip["t_pickuploc"])
     qdf = trip.with_columns(
         pl.Series("qx", qx),
@@ -30,6 +29,7 @@ def pycanopy(tables) -> pl.DataFrame:
         t_distance=pl.col("t_distance").cast(pl.Float64),
         duration_seconds=(pl.col("t_dropofftime") - pl.col("t_pickuptime")).dt.total_seconds(),
     ).select(["qx", "qy", "t_distance", "duration_seconds"])
+    del trip
 
     agg = (
         sf.lazy()
@@ -48,6 +48,13 @@ def pycanopy(tables) -> pl.DataFrame:
         .with_columns(num_trips=pl.col("num_trips").fill_null(0))
         .rename({"z_name": "pickup_zone"})
     )
-    return result.sort(
-        ["avg_duration", "z_zonekey"], descending=[True, False], nulls_last=True
-    ).head(100)
+    return (
+        result.lazy()
+        .sort(
+            ["avg_duration", "z_zonekey"],
+            descending=[True, False],
+            nulls_last=True,
+        )
+        .head(100)
+        .collect()
+    )

@@ -20,19 +20,23 @@ TABLES_NEEDED = {
 
 
 def pycanopy(tables) -> pl.DataFrame:
-    tables.parallel_fetch(TABLES_NEEDED)
-    trip = tables.table("trip", ["t_custkey", "t_dropoffloc", "t_pickuptime"])
-    cust = tables.table("customer", ["c_custkey", "c_name"])
+    inputs = tables.parallel_fetch(TABLES_NEEDED)
+    trip, cust = inputs["trip"], inputs["customer"]
 
     dx, dy = wkb_points_to_xy(trip["t_dropoffloc"])
-    t = trip.with_columns(
-        pl.Series("dx", dx),
-        pl.Series("dy", dy),
-        pickup_month=pl.col("t_pickuptime").dt.truncate("1mo"),
+    t = (
+        trip.select(["t_custkey", "t_pickuptime"])
+        .with_columns(
+            pl.Series("dx", dx),
+            pl.Series("dy", dy),
+            pickup_month=pl.col("t_pickuptime").dt.truncate("1mo"),
+        )
+        .select(["t_custkey", "pickup_month", "dx", "dy"])
     )
-    joined = t.join(cust, left_on="t_custkey", right_on="c_custkey", how="inner")
+    del trip
+
     grouped = (
-        joined.group_by(["t_custkey", "c_name", "pickup_month"])
+        t.group_by(["t_custkey", "pickup_month"])
         .agg(trip_count=pl.len(), dxs=pl.col("dx"), dys=pl.col("dy"))
         .filter(pl.col("trip_count") > MIN_TRIPS)
     )
@@ -40,21 +44,24 @@ def pycanopy(tables) -> pl.DataFrame:
     areas = Engine.group_convex_hull_areas(grouped["dxs"], grouped["dys"])
     grouped = grouped.with_columns(
         monthly_travel_hull_area=pl.Series("monthly_travel_hull_area", areas, dtype=pl.Float64)
-    ).sort(
-        ["monthly_travel_hull_area", "t_custkey", "pickup_month"],
-        descending=[True, False, False],
     )
-
-    return (
-        grouped.select(
-            ["t_custkey", "c_name", "pickup_month", "monthly_travel_hull_area", "trip_count"]
-        )
-        .rename(
-            {
-                "t_custkey": "c_custkey",
-                "c_name": "customer_name",
-                "trip_count": "dropoff_count",
-            }
+    grouped = grouped.join(cust, left_on="t_custkey", right_on="c_custkey", how="inner")
+    grouped = (
+        grouped.lazy()
+        .sort(
+            ["monthly_travel_hull_area", "t_custkey", "pickup_month"],
+            descending=[True, False, False],
         )
         .head(100)
+        .collect()
+    )
+
+    return grouped.select(
+        ["t_custkey", "c_name", "pickup_month", "monthly_travel_hull_area", "trip_count"]
+    ).rename(
+        {
+            "t_custkey": "c_custkey",
+            "c_name": "customer_name",
+            "trip_count": "dropoff_count",
+        }
     )

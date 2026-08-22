@@ -47,9 +47,14 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     if args.profile and args.scale_factor != 1:
         raise SystemExit("--profile runs the SF1 workload; pass --scale-factor 1")
+    if args.n < 1:
+        raise SystemExit("--n must be at least 1")
     data_dir = args.data_dir or _DATA_TEMPLATE.replace("{sf}", str(args.scale_factor))
     qs = query_registry.ALL
     if args.query:
+        unknown = sorted(set(args.query) - query_registry._BY_ID.keys())
+        if unknown:
+            raise SystemExit(f"unknown query IDs: {', '.join(unknown)}")
         ids = set(args.query)
         qs = [q for q in qs if q.id in ids]
     if args.profile:

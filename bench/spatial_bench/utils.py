@@ -9,14 +9,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib
-import matplotlib.pyplot as plt
 import polars as pl
 import shapely
 
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
+
 from bench.spatial_bench._verify import DATASET_VERSION, WORKLOAD_REVISION
 from pycanopy import SpatialFrame
-
-matplotlib.use("Agg")  # headless backend, set before any figure is created
 
 _ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
 
@@ -77,7 +78,7 @@ def wkb_to_polygons(series: pl.Series) -> list:
 
 @dataclass
 class SpatialBenchTables:
-    """Lazily-built, cached handles to the SpatialBench tables for one run.
+    """Projected SpatialBench table loader for one query run.
 
     Args:
         data_dir: Local or object-store SpatialBench dataset root.
@@ -86,38 +87,33 @@ class SpatialBenchTables:
 
     data_dir: str
     index_mode: str = "eager"
-    _cache: dict[str, pl.DataFrame] | None = None
 
-    def parallel_fetch(self, needs: dict[str, list[str] | None]) -> None:
-        """Fetch several tables concurrently into the cache, with projection pushdown.
+    def parallel_fetch(
+        self, needs: dict[str, list[str] | None]
+    ) -> dict[str, pl.DataFrame]:
+        """Fetch projected tables concurrently.
 
         Args:
             needs: Map of table name to the columns to fetch, or None for all columns.
+
+        Returns:
+            Query-scoped DataFrames keyed by table name.
         """
-        if self._cache is None:
-            self._cache = {}
-        pending = {name: cols for name, cols in needs.items() if name not in self._cache}
-        if not pending:
-            return
-        frames = pl.collect_all([self.scan(name, cols) for name, cols in pending.items()])
-        self._cache.update(zip(pending, frames, strict=True))
+        names = list(needs)
+        frames = pl.collect_all([self.scan(name, needs[name]) for name in names])
+        return dict(zip(names, frames, strict=True))
 
     def table(self, name: str, columns: list[str] | None = None) -> pl.DataFrame:
-        """Return table ``name``, reading and caching it on first access.
+        """Read one projected table into a query-scoped DataFrame.
 
         Args:
             name: Table name.
             columns: Optional subset of columns to read.
 
         Returns:
-            The cached table as a Polars DataFrame.
+            The requested table as a Polars DataFrame.
         """
-        if self._cache is None:
-            self._cache = {}
-        if name not in self._cache:
-            self._cache[name] = read_table(self.data_dir, name, columns)
-        df = self._cache[name]
-        return df.select(columns) if columns is not None else df
+        return read_table(self.data_dir, name, columns)
 
     def scan(self, name: str, columns: list[str] | None = None) -> pl.LazyFrame:
         """Lazily scan table ``name`` (uncached, for late-materialization access).

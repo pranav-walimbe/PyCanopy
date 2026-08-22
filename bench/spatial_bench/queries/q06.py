@@ -21,8 +21,8 @@ TABLES_NEEDED = {"zone": ["z_zonekey", "z_name", "z_boundary"], "trip": _TRIP_CO
 
 
 def pycanopy(tables) -> pl.DataFrame:
-    tables.parallel_fetch(TABLES_NEEDED)
-    zone = tables.table("zone", ["z_zonekey", "z_name", "z_boundary"])
+    inputs = tables.parallel_fetch(TABLES_NEEDED)
+    zone, trip = inputs["zone"], inputs["trip"]
     zsf = tables.polygon_frame(zone, "z_boundary")
     cand_sf = zsf.range_filter(*BBOX)
     if cand_sf.engine.n == 0:
@@ -36,7 +36,6 @@ def pycanopy(tables) -> pl.DataFrame:
             }
         )
 
-    trip = tables.table("trip", _TRIP_COLS)
     qx, qy = wkb_points_to_xy(trip["t_pickuploc"])
     qdf = trip.select(["t_distance", "t_pickuptime", "t_dropofftime"]).with_columns(
         pl.Series("qx", qx),
@@ -44,6 +43,7 @@ def pycanopy(tables) -> pl.DataFrame:
         t_distance=pl.col("t_distance").cast(pl.Float64),
         duration_seconds=(pl.col("t_dropofftime") - pl.col("t_pickuptime")).dt.total_seconds(),
     )
+    del trip
 
     return (
         cand_sf.lazy()

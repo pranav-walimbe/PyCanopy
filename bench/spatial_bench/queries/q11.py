@@ -18,9 +18,8 @@ TABLES_NEEDED = {
 
 
 def pycanopy(tables) -> pl.DataFrame:
-    tables.parallel_fetch(TABLES_NEEDED)
-    trip = tables.table("trip", ["t_tripkey", "t_pickuploc", "t_dropoffloc"])
-    zone = tables.table("zone", ["z_zonekey", "z_boundary"])
+    inputs = tables.parallel_fetch(TABLES_NEEDED)
+    trip, zone = inputs["trip"], inputs["zone"]
     sf = tables.polygon_frame(zone, "z_boundary")
 
     px, py = wkb_points_to_xy(trip["t_pickuploc"])
@@ -28,6 +27,7 @@ def pycanopy(tables) -> pl.DataFrame:
     keys = trip.select("t_tripkey")
     pickup_df = keys.with_columns(pl.Series("px", px), pl.Series("py", py))
     dropoff_df = keys.with_columns(pl.Series("dx", dx), pl.Series("dy", dy))
+    del trip
 
     pickup_batches = (
         sf.lazy()
@@ -44,7 +44,7 @@ def pycanopy(tables) -> pl.DataFrame:
 
     # Aligned morsels carry the same trips on each side, so per-morsel counts sum to the global count
     count = 0
-    for pickup, dropoff in zip(pickup_batches, dropoff_batches):
+    for pickup, dropoff in zip(pickup_batches, dropoff_batches, strict=True):
         count += (
             pickup.rename({"z_zonekey": "pickup_zone"})
             .join(dropoff.rename({"z_zonekey": "dropoff_zone"}), on="t_tripkey", how="inner")

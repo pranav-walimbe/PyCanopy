@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import polars as pl
 
-import pycanopy as pc
 from pycanopy import wkb_points_to_xy
 
 id = "q12"
@@ -19,20 +18,45 @@ TABLES_NEEDED = {
 
 
 def pycanopy(tables) -> pl.DataFrame:
-    tables.parallel_fetch(TABLES_NEEDED)
-    buildings = tables.table("building", ["b_buildingkey", "b_boundary"])
+    inputs = tables.parallel_fetch(TABLES_NEEDED)
+    buildings, trip = inputs["building"], inputs["trip"]
     sf = tables.polygon_frame(buildings, "b_boundary")
 
-    trip = tables.table("trip", ["t_tripkey", "t_pickuploc"])
     qx, qy = wkb_points_to_xy(trip["t_pickuploc"])
     query_df = trip.select("t_tripkey").with_columns(pl.Series("qx", qx), pl.Series("qy", qy))
+    del trip
 
-    averages = (
+    joined = (
         sf.lazy()
         .polygon_knn_join(query_df, "qx", "qy", k=K)
-        .group_by("t_tripkey")
-        .agg(avg_distance_to_5_nearest=pc.agg.mean("distance_to_polygon"))
+        .select(["t_tripkey", "distance_to_polygon"])
     )
-    return averages.sort(["avg_distance_to_5_nearest", "t_tripkey"], descending=[True, False]).head(
-        100
+
+    candidates = []
+    for morsel in joined.collect_batched():
+        averages = morsel.group_by("t_tripkey").agg(
+            avg_distance_to_5_nearest=pl.col("distance_to_polygon").mean()
+        )
+        candidates.append(
+            averages.lazy()
+            .sort(
+                ["avg_distance_to_5_nearest", "t_tripkey"],
+                descending=[True, False],
+            )
+            .head(100)
+            .collect()
+        )
+    if not candidates:
+        return pl.DataFrame(
+            schema={"t_tripkey": pl.Int64, "avg_distance_to_5_nearest": pl.Float64}
+        )
+    return (
+        pl.concat(candidates, how="vertical", rechunk=False)
+        .lazy()
+        .sort(
+            ["avg_distance_to_5_nearest", "t_tripkey"],
+            descending=[True, False],
+        )
+        .head(100)
+        .collect()
     )

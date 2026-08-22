@@ -22,17 +22,20 @@ def pycanopy(tables) -> pl.DataFrame:
         pl.Series("line_distance_m", line_m),
         reported_distance_m=pl.col("t_distance").cast(pl.Float64),
     )
+    del trip
     df = df.with_columns(
         detour_ratio=pl.when(pl.col("line_distance_m") != 0.0)
         .then(pl.col("reported_distance_m") / pl.col("line_distance_m"))
         .otherwise(None)
     )
     return (
-        df.select("t_tripkey", "reported_distance_m", "line_distance_m", "detour_ratio")
+        df.lazy()
+        .select("t_tripkey", "reported_distance_m", "line_distance_m", "detour_ratio")
         .sort(
             ["detour_ratio", "reported_distance_m", "t_tripkey"],
             descending=[True, True, False],
             nulls_last=True,
         )
         .head(100)
+        .collect()
     )

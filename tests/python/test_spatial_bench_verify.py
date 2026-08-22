@@ -6,9 +6,9 @@ import polars as pl
 import pytest
 import shapely
 
-from bench.spatial_bench import _verify
-from bench.spatial_bench.queries import q12
-from pycanopy import SpatialFrame
+from bench.spatial_bench import _onbox, _verify
+from bench.spatial_bench.queries import q05, q12
+from pycanopy import SpatialFrame, executor
 
 
 def _write_answer(root, query_id: str, frame: pl.DataFrame) -> None:
@@ -102,6 +102,18 @@ def test_measure_query_does_not_require_verification(monkeypatch):
     assert result == {"status": "ok", "pycanopy_seconds": 1.0, "run_times": [1.0]}
 
 
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["--scale-factor", "1", "--n", "0"], "--n must be at least 1"),
+        (["--scale-factor", "1", "--query", "q99"], "unknown query IDs: q99"),
+    ],
+)
+def test_onbox_rejects_invalid_run_selection(args, message):
+    with pytest.raises(SystemExit, match=message):
+        _onbox.main(args)
+
+
 def test_pinned_answers_include_csv_and_typed_parquet():
     for scale_factor in (1, 10):
         directory = _verify._ANSWERS_DIR / f"sf{scale_factor}"
@@ -116,8 +128,8 @@ class _QueryTables:
     def __init__(self, frames: dict[str, pl.DataFrame]) -> None:
         self._frames = frames
 
-    def parallel_fetch(self, needs) -> None:
-        pass
+    def parallel_fetch(self, needs) -> dict[str, pl.DataFrame]:
+        return {name: self._frames[name].select(columns) for name, columns in needs.items()}
 
     def table(self, name: str, columns: list[str]) -> pl.DataFrame:
         return self._frames[name].select(columns)
@@ -126,7 +138,48 @@ class _QueryTables:
         return SpatialFrame.from_wkb_polygons(frame, geometry_col, index_mode="none")
 
 
-def test_q12_reduces_knn_pairs_to_ranked_trip_averages():
+def test_q5_groups_before_customer_lookup_without_changing_result():
+    timestamp = pl.datetime_range(
+        pl.datetime(2000, 1, 1),
+        pl.datetime(2000, 1, 12),
+        interval="1d",
+        eager=True,
+    )
+    trips = pl.DataFrame(
+        {
+            "t_custkey": [1] * 6 + [2] * 6,
+            "t_dropoffloc": [
+                shapely.Point(x, y).wkb
+                for x, y in [
+                    (0, 0),
+                    (1, 0),
+                    (1, 1),
+                    (0, 1),
+                    (0.5, 0.5),
+                    (0.25, 0.25),
+                    (0, 0),
+                    (2, 0),
+                    (2, 2),
+                    (0, 2),
+                    (1, 1),
+                    (0.5, 0.5),
+                ]
+            ],
+            "t_pickuptime": timestamp,
+        }
+    )
+    customers = pl.DataFrame({"c_custkey": [1, 2], "c_name": ["alice", "bob"]})
+
+    result = q05.pycanopy(_QueryTables({"trip": trips, "customer": customers}))
+
+    assert result["c_custkey"].to_list() == [2, 1]
+    assert result["customer_name"].to_list() == ["bob", "alice"]
+    assert result["dropoff_count"].to_list() == [6, 6]
+    assert result["monthly_travel_hull_area"].to_list() == [4.0, 1.0]
+
+
+def test_q12_reduces_knn_pairs_to_ranked_trip_averages(monkeypatch):
+    monkeypatch.setattr(executor, "MORSEL_ROWS", 1)
     buildings = pl.DataFrame(
         {
             "b_buildingkey": list(range(5)),

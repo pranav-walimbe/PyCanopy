@@ -23,19 +23,28 @@ PROFILE_MODE="@@PROFILE_MODE@@"
 
 S3_BASE="s3://${RESULT_BUCKET}/${RESULT_PREFIX}/${RUN_ID}"
 LOG=/var/log/pycanopy-bootstrap.log
+ARTIFACTS_UPLOADED=0
 exec > >(tee -a "$LOG") 2>&1
 log() { echo "[bootstrap] $*"; }
 
-# Always ship the log and any completed result artifacts, then self-terminate.
-cleanup() {
+upload_artifacts() {
+  if [ "$ARTIFACTS_UPLOADED" = "1" ]; then
+    return
+  fi
   for artifact in \
     profile.txt \
     "spatialbench_sf${SCALE_FACTOR}@@OUT_SUFFIX@@.png" \
     "spatial-bench-sf${SCALE_FACTOR}@@OUT_SUFFIX@@-results.txt"; do
     if [ -f "/opt/pycanopy/assets/$artifact" ]; then
-      aws s3 cp "/opt/pycanopy/assets/$artifact" "${S3_BASE}/$artifact" --region "$REGION" || true
+      aws s3 cp "/opt/pycanopy/assets/$artifact" "${S3_BASE}/$artifact" --region "$REGION" || return 1
     fi
   done
+  ARTIFACTS_UPLOADED=1
+}
+
+# Always ship the log and any completed result artifacts, then self-terminate.
+cleanup() {
+  upload_artifacts || true
   aws s3 cp "$LOG" "${S3_BASE}/bootstrap.log" --region "$REGION" || true
   shutdown -h now
 }
@@ -92,19 +101,7 @@ if [ "$PROFILE_MODE" = "1" ]; then
 fi
 uv run python -m bench.spatial_bench._onbox --scale-factor "$SCALE_FACTOR" @@BENCH_FLAGS@@
 
-# Normal mode writes chart PNG + results txt; profile mode writes profile.txt; upload whichever exists.
-# Plain [ -f ] && cp would return non-zero when absent and abort under set -e, so use if.
-OUT="spatialbench_sf${SCALE_FACTOR}@@OUT_SUFFIX@@.png"
-if [ -f "/opt/pycanopy/assets/$OUT" ]; then
-  aws s3 cp "/opt/pycanopy/assets/$OUT" "${S3_BASE}/$OUT" --region "$REGION"
-fi
-RESULTS_TXT="spatial-bench-sf${SCALE_FACTOR}@@OUT_SUFFIX@@-results.txt"
-if [ -f "/opt/pycanopy/assets/$RESULTS_TXT" ]; then
-  aws s3 cp "/opt/pycanopy/assets/$RESULTS_TXT" "${S3_BASE}/$RESULTS_TXT" --region "$REGION"
-fi
-if [ "$PROFILE_MODE" = "1" ]; then
-  aws s3 cp "/opt/pycanopy/assets/profile.txt" "${S3_BASE}/profile.txt" --region "$REGION"
-fi
+upload_artifacts
 
 log "done"
 aws s3 cp "$LOG" "${S3_BASE}/progress.log" --region "$REGION" || true

@@ -261,6 +261,8 @@ def main(argv: list[str] | None = None) -> int:
         scale_factor = args.scale_factor
         index_mode = args.index_mode or "auto"
         n = args.n if args.n is not None else 3
+        if n < 1:
+            sys.exit("--n must be at least 1")
 
     cfg = load_config()
     region = cfg["region"]

@@ -21,22 +21,25 @@ TABLES_NEEDED = {
 
 
 def pycanopy(tables) -> pl.DataFrame:
-    tables.parallel_fetch(TABLES_NEEDED)
+    inputs = tables.parallel_fetch(TABLES_NEEDED)
+    trip, zone = inputs["trip"], inputs["zone"]
 
-    trip = tables.table("trip", ["t_tripkey", "t_tip", "t_pickuploc"])
-
-    top_keys = (
-        trip.select(["t_tripkey", "t_tip"])
+    top = (
+        trip.lazy()
         .sort(["t_tip", "t_tripkey"], descending=[True, False])
         .head(TOP_N)
-        .select("t_tripkey")
+        .select(["t_tripkey", "t_pickuploc"])
+        .collect()
     )
-    top = top_keys.join(trip.select(["t_tripkey", "t_pickuploc"]), on="t_tripkey", how="left")
+    del trip
 
     qx, qy = wkb_points_to_xy(top["t_pickuploc"])
-    query_df = top.select("t_tripkey").with_columns(pl.Series("qx", qx), pl.Series("qy", qy))
+    query_df = top.select("t_tripkey").with_columns(
+        pl.Series("qx", qx),
+        pl.Series("qy", qy),
+    )
+    del top
 
-    zone = tables.table("zone", ["z_zonekey", "z_name", "z_boundary"])
     sf = tables.polygon_frame(zone, "z_boundary")
 
     return (

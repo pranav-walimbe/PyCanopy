@@ -17,14 +17,13 @@ TABLES_NEEDED = {"zone": ["z_name", "z_boundary"], "trip": ["t_pickuploc"]}
 
 
 def pycanopy(tables) -> pl.DataFrame:
-    tables.parallel_fetch(TABLES_NEEDED)
-    zone = tables.table("zone", ["z_name", "z_boundary"])
+    inputs = tables.parallel_fetch(TABLES_NEEDED)
+    zone, trip = inputs["zone"], inputs["trip"]
     target = zone.filter(pl.col("z_name") == ZONE_NAME).head(1)
     if target.height == 0:
         return pl.DataFrame({"trip_count_in_coconino_county": [0]})
     poly = wkb_to_polygons(target["z_boundary"])[0]
 
-    trip = tables.table("trip", ["t_pickuploc"])
     sf = tables.point_frame(trip, "t_pickuploc")
     # Only the count is needed, so take the engine's matching indices directly and skip
     # gathering the in-zone rows into a DataFrame.

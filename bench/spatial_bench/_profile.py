@@ -11,6 +11,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+import polars as pl
+
 from bench.spatial_bench._verify import DATASET_VERSION, WORKLOAD_REVISION
 from bench.spatial_bench.utils import _ASSETS_DIR, SpatialBenchTables, spawn_query
 
@@ -83,10 +85,12 @@ class ProfilingTables(SpatialBenchTables):
         super().__init__(data_dir=data_dir, index_mode=index_mode)
         self.profiler = _StageProfiler()
 
-    def parallel_fetch(self, needs: dict[str, list[str] | None]) -> None:
+    def parallel_fetch(
+        self, needs: dict[str, list[str] | None]
+    ) -> dict[str, pl.DataFrame]:
         """Fetch several tables while attributing the boundary to fetch."""
         with self.profiler.stage("fetch"):
-            super().parallel_fetch(needs)
+            return super().parallel_fetch(needs)
 
     def table(self, name, columns=None):
         """Read an uncached table while attributing the boundary to fetch."""
