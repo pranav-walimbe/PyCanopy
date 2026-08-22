@@ -12,13 +12,8 @@ from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-import matplotlib
 import polars as pl
 import shapely
-
-matplotlib.use("Agg")
-
-import matplotlib.pyplot as plt
 
 from bench.spatial_bench._verify import DATASET_VERSION, WORKLOAD_REVISION
 from pycanopy import SpatialFrame
@@ -419,6 +414,12 @@ def write_chart(results: dict, out_path: Path) -> None:
         results: Measured results dict (scale_factor, index_mode, per-query timings).
         out_path: Destination PNG path.
     """
+    # Matplotlib is bench-only; verification utilities must import with dev dependencies alone
+    import matplotlib  # noqa: PLC0415
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt  # noqa: PLC0415
+
     sf = int(results["scale_factor"])
     mode = results["index_mode"]
     qs = results["queries"]
