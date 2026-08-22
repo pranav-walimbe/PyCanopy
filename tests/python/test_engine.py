@@ -394,6 +394,70 @@ def test_from_polygons_rejects_non_polygon():
         Engine.from_polygons([ShapelyPoint(0.0, 0.0)])
 
 
+# native polygon subsets
+
+
+def test_polygon_subset_preserves_order_and_duplicates():
+    polygons = [SQUARES[0], Polygon([(2, 0), (4, 0), (4, 2), (2, 2)]), SQUARES[2]]
+    subset = Engine.from_polygons(polygons).subset([2, 0, 2])
+
+    assert subset.polygon_areas().tolist() == pytest.approx([1.0, 1.0, 1.0])
+    assert subset.contains(4.5, 0.5) == [0, 2]
+    assert subset.contains(0.5, 0.5) == [1]
+
+
+def test_polygon_subset_preserves_holes_and_multipolygon_mapping():
+    outer = [(0, 0), (4, 0), (4, 4), (0, 4)]
+    hole = [(1, 1), (3, 1), (3, 3), (1, 3)]
+    multipolygon = MultiPolygon([SQUARES[1], SQUARES[2]])
+    subset = Engine.from_polygons([Polygon(outer, [hole]), multipolygon]).subset([1, 0])
+
+    assert subset.polygon_areas().tolist() == pytest.approx([2.0, 12.0])
+    assert sorted(subset.contains(2.5, 0.5)) == [0, 1]
+    assert subset.contains(4.5, 0.5) == [0]
+    assert subset.contains(2.0, 2.0) == []
+    assert subset.contains(0.5, 0.5) == [1]
+
+
+def test_polygon_subset_supports_empty_selection():
+    subset = Engine.from_polygons(SQUARES).subset([])
+
+    assert subset.extent is None
+    assert subset.polygon_areas().size == 0
+    assert subset.range_query(0.0, 0.0, 1.0, 1.0) == []
+
+
+def test_polygon_subset_rejects_invalid_indices():
+    eng = Engine.from_polygons(SQUARES)
+
+    with pytest.raises(ValueError, match="out of bounds"):
+        eng.subset([len(SQUARES)])
+    with pytest.raises(ValueError, match="between 0 and uint32 max"):
+        eng.subset([-1])
+    with pytest.raises(TypeError, match="contain integers"):
+        eng.subset([0.5])
+
+
+def test_polygon_subset_preserves_configuration_without_indexes():
+    polygons = [Polygon([(i, 0), (i + 0.9, 0), (i + 0.9, 0.9), (i, 0.9)]) for i in range(600)]
+    source = Engine.from_polygons(polygons)
+    source.set_index_mode("none")
+    source.set_coordinate_system("geographic")
+    source.build_index()
+    assert source.index_bytes > 0
+
+    subset = source.subset([0, 1, 2])
+
+    assert subset.set_index_mode("auto") == "none"
+    assert subset.coordinate_system == "geographic"
+    assert subset.index_bytes == 0
+
+
+def test_point_engine_rejects_subset_until_point_subsets_are_supported(engine):
+    with pytest.raises(ValueError, match="requires a polygon dataset"):
+        engine.subset([0])
+
+
 # polygon range queries
 
 

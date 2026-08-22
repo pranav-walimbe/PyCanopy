@@ -535,6 +535,31 @@ class Engine:
         """Build the spatial index ahead of any query (idempotent)."""
         self._core.build_index()
 
+    def subset(self, indices: Sequence[int]) -> Engine:
+        """Create a compact native Engine containing selected logical polygons.
+
+        Selection order and duplicate indices are preserved. Engine configuration carries
+        forward, but built indexes and prepared geometry do not.
+
+        Args:
+            indices: Logical polygon row positions to copy into the new Engine.
+
+        Returns:
+            A polygon Engine containing the selected geometries.
+        """
+        values = np.asarray(indices)
+        if values.ndim != 1:
+            raise ValueError("indices must be one-dimensional")
+        if values.size and not np.issubdtype(values.dtype, np.integer):
+            raise TypeError("indices must contain integers")
+        if values.size and (values.min() < 0 or values.max() > np.iinfo(np.uint32).max):
+            raise ValueError("indices must be between 0 and uint32 max")
+        eng = self.__class__.__new__(self.__class__)
+        eng._metrics_capture = None
+        eng._metrics_capture_id = -1
+        eng._core = self._core.subset(np.ascontiguousarray(values, dtype=np.uint32))
+        return _register_metrics_engine(eng)
+
     def _build_index_for_calibration(self, kind: str) -> None:
         """Build an explicit index kind for the internal ops calibration harness."""
         self._core._build_index_for_calibration(kind)

@@ -19,6 +19,7 @@ mod metrics;
 pub mod planner;
 pub mod query;
 pub mod stats;
+mod subset;
 pub mod wkb;
 
 use index::{
@@ -541,6 +542,15 @@ impl Engine {
         );
         engine.metrics.wkb_decode_ns = wkb_decode_ns;
         Ok(engine)
+    }
+
+    /// Copy selected logical polygons into a compact Engine with no inherited indexes.
+    fn subset(&self, indices: PyReadonlyArray1<u32>) -> PyResult<Self> {
+        let indices = indices
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("indices must be a contiguous uint32 array"))?;
+        ensure_u32_indexable(indices.len(), "polygon subset")?;
+        subset::polygons(self, indices).map_err(PyValueError::new_err)
     }
 
     /// Build the optimal index for this dataset without issuing any query, via a
