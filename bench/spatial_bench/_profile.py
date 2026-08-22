@@ -85,10 +85,10 @@ class ProfilingTables(SpatialBenchTables):
         super().__init__(data_dir=data_dir, index_mode=index_mode)
         self.profiler = _StageProfiler()
 
-    def parallel_fetch(self, needs: dict[str, list[str] | None]) -> dict[str, pl.DataFrame]:
-        """Fetch several tables while attributing the boundary to fetch."""
+    def collect_all(self, frames: list[pl.LazyFrame]) -> list[pl.DataFrame]:
+        """Collect lazy table plans while attributing the boundary to fetch."""
         with self.profiler.stage("fetch"):
-            return super().parallel_fetch(needs)
+            return super().collect_all(frames)
 
     def table(self, name, columns=None):
         """Read an uncached table while attributing the boundary to fetch."""

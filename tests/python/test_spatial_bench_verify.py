@@ -7,7 +7,7 @@ import pytest
 import shapely
 
 from bench.spatial_bench import _verify
-from bench.spatial_bench.queries import q05, q12
+from bench.spatial_bench.queries import q04, q05, q12
 from pycanopy import SpatialFrame, executor
 
 
@@ -148,6 +148,7 @@ def test_pinned_answers_include_csv_and_typed_parquet():
 class _QueryTables:
     def __init__(self, frames: dict[str, pl.DataFrame]) -> None:
         self._frames = frames
+        self.scan_requests: list[tuple[str, list[str]]] = []
 
     def parallel_fetch(self, needs) -> dict[str, pl.DataFrame]:
         return {name: self._frames[name].select(columns) for name, columns in needs.items()}
@@ -155,8 +156,42 @@ class _QueryTables:
     def table(self, name: str, columns: list[str]) -> pl.DataFrame:
         return self._frames[name].select(columns)
 
+    def scan(self, name: str, columns: list[str]) -> pl.LazyFrame:
+        self.scan_requests.append((name, columns))
+        return self._frames[name].lazy().select(columns)
+
+    def collect_all(self, frames: list[pl.LazyFrame]) -> list[pl.DataFrame]:
+        return pl.collect_all(frames)
+
     def polygon_frame(self, frame: pl.DataFrame, geometry_col: str) -> SpatialFrame:
         return SpatialFrame.from_wkb_polygons(frame, geometry_col, index_mode="none")
+
+
+def test_q4_fetches_geometry_after_selecting_top_trips():
+    trips = pl.DataFrame(
+        {
+            "t_tripkey": list(range(1001)),
+            "t_tip": list(range(1001)),
+            "t_pickuploc": [b"not selected"] + [shapely.Point(0.5, 0.5).wkb for _ in range(1000)],
+        }
+    )
+    zones = pl.DataFrame(
+        {
+            "z_zonekey": [1],
+            "z_name": ["zone"],
+            "z_boundary": [shapely.box(0, 0, 1, 1).wkb],
+        }
+    )
+    tables = _QueryTables({"trip": trips, "zone": zones})
+
+    result = q04.pycanopy(tables)
+
+    assert result["trip_count"].to_list() == [1000]
+    assert tables.scan_requests == [
+        ("trip", ["t_tripkey", "t_tip"]),
+        ("zone", ["z_zonekey", "z_name", "z_boundary"]),
+        ("trip", ["t_tripkey", "t_pickuploc"]),
+    ]
 
 
 def test_q5_groups_before_customer_lookup_without_changing_result():

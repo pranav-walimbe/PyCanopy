@@ -103,8 +103,12 @@ class SpatialBenchTables:
             Query-scoped DataFrames keyed by table name.
         """
         names = list(needs)
-        frames = pl.collect_all([self.scan(name, needs[name]) for name in names])
+        frames = self.collect_all([self.scan(name, needs[name]) for name in names])
         return dict(zip(names, frames, strict=True))
+
+    def collect_all(self, frames: list[pl.LazyFrame]) -> list[pl.DataFrame]:
+        """Collect lazy table plans concurrently."""
+        return pl.collect_all(frames)
 
     def table(self, name: str, columns: list[str] | None = None) -> pl.DataFrame:
         """Read one projected table into a query-scoped DataFrame.
