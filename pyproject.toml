@@ -60,6 +60,7 @@ bench = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]
+pythonpath = ["."]
 addopts = "-x -q --tb=short"
 
 [tool.ruff]
