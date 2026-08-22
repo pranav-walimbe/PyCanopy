@@ -14,26 +14,6 @@ carries stable selected row identities into geometry ingestion and reads only su
 pages or row ranges. This would be a lazy-source integration change, not a spatial-kernel change;
 do not add it without benchmark evidence that the query-level approach is insufficient.
 
-### Push eligible filters into lazy sources
-
-Filters written on the Polars `LazyFrame` before `SpatialFrame.from_lazy` can reach the source,
-but PyCanopy `.filter(...)` operations currently run after lazy ingestion. PyCanopy projects the
-filter's required columns correctly, then reads and decodes geometry for every source row before
-applying it.
-
-Later, identify target-side scalar filters that can safely run before the first spatial operation
-and insert them into the source `LazyFrame`. Preserve declaration semantics, source row alignment,
-and query-versus-target column ownership around joins. This is an I/O optimization, not a
-correctness blocker.
-
-### Fuse q11 endpoint lookup
-
-q11 creates pickup and dropoff polygon-pair frames, joins them in Polars, and then counts trips
-whose endpoints belong to different zones.
-
-Add a dual-endpoint polygon lookup and fused cross-zone counter to avoid both pair frames, their
-gathers, and the intermediate hash join.
-
 ## SpatialBench validity and measurement
 
 ### Add multi-engine harness support
@@ -62,15 +42,13 @@ infrastructure before restoring comparative claims.
 
 ## Recommended order
 
-1. Fuse q11 dual-endpoint zone lookup.
-2. Push eligible filters into lazy sources.
-3. Add multi-engine harness support.
-4. Complete the documentation cleanup.
-5. Rerun comparison engines on the pinned workload.
-6. Evaluate whether q4 needs deeper row-aware source reads.
-7. Add GeoParquet metadata discovery.
-8. Evaluate planner regret.
-9. Add hardware profiles and a user-facing tuning API.
+1. Add multi-engine harness support.
+2. Complete the documentation cleanup.
+3. Rerun comparison engines on the pinned workload.
+4. Evaluate whether q4 needs deeper row-aware source reads.
+5. Add GeoParquet metadata discovery.
+6. Evaluate planner regret.
+7. Add hardware profiles and a user-facing tuning API.
 
 ## Deferred source ergonomics
 

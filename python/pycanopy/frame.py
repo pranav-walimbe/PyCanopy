@@ -190,6 +190,7 @@ class SpatialFrame:
         self,
         required_columns: set[str] | None,
         schema: pl.Schema,
+        filters: list[pl.Expr] | None = None,
     ) -> SpatialFrame:
         # Stream projected input into native geometry and retain only required columns
         source = self._lazy_source
@@ -210,10 +211,13 @@ class SpatialFrame:
             retained_columns = [name for name in schema_columns if name in required_columns]
         scan_columns = list(dict.fromkeys([*retained_columns, source.geometry_col]))
         retained_batches: list[pl.DataFrame] = []
+        source_frame = source.frame
+        for expr in filters or ():
+            source_frame = source_frame.filter(expr)
 
         def geometry_batches():
             # Yield geometry for native decoding after saving the requested attributes
-            for batch in source.frame.select(scan_columns).collect_batches(
+            for batch in source_frame.select(scan_columns).collect_batches(
                 chunk_size=source.ingest_batch_size,
                 maintain_order=True,
             ):

@@ -115,6 +115,84 @@ def test_lazy_scalar_dependency_is_read_but_not_returned():
     assert set(projections[0]) == {"id", "value", "geometry"}
 
 
+def test_lazy_polygon_filter_reduces_rows_before_wkb_ingestion(monkeypatch):
+    batch_lengths: list[int] = []
+    original = Engine._from_wkb_polygon_batches.__func__
+
+    def tracked(cls, columns):
+        def inspected():
+            for column in columns:
+                batch_lengths.append(len(column))
+                yield column
+
+        return original(cls, inspected())
+
+    monkeypatch.setattr(Engine, "_from_wkb_polygon_batches", classmethod(tracked))
+    result = (
+        SpatialFrame.from_lazy(_polygon_data().lazy(), "geometry", "polygon", ingest_batch_size=1)
+        .lazy()
+        .filter(pl.col("value").is_in([20, 30]) & pl.col("id").is_not_null())
+        .range_query(0, 0, 30, 30)
+        .select("id")
+        .collect()
+    )
+
+    assert result["id"].to_list() == [2, 3]
+    assert batch_lengths == [1, 1]
+
+
+def test_lazy_point_filter_reduces_rows_before_wkb_ingestion(monkeypatch):
+    batch_lengths: list[int] = []
+    original = Engine._from_wkb_point_batches.__func__
+
+    def tracked(cls, columns):
+        def inspected():
+            for column in columns:
+                batch_lengths.append(len(column))
+                yield column
+
+        return original(cls, inspected())
+
+    monkeypatch.setattr(Engine, "_from_wkb_point_batches", classmethod(tracked))
+    result = (
+        SpatialFrame.from_lazy(_point_data().lazy(), "geometry", "point", ingest_batch_size=2)
+        .lazy()
+        .filter(pl.col("value") >= 30)
+        .range_query(-1, -1, 10, 1)
+        .select("id")
+        .collect()
+    )
+
+    assert result["id"].to_list() == [3, 4, 5]
+    assert batch_lengths == [2, 1]
+
+
+def test_lazy_filter_after_spatial_operation_is_not_pushed(monkeypatch):
+    batch_lengths: list[int] = []
+    original = Engine._from_wkb_point_batches.__func__
+
+    def tracked(cls, columns):
+        def inspected():
+            for column in columns:
+                batch_lengths.append(len(column))
+                yield column
+
+        return original(cls, inspected())
+
+    monkeypatch.setattr(Engine, "_from_wkb_point_batches", classmethod(tracked))
+    result = (
+        SpatialFrame.from_lazy(_point_data().lazy(), "geometry", "point", ingest_batch_size=2)
+        .lazy()
+        .range_query(0.5, -1, 3.5, 1)
+        .filter(pl.col("value") >= 30)
+        .select("id")
+        .collect()
+    )
+
+    assert result["id"].to_list() == [3, 4]
+    assert batch_lengths == [2, 2, 1]
+
+
 def test_repeated_lazy_collections_choose_geometry_independently():
     source = _polygon_data()
     lazy_frame, projections = _tracked_source(source)
@@ -167,6 +245,33 @@ def test_lazy_grouped_join_uses_projected_target_columns():
     result = sf.lazy().within_join(points, "x", "y").group_by("id").agg(count=pc.agg.count())
 
     assert result.sort("id").to_dict(as_series=False) == {"id": [1, 2], "count": [2, 1]}
+
+
+def test_lazy_grouped_join_applies_target_filter_before_ingestion(monkeypatch):
+    batch_lengths: list[int] = []
+    original = Engine._from_wkb_polygon_batches.__func__
+
+    def tracked(cls, columns):
+        def inspected():
+            for column in columns:
+                batch_lengths.append(len(column))
+                yield column
+
+        return original(cls, inspected())
+
+    monkeypatch.setattr(Engine, "_from_wkb_polygon_batches", classmethod(tracked))
+    points = pl.DataFrame({"x": [0.5, 10.5], "y": [0.5, 10.5]})
+    result = (
+        SpatialFrame.from_lazy(_polygon_data().lazy(), "geometry", "polygon")
+        .lazy()
+        .filter(pl.col("value") >= 20)
+        .within_join(points, "x", "y")
+        .group_by("id")
+        .agg(count=pc.agg.count())
+    )
+
+    assert result.to_dict(as_series=False) == {"id": [2], "count": [1]}
+    assert batch_lengths == [2]
 
 
 def test_lazy_join_preserves_requested_target_wkb_with_name_collision():

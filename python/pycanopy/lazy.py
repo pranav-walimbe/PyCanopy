@@ -4,6 +4,7 @@ Define SpatialLazyFrame, an immutable plan builder that does not execute until .
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -134,6 +135,83 @@ _SOURCE_JOIN_TYPES = (
     PolygonKnnJoinNode,
 )
 
+_PUSHDOWN_BINARY_OPS = {
+    "And",
+    "Eq",
+    "EqValidity",
+    "Gt",
+    "GtEq",
+    "Lt",
+    "LtEq",
+    "NotEq",
+    "NotEqValidity",
+    "Or",
+}
+_PUSHDOWN_BOOLEAN_FUNCTIONS = {"IsBetween", "IsIn", "IsNotNull", "IsNull", "Not"}
+
+
+def _is_pushdown_ast(node: object) -> bool:
+    # Accept a small, deterministic subset of the serialized Polars expression tree
+    if not isinstance(node, dict) or len(node) != 1:
+        return False
+    kind, value = next(iter(node.items()))
+    if kind in {"Column", "Literal"}:
+        return True
+    if kind == "BinaryExpr" and isinstance(value, dict):
+        return (
+            value.get("op") in _PUSHDOWN_BINARY_OPS
+            and _is_pushdown_ast(value.get("left"))
+            and _is_pushdown_ast(value.get("right"))
+        )
+    if kind == "Cast" and isinstance(value, dict):
+        return _is_pushdown_ast(value.get("expr"))
+    if kind != "Function" or not isinstance(value, dict):
+        return False
+    function = value.get("function")
+    if not isinstance(function, dict) or "Boolean" not in function:
+        return False
+    boolean = function["Boolean"]
+    if isinstance(boolean, str):
+        name = boolean
+    elif isinstance(boolean, dict):
+        name = next(iter(boolean), "")
+    else:
+        return False
+    return name in _PUSHDOWN_BOOLEAN_FUNCTIONS and all(
+        _is_pushdown_ast(item) for item in value.get("input", [])
+    )
+
+
+def _is_pushdown_expr(expr: pl.Expr, source_columns: set[str], geometry_col: str) -> bool:
+    # Reject derived, geometry, and unsupported expressions; failure simply disables pushdown
+    try:
+        roots = set(expr.meta.root_names())
+        if geometry_col in roots or not roots.issubset(source_columns):
+            return False
+        tree = json.loads(expr.meta.serialize(format="json"))
+    except Exception:
+        return False
+    return _is_pushdown_ast(tree)
+
+
+def _source_filter_prefix(
+    plan: Plan,
+    schema: pl.Schema,
+    geometry_col: str,
+) -> tuple[list[pl.Expr], Plan]:
+    # Remove only the contiguous safe-filter prefix before any spatial or row-changing node
+    source_columns = set(schema.names())
+    count = 0
+    filters = []
+    for node in plan:
+        if not isinstance(node, ScalarNode) or not _is_pushdown_expr(
+            node.expr, source_columns, geometry_col
+        ):
+            break
+        filters.append(node.expr)
+        count += 1
+    return filters, plan[count:]
+
 
 def _source_columns_for_plan(plan: Plan, schema: pl.Schema) -> set[str] | None:
     # Return source columns needed during execution, or None when all columns are output
@@ -192,13 +270,19 @@ class SpatialLazyFrame:
         self._sf = sf
         self._plan = plan
 
-    def _prepare(self) -> SpatialFrame:  # noqa: F821
-        # Materialize a deferred source using the complete plan's required columns
+    def _prepare_plan(self) -> tuple[SpatialFrame, Plan]:  # noqa: F821
+        # Fold a safe leading filter prefix into a deferred source before materialization
         if not self._sf._is_deferred:
-            return self._sf
+            return self._sf, self._plan
         schema = self._sf._lazy_schema()
-        required = _source_columns_for_plan(self._plan, schema)
-        return self._sf._materialize_lazy(required, schema)
+        source = self._sf._lazy_source
+        filters, plan = _source_filter_prefix(self._plan, schema, source.geometry_col)
+        required = _source_columns_for_plan(plan, schema)
+        return self._sf._materialize_lazy(required, schema, filters), plan
+
+    def _prepare(self) -> SpatialFrame:  # noqa: F821
+        # Compatibility helper for callers that need only the prepared frame
+        return self._prepare_plan()[0]
 
     def filter(self, expr: pl.Expr) -> SpatialLazyFrame:
         """Add a scalar Polars expression filter.
@@ -505,10 +589,10 @@ class SpatialLazyFrame:
         Returns:
             The executed result as a Polars DataFrame.
         """
-        sf = self._prepare()
+        sf, plan = self._prepare_plan()
         optimizer = SpatialOptimizer()
         executor = SpatialExecutor()
-        optimized = optimizer.optimize(self._plan, sf.engine)
+        optimized = optimizer.optimize(plan, sf.engine)
         plugin_path = optimizer._select_plugin_path(optimized, sf.engine)
         return executor.execute(optimized, sf, plugin_path, batch_size)
 
@@ -524,10 +608,10 @@ class SpatialLazyFrame:
         Returns:
             An iterator of DataFrames, one per probe morsel.
         """
-        sf = self._prepare()
+        sf, plan = self._prepare_plan()
         optimizer = SpatialOptimizer()
         executor = SpatialExecutor()
-        optimized = optimizer.optimize(self._plan, sf.engine)
+        optimized = optimizer.optimize(plan, sf.engine)
         return executor.stream(optimized, sf, batch_size)
 
     def sink_parquet(self, path: str | Path, batch_size: int | None = None) -> None:
@@ -537,10 +621,10 @@ class SpatialLazyFrame:
             path: Destination Parquet file path.
             batch_size: Probe rows per morsel. Defaults to MORSEL_ROWS.
         """
-        sf = self._prepare()
+        sf, plan = self._prepare_plan()
         optimizer = SpatialOptimizer()
         executor = SpatialExecutor()
-        optimized = optimizer.optimize(self._plan, sf.engine)
+        optimized = optimizer.optimize(plan, sf.engine)
         writer: pq.ParquetWriter | None = None
         try:
             for morsel in executor.stream(optimized, sf, batch_size):
@@ -564,10 +648,10 @@ class SpatialLazyFrame:
         Returns:
             A Polars LazyFrame that streams this plan's output.
         """
-        sf = self._prepare()
+        sf, plan = self._prepare_plan()
         optimizer = SpatialOptimizer()
         executor = SpatialExecutor()
-        optimized = optimizer.optimize(self._plan, sf.engine)
+        optimized = optimizer.optimize(plan, sf.engine)
 
         sample = next(executor.stream(optimized, sf, batch_size=1), None)
         schema = sample.schema if sample is not None else pl.Schema({})
@@ -675,11 +759,12 @@ class SpatialGroupBy:
         keep = list(
             dict.fromkeys([*self._keys, *(c for spec in named_aggs.values() for c in spec.inputs)])
         )
-        prepared = self._slf.select(keep)._prepare()
-        fused = _try_fused_join_agg(prepared, self._slf._plan, self._keys, named_aggs)
+        prepared, prepared_plan = self._slf.select(keep)._prepare_plan()
+        body = prepared_plan[:-1]
+        fused = _try_fused_join_agg(prepared, body, self._keys, named_aggs)
         if fused is not None:
             return fused
-        projected = SpatialLazyFrame(prepared, self._slf._plan).select(keep)
+        projected = SpatialLazyFrame(prepared, body).select(keep)
         partials = [_partial_agg(m, self._keys, named_aggs) for m in projected.collect_batched()]
         if not partials:
             partials = [_partial_agg(projected.collect(), self._keys, named_aggs)]
