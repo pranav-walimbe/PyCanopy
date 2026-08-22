@@ -19,6 +19,10 @@ objects, spatial indexes, and in-process caches are not reused between queries.
 **Repetitions:** Each query runs `--n` times (default 3) in separate subprocesses. Every requested
 sample must finish. Partial sample sets are invalid.
 
+**Run metadata:** Text results record public, comparison-relevant run context: timestamp, workload,
+dataset, engine version, query configuration, system and CPU details, and cloud/EBS configuration.
+Custom source paths are never written to the report.
+
 **Verification:** Profile runs compare every result with the committed upstream answer. Ordinary
 runs remain timing-only. The answer Parquet schema controls comparison types. Integer keys,
 strings, timestamps, and row order match exactly. Floats use upstream tolerances, including the

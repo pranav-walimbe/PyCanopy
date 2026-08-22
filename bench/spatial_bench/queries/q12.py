@@ -47,9 +47,7 @@ def pycanopy(tables) -> pl.DataFrame:
             .collect()
         )
     if not candidates:
-        return pl.DataFrame(
-            schema={"t_tripkey": pl.Int64, "avg_distance_to_5_nearest": pl.Float64}
-        )
+        return pl.DataFrame(schema={"t_tripkey": pl.Int64, "avg_distance_to_5_nearest": pl.Float64})
     return (
         pl.concat(candidates, how="vertical", rechunk=False)
         .lazy()

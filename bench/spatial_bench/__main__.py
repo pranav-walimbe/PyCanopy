@@ -38,6 +38,7 @@ def load_config() -> dict:
 
 def _user_data(
     cfg: dict,
+    ami: str,
     run_id: str,
     scale_factor: int,
     index_mode: str,
@@ -59,6 +60,11 @@ def _user_data(
     repl = {
         "RUN_ID": run_id,
         "REGION": cfg["region"],
+        "AMI_ID": ami,
+        "INSTANCE_TYPE": cfg["instance_type"],
+        "VOLUME_GB": str(cfg.get("volume_gb", 32)),
+        "VOLUME_IOPS": str(cfg.get("volume_iops", 3000)),
+        "VOLUME_THROUGHPUT_MBPS": str(cfg.get("volume_throughput_mbps", 125)),
         "RESULT_BUCKET": cfg["result_bucket"],
         "RESULT_PREFIX": _RESULT_PREFIX,
         "REPO_URL": cfg["repo_url"],
@@ -92,7 +98,7 @@ def _launch(
         InstanceType=cfg["instance_type"],
         MinCount=1,
         MaxCount=1,
-        UserData=_user_data(cfg, run_id, scale_factor, index_mode, profile, n, query_ids),
+        UserData=_user_data(cfg, ami, run_id, scale_factor, index_mode, profile, n, query_ids),
         InstanceInitiatedShutdownBehavior="terminate",
         IamInstanceProfile={"Name": cfg["instance_profile"]},
         BlockDeviceMappings=[
@@ -101,6 +107,8 @@ def _launch(
                 "Ebs": {
                     "VolumeSize": cfg.get("volume_gb", 32),
                     "VolumeType": "gp3",
+                    "Iops": cfg.get("volume_iops", 3000),
+                    "Throughput": cfg.get("volume_throughput_mbps", 125),
                     "DeleteOnTermination": True,
                 },
             }

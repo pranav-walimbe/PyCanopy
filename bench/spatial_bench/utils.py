@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import math
+import os
+import platform
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import matplotlib
@@ -20,6 +24,7 @@ from bench.spatial_bench._verify import DATASET_VERSION, WORKLOAD_REVISION
 from pycanopy import SpatialFrame
 
 _ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
+_PUBLIC_DATA_ROOT = "s3://wherobots-examples/data/spatialbench/"
 
 
 # Table loading
@@ -88,9 +93,7 @@ class SpatialBenchTables:
     data_dir: str
     index_mode: str = "eager"
 
-    def parallel_fetch(
-        self, needs: dict[str, list[str] | None]
-    ) -> dict[str, pl.DataFrame]:
+    def parallel_fetch(self, needs: dict[str, list[str] | None]) -> dict[str, pl.DataFrame]:
         """Fetch projected tables concurrently.
 
         Args:
@@ -156,6 +159,76 @@ class SpatialBenchTables:
 
 
 # Measure + chart
+
+
+def _cpu_model() -> str:
+    """Return a public hardware description without invoking platform-specific tools."""
+    try:
+        for line in Path("/proc/cpuinfo").read_text().splitlines():
+            if line.startswith("model name"):
+                return line.partition(":")[2].strip()
+    except OSError:
+        pass
+    return platform.processor() or "not recorded"
+
+
+def _memory_gib() -> float | None:
+    try:
+        pages = os.sysconf("SC_PHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+    except (AttributeError, OSError, ValueError):
+        return None
+    return pages * page_size / (1024**3)
+
+
+def collect_run_metadata(
+    data_dir: str,
+    query_ids: list[str],
+    scale_factor: int,
+    index_mode: str,
+    runs: int,
+) -> dict[str, str]:
+    """Collect public, durable metadata for one benchmark run."""
+    try:
+        engine_version = version("pycanopy")
+    except PackageNotFoundError:
+        engine_version = "development"
+
+    memory = _memory_gib()
+    metadata = {
+        "timestamp (UTC)": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "run ID": os.environ.get("PYCANOPY_BENCH_RUN_ID", "local"),
+        "workload revision": WORKLOAD_REVISION,
+        "dataset": DATASET_VERSION,
+        "source": "SpatialBench public S3" if data_dir.startswith(_PUBLIC_DATA_ROOT) else "custom",
+        "source region": os.environ.get(
+            "PYCANOPY_BENCH_REGION", os.environ.get("AWS_DEFAULT_REGION", "not recorded")
+        ),
+        "engines": f"PyCanopy {engine_version}",
+        "queries": ", ".join(query_ids),
+        "configuration": f"SF{scale_factor}, index mode {index_mode}, {runs} run(s) per query",
+        "system": f"{platform.system()} {platform.release()} ({platform.machine()})",
+        "CPU": _cpu_model(),
+        "logical CPUs": str(os.cpu_count() or "not recorded"),
+    }
+    if memory is not None:
+        metadata["memory"] = f"{memory:.1f} GiB"
+
+    instance_type = os.environ.get("PYCANOPY_BENCH_INSTANCE_TYPE")
+    ami = os.environ.get("PYCANOPY_BENCH_AMI_ID")
+    if instance_type:
+        metadata["cloud instance"] = instance_type
+    if ami:
+        metadata["AMI"] = ami
+
+    volume_type = os.environ.get("PYCANOPY_BENCH_VOLUME_TYPE")
+    if volume_type:
+        metadata["storage"] = (
+            f"{volume_type}, {os.environ.get('PYCANOPY_BENCH_VOLUME_GB', 'not recorded')} GiB, "
+            f"{os.environ.get('PYCANOPY_BENCH_VOLUME_IOPS', 'not recorded')} IOPS, "
+            f"{os.environ.get('PYCANOPY_BENCH_VOLUME_THROUGHPUT_MBPS', 'not recorded')} MiB/s"
+        )
+    return metadata
 
 
 def spawn_query(
@@ -307,11 +380,9 @@ def write_results_txt(results: dict, out_path: Path) -> None:
     qs = results["queries"]
     qids = sorted(qs, key=lambda q: int(q[1:]))
 
-    lines = [
-        f"Apache SpatialBench SF{sf}  dataset {DATASET_VERSION}  index mode: {mode}",
-        f"workload revision: {WORKLOAD_REVISION}",
-        "",
-    ]
+    lines = [f"Apache SpatialBench SF{sf}  index mode: {mode}", "", "Run metadata", "------------"]
+    lines.extend(f"{key}: {value}" for key, value in results["metadata"].items())
+    lines.extend(["", "Results", "-------"])
     header = f"{'query':<8}  {'avg (s)':>10}  runs (s)"
     lines.append(header)
     lines.append("-" * len(header))
@@ -451,6 +522,13 @@ def run_suite(
         "scale_factor": scale_factor,
         "index_mode": index_mode,
         "runs_per_query": runs,
+        "metadata": collect_run_metadata(
+            data_dir,
+            [query.id for query in query_modules],
+            scale_factor,
+            index_mode,
+            runs,
+        ),
         "queries": {},
     }
     for query in query_modules:

@@ -35,15 +35,10 @@ gathers, and the intermediate hash join.
 
 ## SpatialBench validity and measurement
 
-### Record provenance and robust statistics
-
-The harness records the pinned workload revision, dataset version, and every raw sample. Add git
-SHA and dirty state, dataset checksum, AMI ID, kernel, CPU, EBS settings, dependency and compiler
-versions, thread counts, source region, and timestamps. Avoid an unversioned latest AMI for
-comparable runs.
+### Report robust statistics
 
 Replace arithmetic means as the primary summary with medians plus dispersion or confidence
-intervals. Do not silently accept partial sample sets.
+intervals.
 
 ### Rebuild cross-engine comparisons
 
@@ -66,7 +61,7 @@ infrastructure before restoring comparative claims.
 
 ## Recommended order
 
-1. Complete benchmark provenance and rerun comparison engines on the pinned workload.
+1. Add robust summaries and rerun comparison engines on the pinned workload.
 2. Add late materialization for q4 and remove unnecessary retained geometry columns.
 3. Fuse q11 dual-endpoint zone lookup.
 

@@ -6,7 +6,7 @@ import polars as pl
 import pytest
 import shapely
 
-from bench.spatial_bench import _onbox, _verify
+from bench.spatial_bench import _verify
 from bench.spatial_bench.queries import q05, q12
 from pycanopy import SpatialFrame, executor
 
@@ -110,8 +110,29 @@ def test_measure_query_does_not_require_verification(monkeypatch):
     ],
 )
 def test_onbox_rejects_invalid_run_selection(args, message):
+    _onbox = pytest.importorskip("bench.spatial_bench._onbox")
     with pytest.raises(SystemExit, match=message):
         _onbox.main(args)
+
+
+def test_results_txt_records_public_metadata_without_source_path(tmp_path):
+    utils = pytest.importorskip("bench.spatial_bench.utils")
+    metadata = utils.collect_run_metadata("s3://private-bucket/data", ["q1"], 1, "auto", 3)
+    results = {
+        "scale_factor": 1,
+        "index_mode": "auto",
+        "metadata": metadata,
+        "queries": {"q1": {"status": "ok", "pycanopy_seconds": 1.0, "run_times": [1.0]}},
+    }
+    output = tmp_path / "results.txt"
+
+    utils.write_results_txt(results, output)
+    text = output.read_text()
+
+    assert "Run metadata" in text
+    assert "engines: PyCanopy " in text
+    assert "source: custom" in text
+    assert "s3://private-bucket" not in text
 
 
 def test_pinned_answers_include_csv_and_typed_parquet():
