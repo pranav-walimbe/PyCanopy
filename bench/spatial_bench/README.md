@@ -69,11 +69,25 @@ controlling comparison types. Integer keys, strings, timestamps, and row order m
 floats use upstream tolerances, including the duration and final-row boundary rules in
 `answers/README.md`.
 
+## Mirroring the dataset
+
+The data bucket is a copy of the upstream Hugging Face dataset. Refreshing it, or adding a scale
+factor, runs on an EC2 node so nothing large transits your machine:
+
+```bash
+uv run --group bench python -m bench.spatial_bench.mirror_data                  # every scale factor
+uv run --group bench python -m bench.spatial_bench.mirror_data --scale-factor 10
+```
+
+The node downloads each scale factor with `hf_transfer`, syncs it to the data bucket, and drops the
+staged copy before starting the next one. It streams its log back through S3 and terminates itself.
+
 ## IAM setup
 
-The EC2 instance uses an instance role, no injected keys. It needs read access to the public
-SpatialBench dataset plus `s3:PutObject`/`s3:GetObject` on the results bucket in `config.py`. The
-local launcher additionally needs SSM read, EC2 lifecycle, `iam:PassRole`, and results-bucket read.
+The EC2 instance uses an instance role, no injected keys. It needs `s3:PutObject`/`s3:GetObject`
+plus `s3:ListBucket` on both the results and data buckets named in `config.py`; the dataset itself
+is public-read, so queries reach it anonymously. The local launcher additionally needs SSM read,
+EC2 lifecycle, `iam:PassRole`, and results-bucket read.
 
 ## Directory layout
 
@@ -85,6 +99,8 @@ installs only the measured engine's own packages.
 bench/spatial_bench/
 ├── __main__.py       # local: launch, monitor, and combine isolated engine nodes
 ├── config.py         # workload, dataset, engine, path, timing, and infrastructure settings
+├── mirror_data.py    # local: copy the upstream dataset into the data bucket
+├── mirror.sh         # EC2 user-data for that copy
 ├── driver_utils.py   # on-box: drive one engine over the queries, timed or profiled
 ├── run_query.py      # on-box: isolated subprocess running exactly one query
 ├── profiler_utils.py # on-box: stage boundaries, sampled RSS, Engine metrics, verification
