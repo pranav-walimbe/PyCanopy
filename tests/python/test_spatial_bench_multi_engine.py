@@ -7,6 +7,7 @@ import pytest
 
 from bench.spatial_bench import driver_utils, report_utils
 from bench.spatial_bench.config import (
+    DATASET_VERSION,
     DEFAULT_RUNS,
     INSTANCE_TYPE,
     PUBLIC_DATA_TEMPLATE,
@@ -44,7 +45,10 @@ def test_config_matches_spatialbench_single_node_protocol():
     assert QUERY_TIMEOUT_SECONDS == 1200
     assert REGION == "us-west-2"
     assert INSTANCE_TYPE == "m7i.2xlarge"
-    assert PUBLIC_DATA_TEMPLATE.startswith("s3://wherobots-examples/")
+    assert PUBLIC_DATA_TEMPLATE.startswith("s3://")
+    # The dataset build has to be identifiable from the path, since the committed answers only
+    # match one of them.
+    assert DATASET_VERSION in PUBLIC_DATA_TEMPLATE
 
 
 def test_combine_transports_preserves_requested_engine_order(tmp_path):
