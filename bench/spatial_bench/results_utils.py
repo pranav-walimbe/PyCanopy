@@ -1,4 +1,4 @@
-"""Combine per-engine transports into SpatialBench text and chart outputs."""
+"""SpatialBench result plumbing: the TSV transport plus the text, chart, and profile reports."""
 
 from __future__ import annotations
 
@@ -6,28 +6,82 @@ import csv
 import math
 from pathlib import Path
 
-from bench.spatial_bench.config import DATASET_VERSION, DISPLAY_NAMES
+from bench.spatial_bench.config import (
+    DATASET_VERSION,
+    ENGINES,
+    MIB,
+    NS_PER_SECOND,
+    RSS_SAMPLE_INTERVAL,
+    WORKLOAD_REVISION,
+)
 
-_COLORS = {
-    "pycanopy": "#2C7FB8",
-    "sedonadb": "#DD8452",
-    "duckdb": "#8C8C8C",
-    "geopandas": "#C9BBA8",
-}
+_ENGINE_ROW = "engine"
+_METADATA_ROW = "metadata"
+_QUERY_ROW = "query"
+
+
+def write_transport(
+    path: Path,
+    engine: str,
+    engine_version: str,
+    metadata: dict[str, str],
+    results: dict[str, dict],
+) -> None:
+    """Write one engine's measured results to its transport file.
+
+    Args:
+        path: Destination transport path.
+        engine: Engine id that produced the results.
+        engine_version: Installed version of the measured engine.
+        metadata: Run metadata recorded on the box.
+        results: Per-query result dicts keyed by query id.
+
+    Returns:
+        None.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as stream:
+        writer = csv.writer(stream, delimiter="\t")
+        writer.writerow((_ENGINE_ROW, engine, engine_version))
+        for key, value in metadata.items():
+            writer.writerow((_METADATA_ROW, key, value))
+        for query_id, result in results.items():
+            samples = ",".join(f"{sample:.6f}" for sample in result.get("run_times", []))
+            seconds = result.get("seconds")
+            writer.writerow(
+                (
+                    _QUERY_ROW,
+                    query_id,
+                    result["status"],
+                    f"{seconds:.6f}" if seconds is not None else "",
+                    samples,
+                    str(result.get("error", "")).replace("\n", " "),
+                )
+            )
 
 
 def read_transport(path: Path) -> dict:
-    """Read one engine's tab-separated cloud result."""
+    """Read one engine's transport file back into a result dict.
+
+    Args:
+        path: Transport file downloaded from the results bucket.
+
+    Returns:
+        A dict with the engine id, version, metadata, and per-query results.
+
+    Raises:
+        ValueError: If the file carries no engine row.
+    """
     result = {"metadata": {}, "queries": {}}
     with path.open(newline="") as stream:
         for row in csv.reader(stream, delimiter="\t"):
             if not row:
                 continue
-            if row[0] == "engine":
+            if row[0] == _ENGINE_ROW:
                 result["id"], result["version"] = row[1:3]
-            elif row[0] == "metadata":
+            elif row[0] == _METADATA_ROW:
                 result["metadata"][row[1]] = row[2]
-            elif row[0] == "query":
+            elif row[0] == _QUERY_ROW:
                 result["queries"][row[1]] = {
                     "status": row[2],
                     "seconds": float(row[3]) if row[3] else None,
@@ -39,10 +93,24 @@ def read_transport(path: Path) -> dict:
     return result
 
 
+_SEP = "=" * 76
+_SUBSEP = "-" * 76
+
+
 def combine_transports(
     paths: list[Path], engines: list[str], scale_factor: int, index_mode: str
 ) -> dict:
-    """Combine transports in the requested engine order."""
+    """Combine transports in the requested engine order.
+
+    Args:
+        paths: Downloaded transport files, in any order.
+        engines: Engine ids in the order they should be reported.
+        scale_factor: Dataset scale factor for the run.
+        index_mode: PyCanopy index build policy for the run.
+
+    Returns:
+        One combined results dict covering every requested engine.
+    """
     parsed = {item["id"]: item for item in (read_transport(path) for path in paths)}
     combined = {
         "scale_factor": scale_factor,
@@ -66,7 +134,8 @@ def combine_transports(
             combined["metadata"] = parsed[engine]["metadata"]
             break
     combined["metadata"]["engines"] = ", ".join(
-        f"{DISPLAY_NAMES[engine]} {combined['engines'][engine]['version']}" for engine in engines
+        f"{ENGINES[engine]['display_name']} {combined['engines'][engine]['version']}"
+        for engine in engines
     )
     if "pycanopy" in engines:
         combined["metadata"]["PyCanopy index mode"] = index_mode
@@ -74,12 +143,21 @@ def combine_transports(
 
 
 def _query_ids(results: dict) -> list[str]:
+    # Every query id any engine reported, in numeric rather than lexical order
     ids = {query for engine in results["engines"].values() for query in engine["queries"]}
     return sorted(ids, key=lambda query: int(query[1:]))
 
 
 def write_results_txt(results: dict, out_path: Path) -> None:
-    """Write the combined engine table and raw samples."""
+    """Write the combined engine table and raw samples.
+
+    Args:
+        results: Combined results dict from combine_transports.
+        out_path: Destination text path.
+
+    Returns:
+        None.
+    """
     sf = results["scale_factor"]
     engines = results["engine_order"]
     query_ids = _query_ids(results)
@@ -87,9 +165,9 @@ def write_results_txt(results: dict, out_path: Path) -> None:
     lines.extend(f"{key}: {value}" for key, value in results["metadata"].items())
     lines.extend(["", "Results", "-------"])
 
-    widths = {engine: max(12, len(DISPLAY_NAMES[engine])) for engine in engines}
+    widths = {engine: max(12, len(ENGINES[engine]["display_name"])) for engine in engines}
     header = f"{'query':<8}" + "".join(
-        f"  {DISPLAY_NAMES[engine]:>{widths[engine]}}" for engine in engines
+        f"  {ENGINES[engine]['display_name']:>{widths[engine]}}" for engine in engines
     )
     lines.extend((header, "-" * len(header)))
     for query_id in query_ids:
@@ -107,13 +185,14 @@ def write_results_txt(results: dict, out_path: Path) -> None:
             samples = results["engines"][engine]["queries"].get(query_id, {}).get("run_times", [])
             if samples:
                 values = ", ".join(f"{sample:.2f}" for sample in samples)
-                lines.append(f"{DISPLAY_NAMES[engine]} {query_id}: {values}")
+                lines.append(f"{ENGINES[engine]['display_name']} {query_id}: {values}")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n")
 
 
 def _nice_cap(value: float) -> float:
+    # Round an axis bound up to the nearest readable 1/1.5/2/2.5/3/4/5/6/8/10 multiple
     if value <= 0:
         return 1.0
     magnitude = 10 ** math.floor(math.log10(value))
@@ -124,6 +203,7 @@ def _nice_cap(value: float) -> float:
 
 
 def _percentile(values: list[float], percentile: float) -> float:
+    # Linear-interpolated percentile, used to keep one slow query from flattening the chart
     ordered = sorted(values)
     if not ordered:
         return 1.0
@@ -135,7 +215,15 @@ def _percentile(values: list[float], percentile: float) -> float:
 
 
 def write_chart(results: dict, out_path: Path) -> None:
-    """Render the legacy grouped horizontal bar chart with live engine results."""
+    """Render the grouped horizontal bar chart with live engine results.
+
+    Args:
+        results: Combined results dict from combine_transports.
+        out_path: Destination PNG path.
+
+    Returns:
+        None.
+    """
     import matplotlib  # noqa: PLC0415
 
     matplotlib.use("Agg")
@@ -169,7 +257,7 @@ def write_chart(results: dict, out_path: Path) -> None:
         axis.axhline(position - 0.5, color="#DBDBDB", lw=0.6, ls=(0, (1, 2)), zorder=1)
 
     for series, engine in enumerate(engines):
-        color = _COLORS[engine]
+        color = ENGINES[engine]["color"]
         for position, query_id in enumerate(query_ids):
             y = position + (series - (series_count - 1) / 2) * bar_height
             seconds = value(engine, query_id)
@@ -222,13 +310,14 @@ def write_chart(results: dict, out_path: Path) -> None:
         subtitle += f"    PyCanopy index mode: {results['index_mode']}"
     if truncated:
         subtitle += f"    bars past {cap:g}s truncated"
-    labels = " / ".join(DISPLAY_NAMES[engine] for engine in engines)
+    labels = " / ".join(ENGINES[engine]["display_name"] for engine in engines)
     axis.set_title(
         f"Apache SpatialBench SF{results['scale_factor']}: {labels}\n{subtitle}", fontsize=10
     )
     axis.legend(
         handles=[
-            Patch(facecolor=_COLORS[engine], label=DISPLAY_NAMES[engine]) for engine in engines
+            Patch(facecolor=ENGINES[engine]["color"], label=ENGINES[engine]["display_name"])
+            for engine in engines
         ],
         loc="upper right",
         frameon=False,
@@ -238,3 +327,73 @@ def write_chart(results: dict, out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(out_path, dpi=140)
     plt.close(figure)
+
+
+def _section(query_id: str, result: dict) -> str:
+    # One profile block per query: wall boundaries, RSS, Engine work, and the verify verdict
+    lines = [_SEP, f"{query_id}  {result.get('title', '')}".rstrip(), _SUBSEP]
+    if result["status"] != "ok":
+        return "\n".join(
+            [*lines, f"status        {result['status']}  {result.get('error', '')}".rstrip()]
+        )
+
+    profile = result["profile"]
+    wall = profile["time"]
+    mib = {name: value / MIB for name, value in profile["mem"].items()}
+    engine = profile["engine"]
+    construction = engine["construction"]
+    verdict = {"match": "PASS", "MISMATCH": "FAIL", "error": "ERROR"}.get(
+        result["verify"], result["verify"]
+    )
+    lines += [
+        f"wall (s)      total {wall['total']:7.3f}  fetch {wall['fetch']:7.3f}  "
+        f"execute {wall['execute']:7.3f}  materialize {wall['materialize']:7.3f}",
+        f"               non-engine wall after fetch {wall['non_engine']:7.3f}",
+        f"memory (MiB)  peak {mib['peak']:8.1f}  baseline {mib['baseline']:8.1f}  "
+        f"demand {mib['peak'] - mib['baseline']:+8.1f}",
+        f"  stage peak  fetch {mib['fetch']:8.1f}  execute {mib['execute']:8.1f}  "
+        f"materialize {mib['materialize']:8.1f}",
+        f"engines       {len(engine['engines'])}  WKB decode "
+        f"{construction['wkb_decode_ns'] / NS_PER_SECOND:7.3f}s  statistics "
+        f"{construction['statistics_ns'] / NS_PER_SECOND:7.3f}s",
+    ]
+    if engine["index_builds"]:
+        lines.append("index builds")
+        for metric in engine["index_builds"]:
+            lines.append(
+                f"  {metric['index']:<26} calls {metric['build_count']:5,d}  "
+                f"time {metric['elapsed_compute_ns'] / NS_PER_SECOND:9.4f}s"
+            )
+    if engine["operations"]:
+        lines.append("engine operations")
+        for metric in engine["operations"]:
+            lines.append(
+                f"  {metric['name']:<36} {metric['index']:<12} calls {metric['calls']:5,d}  "
+                f"rows {metric['output_rows']:12,d}  "
+                f"time {metric['elapsed_compute_ns'] / NS_PER_SECOND:9.4f}s"
+            )
+    lines.append(f"verify        {verdict}   {result['verify_detail']}")
+    return "\n".join(lines)
+
+
+def write_profile(results: dict, index_mode: str, out_path: Path) -> None:
+    """Write the human-readable SF1 profile report.
+
+    Args:
+        results: Per-query profile result dicts keyed by query id.
+        index_mode: PyCanopy index build policy used for the run.
+        out_path: Destination text path.
+
+    Returns:
+        None.
+    """
+    head = (
+        f"PyCanopy Apache SpatialBench SF1 profile (index_mode={index_mode}, 1 run/query)\n"
+        f"Dataset {DATASET_VERSION}, workload revision {WORKLOAD_REVISION}\n"
+        "Engine times are always-on production metrics. Harness stages are wall boundaries.\n"
+        f"RSS is sampled every {int(RSS_SAMPLE_INTERVAL * 1000)} ms. Verification uses the "
+        "committed upstream answers."
+    )
+    parts = [head, *[_section(query_id, result) for query_id, result in results.items()], _SEP]
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(parts) + "\n")

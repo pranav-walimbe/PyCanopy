@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from bench.spatial_bench.fetch_utils import SpatialBenchTables
 from bench.spatial_bench.queries import pycanopy
-from bench.spatial_bench.utils import SpatialBenchTables
 
 
 class Runner:

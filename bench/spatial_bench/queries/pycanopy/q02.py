@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import polars as pl
 
-from bench.spatial_bench.utils import wkb_to_polygons
+from bench.spatial_bench.fetch_utils import wkb_to_polygons
 
 id = "q2"
 title = "Count trips starting within Coconino County zone"

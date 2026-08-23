@@ -14,22 +14,37 @@ import boto3
 from botocore.exceptions import ClientError
 
 from bench.spatial_bench.config import (
-    CLOUD,
+    AMI_PARAMETER,
+    ASSETS_DIR,
     DEFAULT_RUNS,
     ENGINE_IDS,
+    INSTANCE_PROFILE,
+    INSTANCE_TYPE,
+    MAX_RUNTIME_MINUTES,
+    POLL_SECONDS,
+    PROJECT_TAG,
     PUBLIC_DATA_TEMPLATE,
+    QUERY_IDS,
+    REGION,
+    REPOSITORY_BRANCH,
+    REPOSITORY_URL,
+    RESULT_BUCKET,
+    RESULT_KEY_PREFIX,
     SUPPORTED_SCALE_FACTORS,
-    CloudConfig,
+    VOLUME_GB,
+    VOLUME_IOPS,
+    VOLUME_THROUGHPUT_MBPS,
 )
-from bench.spatial_bench.report import combine_transports, write_chart, write_results_txt
+from bench.spatial_bench.results_utils import (
+    combine_transports,
+    write_chart,
+    write_results_txt,
+)
 
 _DIR = Path(__file__).parent
-_ASSETS_DIR = _DIR.parent.parent / "assets"
-_QUERY_IDS = tuple(f"q{i}" for i in range(1, 13))
 
 
 def _user_data(
-    cfg: CloudConfig,
     ami: str,
     run_id: str,
     scale_factor: int,
@@ -41,7 +56,6 @@ def _user_data(
 ) -> str:
     # Substitute @@NAME@@ placeholders in bootstrap.sh for this run
     script = (_DIR / "bootstrap.sh").read_text()
-    suffix = "" if index_mode == "eager" else f"_{index_mode}"
     if profile:
         bench_flags: list[str] = ["--profile"]
     else:
@@ -50,23 +64,22 @@ def _user_data(
         bench_flags.append("--query " + " ".join(query_ids))
     repl = {
         "RUN_ID": run_id,
-        "REGION": cfg.region,
+        "REGION": REGION,
         "AMI_ID": ami,
-        "INSTANCE_TYPE": cfg.instance_type,
-        "VOLUME_GB": str(cfg.volume_gb),
-        "VOLUME_IOPS": str(cfg.volume_iops),
-        "VOLUME_THROUGHPUT_MBPS": str(cfg.volume_throughput_mbps),
-        "RESULT_BUCKET": cfg.result_bucket,
-        "RESULT_PREFIX": cfg.result_prefix,
-        "REPO_URL": cfg.repository_url,
-        "REPO_BRANCH": cfg.repository_branch,
+        "INSTANCE_TYPE": INSTANCE_TYPE,
+        "VOLUME_GB": str(VOLUME_GB),
+        "VOLUME_IOPS": str(VOLUME_IOPS),
+        "VOLUME_THROUGHPUT_MBPS": str(VOLUME_THROUGHPUT_MBPS),
+        "RESULT_BUCKET": RESULT_BUCKET,
+        "RESULT_PREFIX": RESULT_KEY_PREFIX,
+        "REPO_URL": REPOSITORY_URL,
+        "REPO_BRANCH": REPOSITORY_BRANCH,
         "SCALE_FACTOR": str(scale_factor),
         "DATA_ROOT": PUBLIC_DATA_TEMPLATE.format(scale_factor=scale_factor),
-        "MAX_RUNTIME_MIN": str(cfg.max_runtime_minutes),
+        "MAX_RUNTIME_MIN": str(MAX_RUNTIME_MINUTES),
         "PROFILE_MODE": "1" if profile else "0",
         "ENGINE": engine,
         "BENCH_FLAGS": " ".join(bench_flags),
-        "OUT_SUFFIX": suffix,
     }
     for key, value in repl.items():
         script = script.replace(f"@@{key}@@", value)
@@ -76,7 +89,6 @@ def _user_data(
 def _launch(
     ec2,
     ssm,
-    cfg: CloudConfig,
     run_id: str,
     scale_factor: int,
     index_mode: str,
@@ -86,25 +98,23 @@ def _launch(
     query_ids: list[str] | None = None,
 ) -> str:
     # Launch the benchmark instance and return its id
-    ami = ssm.get_parameter(Name=cfg.ami_parameter)["Parameter"]["Value"]
+    ami = ssm.get_parameter(Name=AMI_PARAMETER)["Parameter"]["Value"]
     resp = ec2.run_instances(
         ImageId=ami,
-        InstanceType=cfg.instance_type,
+        InstanceType=INSTANCE_TYPE,
         MinCount=1,
         MaxCount=1,
-        UserData=_user_data(
-            cfg, ami, run_id, scale_factor, index_mode, profile, n, engine, query_ids
-        ),
+        UserData=_user_data(ami, run_id, scale_factor, index_mode, profile, n, engine, query_ids),
         InstanceInitiatedShutdownBehavior="terminate",
-        IamInstanceProfile={"Name": cfg.instance_profile},
+        IamInstanceProfile={"Name": INSTANCE_PROFILE},
         BlockDeviceMappings=[
             {
                 "DeviceName": "/dev/xvda",
                 "Ebs": {
-                    "VolumeSize": cfg.volume_gb,
+                    "VolumeSize": VOLUME_GB,
                     "VolumeType": "gp3",
-                    "Iops": cfg.volume_iops,
-                    "Throughput": cfg.volume_throughput_mbps,
+                    "Iops": VOLUME_IOPS,
+                    "Throughput": VOLUME_THROUGHPUT_MBPS,
                     "DeleteOnTermination": True,
                 },
             }
@@ -113,7 +123,7 @@ def _launch(
             {
                 "ResourceType": "instance",
                 "Tags": [
-                    {"Key": "Project", "Value": cfg.project_tag},
+                    {"Key": "Project", "Value": PROJECT_TAG},
                     {"Key": "RunId", "Value": run_id},
                 ],
             }
@@ -121,7 +131,7 @@ def _launch(
     )
     instance_id = resp["Instances"][0]["InstanceId"]
     print(
-        f"[ec2] launched {instance_id} ({cfg.instance_type}, sf{scale_factor}, "
+        f"[ec2] launched {instance_id} ({INSTANCE_TYPE}, sf{scale_factor}, "
         f"{engine}, {index_mode}, run {run_id})",
         flush=True,
     )
@@ -140,11 +150,11 @@ def _alive(ec2, instance_id: str) -> bool:
     return state in ("pending", "running")
 
 
-def _emit_progress(s3, cfg: CloudConfig, run_id: str, seen: int, engine: str) -> int:
+def _emit_progress(s3, run_id: str, seen: int, engine: str) -> int:
     # Print [testcase] and [verification] lines from the streamed progress log since the last poll
-    key = f"{cfg.result_prefix}/{run_id}/progress.log"
+    key = f"{RESULT_KEY_PREFIX}/{run_id}/progress.log"
     try:
-        text = s3.get_object(Bucket=cfg.result_bucket, Key=key)["Body"].read()
+        text = s3.get_object(Bucket=RESULT_BUCKET, Key=key)["Body"].read()
     except ClientError:
         return seen
     lines = [
@@ -157,41 +167,39 @@ def _emit_progress(s3, cfg: CloudConfig, run_id: str, seen: int, engine: str) ->
     return len(lines)
 
 
-def _wait_for_success(
-    s3, ec2, cfg: CloudConfig, run_id: str, instance_id: str, engine: str = "pycanopy"
-) -> bool:
+def _wait_for_success(s3, ec2, run_id: str, instance_id: str, engine: str = "pycanopy") -> bool:
     # Poll S3 for the _SUCCESS marker until it appears or the box dies or the deadline passes
-    key = f"{cfg.result_prefix}/{run_id}/_SUCCESS"
-    deadline = time.monotonic() + (cfg.max_runtime_minutes + 15) * 60
+    key = f"{RESULT_KEY_PREFIX}/{run_id}/_SUCCESS"
+    deadline = time.monotonic() + (MAX_RUNTIME_MINUTES + 15) * 60
     seen = 0
     while time.monotonic() < deadline:
-        seen = _emit_progress(s3, cfg, run_id, seen, engine)
+        seen = _emit_progress(s3, run_id, seen, engine)
         try:
-            s3.head_object(Bucket=cfg.result_bucket, Key=key)
-            _emit_progress(s3, cfg, run_id, seen, engine)
+            s3.head_object(Bucket=RESULT_BUCKET, Key=key)
+            _emit_progress(s3, run_id, seen, engine)
             return True
         except ClientError:
             pass
         if not _alive(ec2, instance_id):
             return False
-        time.sleep(cfg.poll_seconds)
+        time.sleep(POLL_SECONDS)
     return False
 
 
-def _download(s3, cfg: CloudConfig, run_id: str) -> list[Path]:
+def _download(s3, run_id: str) -> list[Path]:
     # Download benchmark/profile artifacts into assets/ and the log into tmp, skipping markers
-    prefix = f"{cfg.result_prefix}/{run_id}/"
-    objs = s3.list_objects_v2(Bucket=cfg.result_bucket, Prefix=prefix).get("Contents", [])
+    prefix = f"{RESULT_KEY_PREFIX}/{run_id}/"
+    objs = s3.list_objects_v2(Bucket=RESULT_BUCKET, Prefix=prefix).get("Contents", [])
     paths: list[Path] = []
     for obj in objs:
         name = obj["Key"].rsplit("/", 1)[-1]
         if name in ("_SUCCESS", "progress.log"):
             continue
         keep = name.endswith((".png", ".txt"))
-        dest = _ASSETS_DIR if keep else Path(tempfile.gettempdir())
+        dest = ASSETS_DIR if keep else Path(tempfile.gettempdir())
         dest.mkdir(parents=True, exist_ok=True)
         local = dest / name if keep else dest / f"{run_id}-{name}"
-        s3.download_file(cfg.result_bucket, obj["Key"], str(local))
+        s3.download_file(RESULT_BUCKET, obj["Key"], str(local))
         paths.append(local)
     return paths
 
@@ -247,7 +255,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--query",
         nargs="+",
-        choices=_QUERY_IDS,
+        choices=QUERY_IDS,
         metavar="ID",
         help="Run only these query IDs on the box (e.g. --query q12).",
     )
@@ -288,11 +296,9 @@ def main(argv: list[str] | None = None) -> int:
         if n < 1:
             sys.exit("--n must be at least 1")
 
-    cfg = CLOUD
-    region = cfg.region
-    ec2 = boto3.client("ec2", region_name=region)
-    s3 = boto3.client("s3", region_name=region)
-    ssm = boto3.client("ssm", region_name=region)
+    ec2 = boto3.client("ec2", region_name=REGION)
+    s3 = boto3.client("s3", region_name=REGION)
+    ssm = boto3.client("ssm", region_name=REGION)
 
     instances = {}
     paths: list[Path] = []
@@ -306,7 +312,6 @@ def main(argv: list[str] | None = None) -> int:
                 _launch(
                     ec2,
                     ssm,
-                    cfg,
                     run_id,
                     scale_factor,
                     index_mode,
@@ -318,14 +323,12 @@ def main(argv: list[str] | None = None) -> int:
             )
         with ThreadPoolExecutor(max_workers=len(instances)) as executor:
             futures = {
-                engine: executor.submit(
-                    _wait_for_success, s3, ec2, cfg, run_id, instance_id, engine
-                )
+                engine: executor.submit(_wait_for_success, s3, ec2, run_id, instance_id, engine)
                 for engine, (run_id, instance_id) in instances.items()
             }
             statuses = {engine: future.result() for engine, future in futures.items()}
         for run_id, _ in instances.values():
-            paths.extend(_download(s3, cfg, run_id))
+            paths.extend(_download(s3, run_id))
     finally:
         instance_ids = [instance_id for _, instance_id in instances.values()]
         if instance_ids:
@@ -339,8 +342,8 @@ def main(argv: list[str] | None = None) -> int:
         if transports:
             results = combine_transports(transports, engines, scale_factor, index_mode)
             suffix = "" if "pycanopy" not in engines or index_mode == "eager" else f"_{index_mode}"
-            chart_path = _ASSETS_DIR / f"spatialbench_sf{scale_factor}{suffix}.png"
-            text_path = _ASSETS_DIR / f"spatial-bench-sf{scale_factor}{suffix}-results.txt"
+            chart_path = ASSETS_DIR / f"spatialbench_sf{scale_factor}{suffix}.png"
+            text_path = ASSETS_DIR / f"spatial-bench-sf{scale_factor}{suffix}-results.txt"
             write_chart(results, chart_path)
             write_results_txt(results, text_path)
             produced = [chart_path, text_path]

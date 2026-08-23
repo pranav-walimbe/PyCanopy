@@ -5,12 +5,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from bench.spatial_bench import engine_suite, report
+from bench.spatial_bench import driver_utils, results_utils
 from bench.spatial_bench.config import (
-    CLOUD,
     DEFAULT_RUNS,
+    INSTANCE_TYPE,
     PUBLIC_DATA_TEMPLATE,
     QUERY_TIMEOUT_SECONDS,
+    REGION,
     SUPPORTED_SCALE_FACTORS,
 )
 from bench.spatial_bench.queries.duckdb import QUERIES as DUCKDB_QUERIES
@@ -41,8 +42,8 @@ def test_config_matches_spatialbench_single_node_protocol():
     assert SUPPORTED_SCALE_FACTORS == (1, 10)
     assert DEFAULT_RUNS == 3
     assert QUERY_TIMEOUT_SECONDS == 1200
-    assert CLOUD.region == "us-west-2"
-    assert CLOUD.instance_type == "m7i.2xlarge"
+    assert REGION == "us-west-2"
+    assert INSTANCE_TYPE == "m7i.2xlarge"
     assert PUBLIC_DATA_TEMPLATE.startswith("s3://wherobots-examples/")
 
 
@@ -52,7 +53,9 @@ def test_combine_transports_preserves_requested_engine_order(tmp_path):
     _transport(duckdb, "duckdb", "2.0", 2.0)
     _transport(pycanopy, "pycanopy", "1.0", 1.0)
 
-    results = report.combine_transports([duckdb, pycanopy], ["pycanopy", "duckdb"], 1, "auto")
+    results = results_utils.combine_transports(
+        [duckdb, pycanopy], ["pycanopy", "duckdb"], 1, "auto"
+    )
 
     assert results["engine_order"] == ["pycanopy", "duckdb"]
     assert results["engines"]["pycanopy"]["queries"]["q1"]["seconds"] == 1.0
@@ -62,10 +65,10 @@ def test_combine_transports_preserves_requested_engine_order(tmp_path):
 def test_combined_text_contains_engine_columns_and_raw_samples(tmp_path):
     transport = tmp_path / "duckdb.tsv"
     _transport(transport, "duckdb", "2.0", 2.0)
-    results = report.combine_transports([transport], ["duckdb"], 10, "auto")
+    results = results_utils.combine_transports([transport], ["duckdb"], 10, "auto")
     output = tmp_path / "results.txt"
 
-    report.write_results_txt(results, output)
+    results_utils.write_results_txt(results, output)
 
     text = output.read_text()
     assert "Apache SpatialBench SF10" in text
@@ -81,11 +84,12 @@ def test_all_engines_use_the_shared_runner(monkeypatch, engine):
         captured["command"] = command
         return SimpleNamespace(stdout="SPATIALBENCH_TIME=1.25\n", stderr="")
 
-    monkeypatch.setattr(engine_suite.subprocess, "run", run)
+    monkeypatch.setattr(driver_utils.subprocess, "run", run)
 
-    result = engine_suite._spawn(engine, "q1", "s3://data", "auto")
+    result = driver_utils._spawn(engine, "q1", "s3://data", "auto")
 
-    assert result == {"status": "ok", "time": 1.25}
+    assert result["status"] == "ok"
+    assert result["time"] == 1.25
     assert captured["command"][-4:] == [engine, "q1", "s3://data", "auto"]
 
 
@@ -95,9 +99,11 @@ def test_grouped_chart_supports_live_engine_results(tmp_path):
     pycanopy = tmp_path / "pycanopy.tsv"
     _transport(duckdb, "duckdb", "2.0", 2.0)
     _transport(pycanopy, "pycanopy", "1.0", 1.0)
-    results = report.combine_transports([duckdb, pycanopy], ["pycanopy", "duckdb"], 1, "auto")
+    results = results_utils.combine_transports(
+        [duckdb, pycanopy], ["pycanopy", "duckdb"], 1, "auto"
+    )
     output = tmp_path / "chart.png"
 
-    report.write_chart(results, output)
+    results_utils.write_chart(results, output)
 
     assert output.stat().st_size > 0

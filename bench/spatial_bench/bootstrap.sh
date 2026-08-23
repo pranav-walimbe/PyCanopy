@@ -125,17 +125,12 @@ export TMPDIR=/data/scratch
 # object_store picks up IMDS credentials automatically once the region is set
 export AWS_DEFAULT_REGION="$REGION"
 log "measuring sf${SCALE_FACTOR}"
-if [ "$PROFILE_MODE" = "1" ]; then
-  rm -f /opt/pycanopy/assets/profile.txt
-  "${BENCH_PYTHON[@]}" -m bench.spatial_bench.onbox --scale-factor "$SCALE_FACTOR" @@BENCH_FLAGS@@
-else
-  rm -f "/opt/pycanopy/assets/${ENGINE}-results.tsv"
-  "${BENCH_PYTHON[@]}" -m bench.spatial_bench.engine_suite \
-    --engine "$ENGINE" \
-    --scale-factor "$SCALE_FACTOR" \
-    --data-dir "$DATA_ROOT" \
-    @@BENCH_FLAGS@@
-fi
+rm -f /opt/pycanopy/assets/profile.txt "/opt/pycanopy/assets/${ENGINE}-results.tsv"
+"${BENCH_PYTHON[@]}" -m bench.spatial_bench.driver_utils \
+  --engine "$ENGINE" \
+  --scale-factor "$SCALE_FACTOR" \
+  --data-dir "$DATA_ROOT" \
+  @@BENCH_FLAGS@@
 
 upload_artifacts
 

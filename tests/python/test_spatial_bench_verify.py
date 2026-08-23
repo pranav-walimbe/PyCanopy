@@ -1,12 +1,10 @@
 """Focused tests for the pinned SpatialBench answer gate."""
 
-from types import SimpleNamespace
-
 import polars as pl
 import pytest
 import shapely
 
-from bench.spatial_bench import verify as _verify
+from bench.spatial_bench import profiler_utils as _verify
 from bench.spatial_bench.queries.pycanopy import q04, q05, q12
 from pycanopy import SpatialFrame, executor
 
@@ -68,38 +66,25 @@ def test_verify_accepts_eligible_final_row_boundary_tie(tmp_path):
     assert "boundary tie" in detail
 
 
-def test_measure_query_rejects_partial_sample_set(monkeypatch):
-    utils = pytest.importorskip("bench.spatial_bench.utils")
-    responses = [
-        {
-            "status": "ok",
-            "time": 1.0,
-            "kv": {},
-        },
-        {"status": "timeout"},
-    ]
-    monkeypatch.setattr(utils, "spawn_query", lambda *args: responses.pop(0))
+def test_measure_rejects_partial_sample_set(monkeypatch):
+    driver = pytest.importorskip("bench.spatial_bench.driver_utils")
+    responses = [{"status": "ok", "time": 1.0, "values": {}}, {"status": "timeout"}]
+    monkeypatch.setattr(driver, "_spawn", lambda *args, **kwargs: responses.pop(0))
 
-    result = utils.measure_query(SimpleNamespace(id="q1"), "/data", 1, runs=3)
+    result = driver._measure("pycanopy", "q1", "/data", "auto", runs=3)
 
     assert result == {"status": "timeout", "run_times": [1.0]}
 
 
-def test_measure_query_does_not_require_verification(monkeypatch):
-    utils = pytest.importorskip("bench.spatial_bench.utils")
+def test_measure_averages_every_completed_run(monkeypatch):
+    driver = pytest.importorskip("bench.spatial_bench.driver_utils")
     monkeypatch.setattr(
-        utils,
-        "spawn_query",
-        lambda *args: {
-            "status": "ok",
-            "time": 1.0,
-            "kv": {},
-        },
+        driver, "_spawn", lambda *args, **kwargs: {"status": "ok", "time": 1.0, "values": {}}
     )
 
-    result = utils.measure_query(SimpleNamespace(id="q1"), "/data", 1, runs=1)
+    result = driver._measure("pycanopy", "q1", "/data", "auto", runs=1)
 
-    assert result == {"status": "ok", "pycanopy_seconds": 1.0, "run_times": [1.0]}
+    assert result == {"status": "ok", "seconds": 1.0, "run_times": [1.0]}
 
 
 @pytest.mark.parametrize(
@@ -107,37 +92,47 @@ def test_measure_query_does_not_require_verification(monkeypatch):
     [
         (["--scale-factor", "1", "--n", "0"], "--n must be at least 1"),
         (["--scale-factor", "1", "--query", "q99"], "unknown query IDs: q99"),
+        (["--scale-factor", "10", "--profile"], "--profile runs the SF1 workload"),
+        (
+            ["--scale-factor", "1", "--profile", "--engine", "duckdb"],
+            "--profile measures pycanopy",
+        ),
     ],
 )
-def test_onbox_rejects_invalid_run_selection(args, message):
-    _onbox = pytest.importorskip("bench.spatial_bench.onbox")
+def test_suite_rejects_invalid_run_selection(args, message):
+    driver = pytest.importorskip("bench.spatial_bench.driver_utils")
     with pytest.raises(SystemExit, match=message):
-        _onbox.main(args)
+        driver.main(args)
 
 
 def test_results_txt_records_public_metadata_without_source_path(tmp_path):
-    utils = pytest.importorskip("bench.spatial_bench.utils")
-    metadata = utils.collect_run_metadata("s3://private-bucket/data", ["q1"], 1, "auto", 3)
-    results = {
-        "scale_factor": 1,
-        "index_mode": "auto",
-        "metadata": metadata,
-        "queries": {"q1": {"status": "ok", "pycanopy_seconds": 1.0, "run_times": [1.0]}},
-    }
+    driver = pytest.importorskip("bench.spatial_bench.driver_utils")
+    results = pytest.importorskip("bench.spatial_bench.results_utils")
+
+    metadata = driver.collect_metadata("pycanopy", "s3://private-bucket/data", 1, "auto", 3)
+    path = tmp_path / "pycanopy-results.tsv"
+    results.write_transport(
+        path,
+        "pycanopy",
+        "1.0",
+        metadata,
+        {"q1": {"status": "ok", "seconds": 1.0, "run_times": [1.0]}},
+    )
+    combined = results.combine_transports([path], ["pycanopy"], 1, "auto")
     output = tmp_path / "results.txt"
 
-    utils.write_results_txt(results, output)
+    results.write_results_txt(combined, output)
     text = output.read_text()
 
     assert "Run metadata" in text
-    assert "engines: PyCanopy " in text
+    assert "engines: PyCanopy 1.0" in text
     assert "source: custom" in text
     assert "s3://private-bucket" not in text
 
 
 def test_pinned_answers_include_csv_and_typed_parquet():
     for scale_factor in (1, 10):
-        directory = _verify._ANSWERS_DIR / f"sf{scale_factor}"
+        directory = _verify.ANSWERS_DIR / f"sf{scale_factor}"
         for query_number in range(1, 13):
             stem = f"q{query_number}"
             assert (directory / f"{stem}.csv").is_file()

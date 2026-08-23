@@ -75,19 +75,22 @@ The local launcher also needs SSM read, EC2 lifecycle, `iam:PassRole`, and resul
 
 ## Directory layout
 
+`__main__.py` runs on your machine and needs `boto3`; `results_utils.py` spans both
+sides (the box writes the transport, your machine reads it and draws the chart, which
+needs `matplotlib`). Everything marked on-box runs on EC2 from a fresh clone of
+`repository_branch`, so **on-box changes only take effect once pushed**, and an
+ordinary run installs only the measured engine's own packages.
+
 ```
 bench/spatial_bench/
-├── __main__.py      # launch, monitor, and combine isolated engine nodes
-├── engine_suite.py  # ordinary on-box measurement and TSV transport
-├── engine_runner.py # isolated non-PyCanopy query entry point
-├── onbox.py         # PyCanopy profile suite driver
-├── runner.py        # isolated PyCanopy query entry point
-├── profile.py       # profile mode: Engine metrics, wall boundaries, and RSS
-├── report.py        # combined text and legacy-style grouped chart
-├── verify.py        # upstream answer comparison semantics
+├── __main__.py      # local: launch, monitor, and combine isolated engine nodes
+├── config.py        # workload, dataset, engine, path, timing, and infrastructure settings
+├── driver_utils.py  # on-box: drive one engine over the queries, timed or profiled
+├── run_query.py     # on-box: isolated subprocess running exactly one query
+├── fetch_utils.py   # on-box: SpatialBench table fetching and query-scoped frames
+├── profiler_utils.py  # on-box: stage boundaries, sampled RSS, Engine metrics, answer verification
+├── results_utils.py # the TSV transport (both sides) plus text, chart, and profile reports
 ├── answers/         # pinned upstream CSV and type-faithful Parquet answers
-├── utils.py         # data loading, measurement, and reporting
-├── config.py        # workload, dataset, engine, timing, and infrastructure settings
 ├── bootstrap.sh     # EC2 user-data: install one engine and run its suite
 ├── queries/
 │   ├── pycanopy/    # q01.py through q12.py
