@@ -1,49 +1,45 @@
 """Configuration for the SpatialBench cloud harness."""
 
-from dataclasses import dataclass
+from pathlib import Path
 
 WORKLOAD_REVISION = "b9221a9c4b02b10db20611d79b4019d2b3c4b68e"
 DATASET_VERSION = "v0.1.0"
 SUPPORTED_SCALE_FACTORS = (1, 10)
 DEFAULT_RUNS = 3
 QUERY_TIMEOUT_SECONDS = 1200
+INDEX_MODES = ("auto", "eager", "none")
+RUNNER_PREFIX = "SPATIALBENCH"
+QUERY_IDS = tuple(f"q{index}" for index in range(1, 13))
 
-ENGINE_IDS = ("pycanopy", "duckdb", "sedonadb", "geopandas")
-DISPLAY_NAMES = {
-    "pycanopy": "PyCanopy",
-    "duckdb": "DuckDB",
-    "sedonadb": "SedonaDB",
-    "geopandas": "GeoPandas",
+ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
+ANSWERS_DIR = Path(__file__).resolve().parent / "answers"
+
+MIB = 1024 * 1024
+NS_PER_SECOND = 1_000_000_000
+RSS_SAMPLE_INTERVAL = 0.02
+
+ENGINES = {
+    "pycanopy": {"display_name": "PyCanopy", "package": "pycanopy", "color": "#2C7FB8"},
+    "duckdb": {"display_name": "DuckDB", "package": "duckdb", "color": "#8C8C8C"},
+    "sedonadb": {"display_name": "SedonaDB", "package": "sedonadb", "color": "#DD8452"},
+    "geopandas": {"display_name": "GeoPandas", "package": "geopandas", "color": "#C9BBA8"},
 }
-PACKAGE_NAMES = {
-    "pycanopy": "pycanopy",
-    "duckdb": "duckdb",
-    "sedonadb": "sedonadb",
-    "geopandas": "geopandas",
-}
+ENGINE_IDS = tuple(ENGINES)
 
 PUBLIC_DATA_ROOT = "s3://wherobots-examples/data/spatialbench"
 PUBLIC_DATA_TEMPLATE = f"{PUBLIC_DATA_ROOT}/SpatialBench_sf{{scale_factor}}"
 
-
-@dataclass(frozen=True)
-class CloudConfig:
-    """Infrastructure used for comparable cloud runs."""
-
-    region: str = "us-west-2"
-    instance_type: str = "m7i.2xlarge"
-    volume_gb: int = 32
-    volume_iops: int = 3000
-    volume_throughput_mbps: int = 125
-    max_runtime_minutes: int = 60
-    result_bucket: str = "pycanopy-bench-results"
-    instance_profile: str = "pycanopy-spatialbench"
-    repository_url: str = "https://github.com/pranav-walimbe/PyCanopy.git"
-    repository_branch: str = "main"
-    ami_parameter: str = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
-    project_tag: str = "pycanopy-spatialbench"
-    result_prefix: str = "spatialbench-runs"
-    poll_seconds: int = 30
-
-
-CLOUD = CloudConfig()
+REGION = "us-west-2"
+INSTANCE_TYPE = "m7i.2xlarge"
+VOLUME_GB = 32
+VOLUME_IOPS = 3000
+VOLUME_THROUGHPUT_MBPS = 125
+MAX_RUNTIME_MINUTES = 60
+RESULT_BUCKET = "pycanopy-bench-results"
+INSTANCE_PROFILE = "pycanopy-spatialbench"
+REPOSITORY_URL = "https://github.com/pranav-walimbe/PyCanopy.git"
+REPOSITORY_BRANCH = "main"
+AMI_PARAMETER = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+PROJECT_TAG = "pycanopy-spatialbench"
+RESULT_KEY_PREFIX = "spatialbench-runs"
+POLL_SECONDS = 30

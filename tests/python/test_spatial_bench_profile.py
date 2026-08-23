@@ -1,10 +1,9 @@
 """Focused tests for the SpatialBench Engine-metrics profile path."""
 
-from types import SimpleNamespace
-
 import pytest
 
-_profile = pytest.importorskip("bench.spatial_bench.profile")
+_profiling = pytest.importorskip("bench.spatial_bench.profiler_utils")
+_results = pytest.importorskip("bench.spatial_bench.results_utils")
 
 
 def _engine(engine_id, calls, rows, elapsed):
@@ -26,7 +25,7 @@ def _engine(engine_id, calls, rows, elapsed):
 
 
 def test_engine_metrics_aggregate_across_engines_and_streamed_calls():
-    aggregate = _profile._aggregate_engine_metrics(
+    aggregate = _profiling._aggregate_engine_metrics(
         [_engine(0, calls=2, rows=7, elapsed=11), _engine(1, calls=3, rows=13, elapsed=17)]
     )
 
@@ -61,7 +60,7 @@ def test_profile_suite_writes_artifacts_then_rejects_oracle_mismatch(tmp_path, m
             "execute": 200,
             "materialize": 180,
         },
-        "engine": _profile._aggregate_engine_metrics([_engine(0, 1, 2, 3)]),
+        "engine": _profiling._aggregate_engine_metrics([_engine(0, 1, 2, 3)]),
     }
     result = {
         "status": "ok",
@@ -70,11 +69,12 @@ def test_profile_suite_writes_artifacts_then_rejects_oracle_mismatch(tmp_path, m
         "verify": "MISMATCH",
         "verify_detail": "rows differ",
     }
-    monkeypatch.setattr(_profile, "_ASSETS_DIR", tmp_path)
-    monkeypatch.setattr(_profile, "profile_query", lambda *args: result)
+    driver = pytest.importorskip("bench.spatial_bench.driver_utils")
+    monkeypatch.setattr(driver, "_profile_query", lambda *args: result)
+    monkeypatch.setattr(driver, "ASSETS_DIR", tmp_path)
 
     with pytest.raises(RuntimeError, match="q1"):
-        _profile.run_profile_suite([SimpleNamespace(id="q1")], "s3://example")
+        driver.run_profile_suite(["q1"], "s3://example", "auto")
 
     assert (tmp_path / "profile.txt").is_file()
     assert not (tmp_path / "profile.json").exists()
