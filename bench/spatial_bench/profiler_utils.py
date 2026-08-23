@@ -127,11 +127,9 @@ def profile_payload(profiler: StageProfiler, elapsed: float, engines: list[dict]
     engine_ns = sum(engine["construction"].values())
     engine_ns += sum(metric["elapsed_compute_ns"] for metric in engine["index_builds"])
     engine_ns += sum(metric["elapsed_compute_ns"] for metric in engine["operations"])
-    materialize = profiler.times.get("materialize", 0.0)
     return {
         "time": {
             "total": elapsed,
-            "materialize": materialize,
             "non_engine": max(elapsed - engine_ns / NS_PER_SECOND, 0.0),
         },
         "mem": {

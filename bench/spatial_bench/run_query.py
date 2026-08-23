@@ -58,8 +58,7 @@ def _run_profiled(query_id: str, data_dir: str, scale_factor: int) -> None:
         with _capture_engine_metrics() as capture:
             started = time.perf_counter()
             result = runner.execute(query_id)
-            with profiler.stage("materialize"):
-                result = _materialize(result)
+            result = _materialize(result)
             elapsed = time.perf_counter() - started
             engine_metrics = capture.take_metrics()
     finally:

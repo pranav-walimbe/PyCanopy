@@ -23,6 +23,16 @@ pub trait SpatialIndex: Send + Sync {
     fn nearest(&self, qx: f64, qy: f64, k: usize) -> Vec<usize>;
     /// Indices of all geometries whose bounding box intersects [min_x, max_x] × [min_y, max_y]
     fn range(&self, min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Vec<usize>;
+    /// `nearest` into a caller owned buffer, so a per-query kernel can reuse one allocation.
+    fn nearest_into(&self, qx: f64, qy: f64, k: usize, out: &mut Vec<usize>) {
+        out.clear();
+        out.extend(self.nearest(qx, qy, k));
+    }
+    /// `range` into a caller owned buffer, so a per-query kernel can reuse one allocation.
+    fn range_into(&self, min_x: f64, min_y: f64, max_x: f64, max_y: f64, out: &mut Vec<usize>) {
+        out.clear();
+        out.extend(self.range(min_x, min_y, max_x, max_y));
+    }
 }
 
 /// Squared distance from a point to an axis-aligned box `[min_x, min_y, max_x, max_y]`,
