@@ -7,12 +7,7 @@ import json
 import sys
 import time
 
-from bench.spatial_bench.config import (
-    ENGINE_IDS,
-    RUNNER_PREFIX,
-    SUPPORTED_SCALE_FACTORS,
-    TABLES,
-)
+from bench.spatial_bench.config import ENGINE_IDS, RUNNER_PREFIX, SUPPORTED_SCALE_FACTORS
 from bench.spatial_bench.engines import load_runner
 
 
@@ -46,32 +41,30 @@ def _run_timed(engine: str, query_id: str, data_dir: str) -> None:
 
 
 def _run_profiled(query_id: str, data_dir: str, scale_factor: int) -> None:
-    # Profile path: PyCanopy only, with stage boundaries, Engine metrics, and answer
-    # verification. These imports are deferred because an ordinary run of another engine
+    # Profile path: the same runner the timed path drives, observed by a stage profiler and
+    # Engine metrics. These imports are deferred because an ordinary run of another engine
     # installs neither PyCanopy nor Polars on the box.
     from bench.spatial_bench.profiler_utils import (  # noqa: PLC0415
         StageProfiler,
         profile_payload,
         verify_output,
     )
-    from bench.spatial_bench.queries import pycanopy as pycanopy_queries  # noqa: PLC0415
     from pycanopy.engine import _capture_engine_metrics  # noqa: PLC0415
 
-    query = pycanopy_queries.BY_ID.get(query_id)
-    if query is None:
-        raise SystemExit(f"unknown query {query_id!r}")
-
-    root = data_dir.rstrip("/")
-    data_paths = {table: f"{root}/{table}/**/*.parquet" for table in TABLES}
+    runner = load_runner("pycanopy")
     profiler = StageProfiler()
-    with _capture_engine_metrics() as capture:
-        started = time.perf_counter()
-        result = query.pycanopy(data_paths)
-        with profiler.stage("materialize"):
-            result = _materialize(result)
-        elapsed = time.perf_counter() - started
-        engine_metrics = capture.take_metrics()
-    profiler.stop()
+    try:
+        runner.prepare(data_dir)
+        with _capture_engine_metrics() as capture:
+            started = time.perf_counter()
+            result = runner.execute(query_id)
+            with profiler.stage("materialize"):
+                result = _materialize(result)
+            elapsed = time.perf_counter() - started
+            engine_metrics = capture.take_metrics()
+    finally:
+        runner.close()
+        profiler.stop()
 
     _emit("TIME", f"{elapsed:.6f}")
     _emit("PROFILE", json.dumps(profile_payload(profiler, elapsed, engine_metrics)))

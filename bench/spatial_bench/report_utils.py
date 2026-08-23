@@ -326,13 +326,10 @@ def _section(query_id: str, result: dict) -> str:
         result["verify"], result["verify"]
     )
     lines += [
-        f"wall (s)      total {wall['total']:7.3f}  fetch {wall['fetch']:7.3f}  "
-        f"execute {wall['execute']:7.3f}  materialize {wall['materialize']:7.3f}",
-        f"               non-engine wall after fetch {wall['non_engine']:7.3f}",
+        f"wall (s)      total {wall['total']:7.3f}  materialize {wall['materialize']:7.3f}",
+        f"               non-engine wall {wall['non_engine']:7.3f}",
         f"memory (MiB)  peak {mib['peak']:8.1f}  baseline {mib['baseline']:8.1f}  "
         f"demand {mib['peak'] - mib['baseline']:+8.1f}",
-        f"  stage peak  fetch {mib['fetch']:8.1f}  execute {mib['execute']:8.1f}  "
-        f"materialize {mib['materialize']:8.1f}",
         f"engines       {len(engine['engines'])}  WKB decode "
         f"{construction['wkb_decode_ns'] / NS_PER_SECOND:7.3f}s  statistics "
         f"{construction['statistics_ns'] / NS_PER_SECOND:7.3f}s",
@@ -366,9 +363,10 @@ def write_profile(results: dict, out_path: Path) -> None:
     head = (
         "PyCanopy Apache SpatialBench SF1 profile (1 run/query)\n"
         f"Dataset {DATASET_VERSION}, workload revision {WORKLOAD_REVISION}\n"
-        "Engine times are always-on production metrics. Harness stages are wall boundaries.\n"
-        f"RSS is sampled every {int(RSS_SAMPLE_INTERVAL * 1000)} ms. Verification uses the "
-        "committed upstream answers."
+        "Engine times are always-on production metrics. Wall times are harness boundaries and\n"
+        "include parquet reads. Memory is the whole-run RSS peak, sampled every "
+        f"{int(RSS_SAMPLE_INTERVAL * 1000)} ms.\n"
+        "Verification uses the committed upstream answers."
     )
     parts = [head, *[_section(query_id, result) for query_id, result in results.items()], _SEP]
     out_path.parent.mkdir(parents=True, exist_ok=True)

@@ -15,7 +15,6 @@ import polars as pl
 
 from bench.spatial_bench.config import ANSWERS_DIR, NS_PER_SECOND, RSS_SAMPLE_INTERVAL
 
-STAGES = ("fetch", "execute", "materialize")
 _PAGE_SIZE = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
 
 
@@ -30,12 +29,10 @@ def _rss_bytes() -> int:
 
 
 class StageProfiler:
-    """Measure honest harness boundaries and sample process RSS against the active boundary."""
+    """Measure honest harness boundaries and sample the process RSS peak alongside them."""
 
     def __init__(self) -> None:
         self.times: dict[str, float] = {}
-        self.stage_peak: dict[str, int] = {}
-        self.current = "execute"
         self.baseline = _rss_bytes()
         self.peak = self.baseline
         self._stop = threading.Event()
@@ -48,30 +45,25 @@ class StageProfiler:
             self._observe()
 
     def _observe(self) -> None:
-        # Fold one RSS reading into both the global peak and the active stage peak
-        rss = _rss_bytes()
-        self.peak = max(self.peak, rss)
-        self.stage_peak[self.current] = max(self.stage_peak.get(self.current, 0), rss)
+        # Fold one RSS reading into the run's peak
+        self.peak = max(self.peak, _rss_bytes())
 
     @contextmanager
     def stage(self, name: str):
-        """Accumulate wall time and sampled RSS under one non-overlapping harness boundary.
+        """Accumulate wall time under one named harness boundary.
 
         Args:
-            name: Stage name, one of STAGES.
+            name: Stage name recorded in times.
 
         Yields:
             None, for the duration of the stage.
         """
         started = time.perf_counter()
-        previous = self.current
-        self.current = name
         self._observe()
         try:
             yield
         finally:
             self._observe()
-            self.current = previous
             self.times[name] = self.times.get(name, 0.0) + time.perf_counter() - started
 
     def stop(self) -> None:
@@ -135,20 +127,16 @@ def profile_payload(profiler: StageProfiler, elapsed: float, engines: list[dict]
     engine_ns = sum(engine["construction"].values())
     engine_ns += sum(metric["elapsed_compute_ns"] for metric in engine["index_builds"])
     engine_ns += sum(metric["elapsed_compute_ns"] for metric in engine["operations"])
-    fetch = profiler.times.get("fetch", 0.0)
     materialize = profiler.times.get("materialize", 0.0)
     return {
         "time": {
             "total": elapsed,
-            "fetch": fetch,
-            "execute": max(elapsed - fetch - materialize, 0.0),
             "materialize": materialize,
-            "non_engine": max(elapsed - fetch - engine_ns / NS_PER_SECOND, 0.0),
+            "non_engine": max(elapsed - engine_ns / NS_PER_SECOND, 0.0),
         },
         "mem": {
             "baseline": profiler.baseline,
             "peak": profiler.peak,
-            **{stage: profiler.stage_peak.get(stage, profiler.baseline) for stage in STAGES},
         },
         "engine": engine,
     }
