@@ -359,3 +359,76 @@ def test_frame_points_within_distance_of_polygon():
     sf = SpatialFrame(df, "x", "y")
     hit = sf.points_within_distance_of_polygon(shapely_box(0, 0, 1, 1), 1.5)
     assert set(hit["label"].to_list()) == {"a", "b"}
+
+
+def test_knn_to_polygons_counts_a_multipolygon_once():
+    # Both parts of the MultiPolygon bracket the query, and the nearer part must not crowd the
+    # far square out of the answer by occupying two of the k slots.
+    mp = shapely.MultiPolygon([shapely_box(1, 0, 2, 1), shapely_box(-2, 0, -1, 1)])
+    far = shapely_box(4, 0, 5, 1)
+    eng = Engine.from_polygons([mp, far])
+    idx, dist = eng.batch_knn_to_polygons(
+        np.array([0.0], dtype=np.float64), np.array([0.5], dtype=np.float64), 2
+    )
+
+    assert idx.tolist() == [0, 1]
+    assert np.allclose(dist, [1.0, 4.0], atol=1e-9)
+
+
+def test_knn_to_polygons_pads_when_k_exceeds_polygon_count():
+    eng = Engine.from_polygons([shapely_box(0, 0, 1, 1), shapely_box(3, 0, 4, 1)])
+    idx, dist = eng.batch_knn_to_polygons(
+        np.array([0.5], dtype=np.float64), np.array([0.5], dtype=np.float64), 5
+    )
+
+    assert idx[:2].tolist() == [0, 1]
+    assert np.isinf(dist[2:]).all()
+
+
+def test_knn_to_polygons_matches_brute_force_on_mixed_geometry():
+    # Concave shapes, holes, and multi-part geometries together, so the seed's MBR bound is wrong
+    # often enough to force the sweep, and k is wide enough to keep it running.
+    rng = np.random.default_rng(11)
+    polys: list = []
+    for i in range(60):
+        cx, cy = rng.uniform(0, 60, 2)
+        kind = i % 3
+        if kind == 0:
+            polys.append(_annulus(cx, cy, rng.uniform(4.0, 14.0), rng.uniform(1.0, 3.0)))
+        elif kind == 1:
+            # L shape: its MBR corner sits far from any edge
+            s = rng.uniform(3.0, 9.0)
+            polys.append(
+                shapely.Polygon(
+                    [
+                        (cx, cy),
+                        (cx + s, cy),
+                        (cx + s, cy + s / 3),
+                        (cx + s / 3, cy + s / 3),
+                        (cx + s / 3, cy + s),
+                        (cx, cy + s),
+                    ]
+                )
+            )
+        else:
+            off = rng.uniform(6.0, 18.0)
+            polys.append(
+                shapely.MultiPolygon(
+                    [
+                        shapely_box(cx, cy, cx + 2, cy + 2),
+                        shapely_box(cx + off, cy + off, cx + off + 2, cy + off + 2),
+                    ]
+                )
+            )
+
+    eng = Engine.from_polygons(polys)
+    qx = rng.uniform(0, 60, 120)
+    qy = rng.uniform(0, 60, 120)
+    k = 6
+    _, dist = eng.batch_knn_to_polygons(qx, qy, k)
+    dist = dist.reshape(-1, k)
+
+    points = shapely.points(qx, qy)
+    for q in range(len(qx)):
+        want = np.sort([p.distance(points[q]) for p in polys])[:k]
+        assert np.allclose(dist[q], want, atol=1e-9), f"query {q}: {dist[q]} vs {want}"

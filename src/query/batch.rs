@@ -15,7 +15,7 @@ const TILE_GRID: usize = 16;
 const AGG_WORKER_STATE_BUDGET: usize = 64 * 1024 * 1024;
 
 /// Per-tile kNN results
-type TileResults = Vec<Vec<(u32, Vec<(u32, f64)>)>>;
+type TileResults = Vec<(Vec<u32>, Vec<(u32, f64)>)>;
 
 use crate::index::kdtree::PackedKdTree;
 use crate::index::{point_box_dist2, SpatialIndex};
@@ -599,17 +599,47 @@ fn insert_nearest(kept: &mut Vec<(u32, f64)>, pid: u32, d: f64, k: usize) {
     }
 }
 
-/// The k nearest polygons to one query by exact point-to-polygon distance, in two phases.
+/// Extra parts the seed fetches beyond k, so its MBR bound more often retires the query without
+/// a sweep. Measured against SpatialBench q12: wider than this costs more refinement than the
+/// sweeps it avoids.
+const SEED_MARGIN: usize = 1;
+
+/// Per worker buffers for `knn_polys_exact`, reused across every query in a tile.
 ///
-/// A seed pass refines the MBR-nearest parts, which bounds the true kth distance from above.
-/// That bound then defines a box holding every part that can still qualify, since a part whose
-/// MBR is further than the bound cannot have a nearer boundary. The sweep over that box refines
-/// nearest-MBR-first and stops once the next lower bound cannot beat the kth exact distance held,
-/// so the result is exact for holes, concavity, and MultiPolygons alike. Fixed oversampling
-/// cannot make that guarantee: any cutoff can drop a polygon whose MBR ranks poorly.
+/// The kernel runs once per query over millions of queries, so allocating its working set each
+/// time dominates the real work and puts every rayon worker on the allocator at once.
+#[derive(Default)]
+struct KnnScratch {
+    seeds: Vec<usize>,        // parts returned by the index fetch, in MBR order
+    sweep: Vec<usize>,        // parts the sweep's range query returned
+    cands: Vec<(usize, f64)>, // sweep candidates paired with their squared MBR lower bound
+    kept: Vec<(u32, f64)>,    // the running top-k, and the result once the kernel returns
+}
+
+impl KnnScratch {
+    fn with_capacity(k: usize) -> Self {
+        Self {
+            seeds: Vec::with_capacity(k * 2),
+            sweep: Vec::with_capacity(k * 4),
+            cands: Vec::with_capacity(k * 4),
+            kept: Vec::with_capacity(k + 1),
+        }
+    }
+}
+
+/// The k nearest polygons to one query by exact point-to-polygon distance.
 ///
-/// The sweep re-refines the seed's own parts, which costs k distances and saves tracking which
-/// parts were already seen. Padded with `(u32::MAX, inf)` when fewer than k polygons exist.
+/// The index orders candidates by point-to-MBR distance, which only lower-bounds the exact
+/// point-to-polygon distance, so ranking by it alone can drop a polygon whose MBR ranks poorly.
+/// A seed pass refines the MBR-nearest parts and takes the MBR bound of the furthest one it saw:
+/// nothing unseen can be nearer than that, so once the bound reaches the kth exact distance the
+/// answer is already exact. The seed fetches a little beyond k because the two agree often enough
+/// at that width to retire most queries there.
+///
+/// Otherwise the kth exact distance defines a radius holding every part that can still qualify,
+/// and a sweep refines that box nearest-MBR-first, stopping once the next lower bound cannot beat
+/// the kth held. Either way the result is exact for holes, concavity, and MultiPolygons alike.
+/// Leaves it in `scratch.kept`, padded with `(u32::MAX, inf)` when fewer than k polygons exist.
 #[allow(clippy::too_many_arguments)]
 fn knn_polys_exact<I: SpatialIndex>(
     index: &I,
@@ -623,16 +653,18 @@ fn knn_polys_exact<I: SpatialIndex>(
     bbox: &[[f64; 4]],
     part_poly: Option<&[u32]>,
     n_parts: usize,
-) -> Vec<(u32, f64)> {
-    let mut kept: Vec<(u32, f64)> = Vec::with_capacity(k + 1);
-    // Seed pass. One fetch of k parts covers k polygons unless parts share a logical polygon,
-    // so grow the fetch until it does or until every part has been seen.
-    let mut fetch = k;
+    scratch: &mut KnnScratch,
+) {
+    let kept = &mut scratch.kept;
+    // Seed pass. Parts can share a logical polygon, so grow the fetch until k distinct polygons
+    // are held or every part has been seen.
+    let mut fetch = (k + SEED_MARGIN).min(n_parts.max(1));
     loop {
         kept.clear();
-        for ei in index.nearest(qx, qy, fetch) {
+        index.nearest_into(qx, qy, fetch, &mut scratch.seeds);
+        for &ei in scratch.seeds.iter() {
             let d = point_to_polygon_distance(qx, qy, xs, ys, ring_offsets, poly_offsets, ei);
-            insert_nearest(&mut kept, logical_poly(part_poly, ei), d, k);
+            insert_nearest(kept, logical_poly(part_poly, ei), d, k);
         }
         if kept.len() == k || fetch >= n_parts {
             break;
@@ -642,32 +674,48 @@ fn knn_polys_exact<I: SpatialIndex>(
     if kept.len() < k {
         // The seed swept every part, so the dataset holds fewer than k polygons
         kept.resize(k, (u32::MAX, f64::INFINITY));
-        return kept;
+        return;
     }
 
-    // Sweep pass over every part the seed bound admits, nearest MBR first. The seed's k stay in
-    // `kept` as the working bound, so the sweep can only tighten the answer, never lose it to a
-    // rounding edge where a convex polygon's exact distance and its MBR bound differ by an ulp.
-    let radius = kept[k - 1].1;
-    let mut kth_sq = radius * radius;
-    let mut cands: Vec<(usize, f64)> = index
-        .range(qx - radius, qy - radius, qx + radius, qy + radius)
-        .into_iter()
-        .map(|ei| (ei, point_box_dist2(qx, qy, &bbox[ei])))
-        .collect();
+    let kth = kept[k - 1].1;
+    let mut kth_sq = kth * kth;
+    let seen_all = scratch.seeds.len() >= n_parts;
+    let bound_sq = match scratch.seeds.last() {
+        Some(&ei) => point_box_dist2(qx, qy, &bbox[ei]),
+        None => f64::INFINITY,
+    };
+    if seen_all || bound_sq >= kth_sq {
+        return;
+    }
+
+    // Sweep pass over every part the seed's radius admits, nearest MBR first. The seed's k stay
+    // in `kept` as the working bound, so the sweep can only tighten the answer, never lose it to
+    // a rounding edge where a polygon's exact distance and its MBR bound differ by an ulp.
+    index.range_into(qx - kth, qy - kth, qx + kth, qy + kth, &mut scratch.sweep);
+    let seeds = &scratch.seeds;
+    let cands = &mut scratch.cands;
+    cands.clear();
+    // The seed already refined its own parts, so re-measuring them would repeat k exact
+    // distances per query. Seeds are the MBR-nearest handful, so a scan beats a set.
+    cands.extend(
+        scratch
+            .sweep
+            .iter()
+            .filter(|ei| !seeds.contains(ei))
+            .map(|&ei| (ei, point_box_dist2(qx, qy, &bbox[ei]))),
+    );
     cands.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
 
-    for (ei, lb_sq) in cands {
+    for &(ei, lb_sq) in cands.iter() {
         // Candidates arrive nearest-MBR-first, so once a lower bound cannot beat the kth exact
         // distance held, nothing after it can either.
         if lb_sq >= kth_sq {
             break;
         }
         let d = point_to_polygon_distance(qx, qy, xs, ys, ring_offsets, poly_offsets, ei);
-        insert_nearest(&mut kept, logical_poly(part_poly, ei), d, k);
+        insert_nearest(kept, logical_poly(part_poly, ei), d, k);
         kth_sq = kept[k - 1].1 * kept[k - 1].1;
     }
-    kept
 }
 
 /// Interleave two 16-bit coordinates into a 32-bit Morton (Z-order) code
@@ -747,38 +795,44 @@ pub fn par_knn_to_polygons<I: SpatialIndex + Sync>(
     let order = morton_order(qxs, qys);
     let tiles = build_query_tiles(qxs, qys, &order, TILE_GRID);
 
-    // Parallelise over tiles so each tile's polygon vertices stay warm in L3 across its queries
+    // Parallelise over tiles so each tile's polygon vertices stay warm in L3 across its queries.
+    // Each tile writes its answers into three flat buffers rather than one Vec per query, so the
+    // kernel allocates per tile instead of per query.
     let tile_results: TileResults = tiles
         .par_iter()
         .map(|cell| {
-            cell.iter()
-                .map(|&qi| {
-                    let (qx, qy) = (qxs[qi as usize], qys[qi as usize]);
-                    let cands = knn_polys_exact(
-                        index,
-                        qx,
-                        qy,
-                        k,
-                        xs,
-                        ys,
-                        ring_offsets,
-                        poly_offsets,
-                        &bbox,
-                        part_poly,
-                        n_parts,
-                    );
-                    (qi, cands)
-                })
-                .collect()
+            let mut scratch = KnnScratch::with_capacity(k);
+            let mut qis: Vec<u32> = Vec::with_capacity(cell.len());
+            let mut flat: Vec<(u32, f64)> = Vec::with_capacity(cell.len() * k);
+            for &qi in cell.iter() {
+                let (qx, qy) = (qxs[qi as usize], qys[qi as usize]);
+                knn_polys_exact(
+                    index,
+                    qx,
+                    qy,
+                    k,
+                    xs,
+                    ys,
+                    ring_offsets,
+                    poly_offsets,
+                    &bbox,
+                    part_poly,
+                    n_parts,
+                    &mut scratch,
+                );
+                qis.push(qi);
+                flat.extend_from_slice(&scratch.kept);
+            }
+            (qis, flat)
         })
         .collect();
 
     let mut idx = vec![0u32; n * k];
     let mut dist = vec![0f64; n * k];
-    for tile in tile_results {
-        for (qi, cands) in tile {
+    for (qis, flat) in tile_results {
+        for (slot, qi) in qis.into_iter().enumerate() {
             let base = qi as usize * k;
-            for (j, (ti, d)) in cands.into_iter().enumerate() {
+            for (j, &(ti, d)) in flat[slot * k..slot * k + k].iter().enumerate() {
                 idx[base + j] = ti;
                 dist[base + j] = d;
             }
@@ -889,33 +943,32 @@ pub fn par_knn_to_polygons_sorted<I: SpatialIndex + Sync>(
     let sorted_tiles: Vec<Vec<KnnTriple>> = tiles
         .par_iter()
         .map(|cell| {
-            let mut triples: Vec<KnnTriple> = cell
-                .iter()
-                .flat_map(|&qi| {
-                    let (qx, qy) = (qxs[qi as usize], qys[qi as usize]);
-                    let cands = knn_polys_exact(
-                        index,
-                        qx,
-                        qy,
-                        k,
-                        xs,
-                        ys,
-                        ring_offsets,
-                        poly_offsets,
-                        &bbox,
-                        part_poly,
-                        n_parts,
-                    );
-                    cands
-                        .into_iter()
-                        .filter(|(t_idx, _)| *t_idx != u32::MAX)
-                        .map(move |(t_idx, dist)| KnnTriple {
-                            dist_bits: dist.to_bits(),
-                            target_idx: t_idx,
-                            query_idx: qi,
-                        })
-                })
-                .collect();
+            let mut scratch = KnnScratch::with_capacity(k);
+            let mut triples: Vec<KnnTriple> = Vec::with_capacity(cell.len() * k);
+            for &qi in cell.iter() {
+                let (qx, qy) = (qxs[qi as usize], qys[qi as usize]);
+                knn_polys_exact(
+                    index,
+                    qx,
+                    qy,
+                    k,
+                    xs,
+                    ys,
+                    ring_offsets,
+                    poly_offsets,
+                    &bbox,
+                    part_poly,
+                    n_parts,
+                    &mut scratch,
+                );
+                triples.extend(scratch.kept.iter().filter(|(t, _)| *t != u32::MAX).map(
+                    |&(t_idx, dist)| KnnTriple {
+                        dist_bits: dist.to_bits(),
+                        target_idx: t_idx,
+                        query_idx: qi,
+                    },
+                ));
+            }
             triples.radix_sort_unstable();
             triples
         })
