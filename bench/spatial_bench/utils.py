@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import os
 import platform
 import subprocess
@@ -15,11 +14,15 @@ from pathlib import Path
 import polars as pl
 import shapely
 
-from bench.spatial_bench._verify import DATASET_VERSION, WORKLOAD_REVISION
+from bench.spatial_bench.config import (
+    DATASET_VERSION,
+    PUBLIC_DATA_ROOT,
+    QUERY_TIMEOUT_SECONDS,
+    WORKLOAD_REVISION,
+)
 from pycanopy import SpatialFrame
 
 _ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
-_PUBLIC_DATA_ROOT = "s3://wherobots-examples/data/spatialbench/"
 
 
 # Table loading
@@ -199,7 +202,7 @@ def collect_run_metadata(
         "run ID": os.environ.get("PYCANOPY_BENCH_RUN_ID", "local"),
         "workload revision": WORKLOAD_REVISION,
         "dataset": DATASET_VERSION,
-        "source": "SpatialBench public S3" if data_dir.startswith(_PUBLIC_DATA_ROOT) else "custom",
+        "source": "SpatialBench public S3" if data_dir.startswith(PUBLIC_DATA_ROOT) else "custom",
         "source region": os.environ.get(
             "PYCANOPY_BENCH_REGION", os.environ.get("AWS_DEFAULT_REGION", "not recorded")
         ),
@@ -252,7 +255,7 @@ def spawn_query(
     cmd = [
         sys.executable,
         "-m",
-        "bench.spatial_bench._runner",
+        "bench.spatial_bench.runner",
         query_id,
         data_dir,
         str(scale_factor),
@@ -260,7 +263,7 @@ def spawn_query(
     ]
     cmd.extend(flags)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1200)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=QUERY_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
         return {"status": "timeout"}
 
@@ -341,156 +344,47 @@ def measure_query(
     }
 
 
-def _nice_cap(v: float) -> float:
-    # Round a value up to a clean axis bound (1/1.5/2/2.5/3/4/5/6/8 times a power of ten)
-    if v <= 0:
-        return 1.0
-    mag = 10 ** math.floor(math.log10(v))
-    for m in (1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10):
-        if m * mag >= v:
-            return m * mag
-    return 10 * mag
-
-
-def _pct(values: list[float], p: float) -> float:
-    # Linear-interpolated percentile, used to cap the x axis just past the bulk of the bars
-    s = sorted(values)
-    if not s:
-        return 1.0
-    k = (len(s) - 1) * p
-    lo, hi = math.floor(k), math.ceil(k)
-    if lo == hi:
-        return s[lo]
-    return s[lo] + (s[hi] - s[lo]) * (k - lo)
+def _combined_results(results: dict) -> dict:
+    metadata = dict(results["metadata"])
+    engine_label = metadata.get("engines", "PyCanopy development")
+    engine_version = engine_label.removeprefix("PyCanopy ")
+    queries = {
+        query_id: {
+            "status": result.get("status", "error"),
+            "seconds": result.get("pycanopy_seconds"),
+            "run_times": result.get("run_times", []),
+            "error": result.get("error", ""),
+        }
+        for query_id, result in results["queries"].items()
+    }
+    return {
+        "scale_factor": results["scale_factor"],
+        "index_mode": results["index_mode"],
+        "engine_order": ["pycanopy"],
+        "engines": {
+            "pycanopy": {
+                "id": "pycanopy",
+                "version": engine_version,
+                "metadata": metadata,
+                "queries": queries,
+            }
+        },
+        "metadata": metadata,
+    }
 
 
 def write_results_txt(results: dict, out_path: Path) -> None:
-    """Write a plain-text results table alongside the chart PNG.
+    """Write a PyCanopy result through the shared multi-engine reporter."""
+    from bench.spatial_bench.report import write_results_txt as write_combined  # noqa: PLC0415
 
-    Rows are sorted by query id. Each row shows the averaged PyCanopy time and, when
-    more than one run was recorded, the individual run times in parentheses.
-
-    Args:
-        results: Measured results dict (scale_factor, index_mode, per-query timings).
-        out_path: Destination text file path.
-    """
-    sf = int(results["scale_factor"])
-    mode = results["index_mode"]
-    qs = results["queries"]
-    qids = sorted(qs, key=lambda q: int(q[1:]))
-
-    lines = [f"Apache SpatialBench SF{sf}  index mode: {mode}", "", "Run metadata", "------------"]
-    lines.extend(f"{key}: {value}" for key, value in results["metadata"].items())
-    lines.extend(["", "Results", "-------"])
-    header = f"{'query':<8}  {'avg (s)':>10}  runs (s)"
-    lines.append(header)
-    lines.append("-" * len(header))
-
-    for qid in qids:
-        q = qs[qid]
-        status = q.get("status", "error")
-        if status == "timeout":
-            lines.append(f"{qid:<8}  {'TIMEOUT':>10}")
-        elif status != "ok" or q.get("pycanopy_seconds") is None:
-            lines.append(f"{qid:<8}  {'INVALID':>10}  {status}")
-        else:
-            avg = q["pycanopy_seconds"]
-            run_times = q.get("run_times", [])
-            avg_str = f"{avg:.2f}"
-            if len(run_times) > 1:
-                runs_str = ", ".join(f"{t:.2f}" for t in run_times)
-                lines.append(f"{qid:<8}  {avg_str:>10}  ({runs_str})")
-            else:
-                lines.append(f"{qid:<8}  {avg_str:>10}")
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text("\n".join(lines) + "\n")
+    write_combined(_combined_results(results), out_path)
 
 
 def write_chart(results: dict, out_path: Path) -> None:
-    """Render current-workload PyCanopy timings without historical baselines.
+    """Render a PyCanopy result through the shared multi-engine reporter."""
+    from bench.spatial_bench.report import write_chart as write_combined  # noqa: PLC0415
 
-    Args:
-        results: Measured results dict (scale_factor, index_mode, per-query timings).
-        out_path: Destination PNG path.
-    """
-    # Matplotlib is bench-only; verification utilities must import with dev dependencies alone
-    import matplotlib  # noqa: PLC0415
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt  # noqa: PLC0415
-
-    sf = int(results["scale_factor"])
-    mode = results["index_mode"]
-    qs = results["queries"]
-    qids = sorted(qs, key=lambda q: int(q[1:]))
-    finite = [
-        value for qid in qids if isinstance(value := qs[qid].get("pycanopy_seconds"), (int, float))
-    ]
-    cap = _nice_cap(_pct(finite, 0.90)) if finite else 1.0
-    truncated = any(v > cap for v in finite)
-
-    fig, ax = plt.subplots(figsize=(8.2, 1.4 + 0.48 * len(qids)))
-    ax.set_axisbelow(True)
-
-    for position in range(len(qids)):
-        if position % 2:
-            ax.axhspan(position - 0.5, position + 0.5, color="#F4F7FA", zorder=0)
-
-    for position, qid in enumerate(qids):
-        value = qs[qid].get("pycanopy_seconds")
-        if value is None:
-            ax.text(
-                cap * 0.012,
-                position,
-                qs[qid].get("status", "error"),
-                ha="left",
-                va="center",
-                fontsize=7,
-                color="#3C7FA6",
-                fontstyle="italic",
-            )
-            continue
-        ax.barh(position, min(value, cap), height=0.62, color="#2C7FB8", zorder=2)
-        label = f"{value:.2f}" if value < 1 else f"{value:.1f}"
-        ax.text(
-            min(value, cap) + cap * 0.012,
-            position,
-            f"... {label}" if value > cap else label,
-            ha="left",
-            va="center",
-            fontsize=7,
-            color="#555555",
-        )
-
-    step = _nice_cap(cap / 6)
-    ticks, t = [], 0.0
-    while t <= cap + 1e-9:
-        ticks.append(round(t, 6))
-        t += step
-    ax.set_xticks(ticks)
-    ax.set_xlim(0, cap * 1.16)
-    ax.set_ylim(-0.5, len(qids) - 0.5)
-    ax.invert_yaxis()
-    ax.set_yticks(range(len(qids)))
-    ax.set_yticklabels(qids)
-    ax.set_xlabel("run time (seconds)")
-    ax.grid(axis="x", which="major", color="#E6E6E6", lw=0.6, zorder=0)
-    ax.tick_params(length=0)
-    for spine in ("top", "right"):
-        ax.spines[spine].set_visible(False)
-
-    subtitle = f"dataset {DATASET_VERSION}    index mode: {mode}"
-    if truncated:
-        subtitle += f"    bars past {cap:g}s truncated"
-    ax.set_title(
-        f"Apache SpatialBench SF{sf}: PyCanopy\n{subtitle}",
-        fontsize=10,
-    )
-    fig.tight_layout()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=140)
-    plt.close(fig)
+    write_combined(_combined_results(results), out_path)
 
 
 def run_suite(

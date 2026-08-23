@@ -7,17 +7,24 @@ pins workload revision `b9221a9c4b02b10db20611d79b4019d2b3c4b68e`, official data
 
 ## Methodology
 
-**Hardware:** Ephemeral **m7i.2xlarge** (8 vCPU, 32 GB RAM, `us-west-2`) launched for each run.
+**Hardware:** One ephemeral **m7i.2xlarge** (8 vCPU, 32 GB RAM, `us-west-2`) is launched
+per selected engine. Engine nodes run concurrently and use identical infrastructure.
 
 **Timed S3 reads:** Queries read projected Parquet columns directly from the public SpatialBench
 SF1 or SF10 dataset in `us-west-2`. The data is not staged on EC2 or downloaded to the launcher
 machine. Timings include these reads, matching Apache's published single-node methodology.
 
-**Process isolation:** Each query runs in a fresh Python subprocess (`_runner.py`), so Python
+**Process isolation:** Each query runs in a fresh Python subprocess, so Python
 objects, spatial indexes, and in-process caches are not reused between queries.
+
+**Engine releases:** Ordinary runs install the latest PyPI release of each selected engine.
+Supported engines are PyCanopy, DuckDB, SedonaDB, and GeoPandas. Their exact installed versions
+are recorded in the text report. Profile mode instead builds PyCanopy from the configured branch.
 
 **Repetitions:** Each query runs `--n` times (default 3) in separate subprocesses. Every requested
 sample must finish. Partial sample sets are invalid.
+
+**Timeout:** Each query attempt has the published single-node limit of 1,200 seconds.
 
 **Run metadata:** Text results record public, comparison-relevant run context: timestamp, workload,
 dataset, engine version, query configuration, system and CPU details, and cloud/EBS configuration.
@@ -32,36 +39,37 @@ duration and final-row boundary rules documented in `answers/README.md`.
 fetch, execute, and materialization wall boundaries. It writes `assets/profile.txt` and
 verifies the result against the committed answer.
 
-Historical SedonaDB, DuckDB, and GeoPandas bars are intentionally omitted. They used earlier query
-definitions and cannot be compared with this workload until those engines are rerun.
-
 ## Usage
 
-Requires AWS credentials with EC2 + S3 permissions. See `config.yaml` for bucket and instance
+Requires AWS credentials with EC2 + S3 permissions. See `config.py` for bucket and instance
 configuration.
 
 ```
-# Standard benchmark run (all queries)
-python -m bench.spatial_bench --scale-factor {1,10} [--index-eager|--index-auto|--index-none] [--n N]
+# Compare selected engines (all queries)
+python -m bench.spatial_bench --scale-factor 1 \
+  --engine pycanopy duckdb sedonadb geopandas
+
+# PyCanopy-only run with an explicit index policy and repetition count
+python -m bench.spatial_bench --scale-factor 10 --engine pycanopy --index-auto --n 3
 
 # Run only specific queries (useful for debugging individual queries)
-python -m bench.spatial_bench --scale-factor 1 --query q12
-python -m bench.spatial_bench --scale-factor 1 --query q4 q10 q11
+python -m bench.spatial_bench --scale-factor 1 --engine pycanopy duckdb --query q12
+python -m bench.spatial_bench --scale-factor 1 --engine sedonadb geopandas --query q4 q10 q11
 
 # Per-stage profiling + verification (SF1 only)
 python -m bench.spatial_bench --profile
 ```
 
-The launcher spins up an EC2 instance, polls S3 for progress, downloads the result artifacts, and
-terminates the instance when done. Normal mode writes PNG and text results. Profile mode writes a
-text report.
+The launcher spins up one EC2 instance per engine, polls them concurrently, combines their
+transport files, and terminates every instance when done. Normal mode writes one grouped PNG and
+one text report. Profile mode uses one PyCanopy instance and writes `profile.txt`.
 
 ## IAM setup
 
 The EC2 instance uses an instance role (no keys injected). The role needs:
 
 - access to read the public SpatialBench S3 dataset
-- `s3:PutObject` / `s3:GetObject` on the results bucket specified in `config.yaml`
+- `s3:PutObject` / `s3:GetObject` on the results bucket specified in `config.py`
 
 The local launcher also needs SSM read, EC2 lifecycle, `iam:PassRole`, and results-bucket read permissions.
 
@@ -69,18 +77,26 @@ The local launcher also needs SSM read, EC2 lifecycle, `iam:PassRole`, and resul
 
 ```
 bench/spatial_bench/
-├── __main__.py      # local launcher: spin up EC2, poll S3, download chart, terminate
-├── _onbox.py        # on-box suite driver: loops over queries, calls _runner.py
-├── _runner.py       # per-query subprocess entry point (one fresh interpreter per run)
-├── _profile.py      # profile mode: Engine metrics, wall boundaries, and RSS
-├── _verify.py       # upstream answer comparison semantics
+├── __main__.py      # launch, monitor, and combine isolated engine nodes
+├── engine_suite.py  # ordinary on-box measurement and TSV transport
+├── engine_runner.py # isolated non-PyCanopy query entry point
+├── onbox.py         # PyCanopy profile suite driver
+├── runner.py        # isolated PyCanopy query entry point
+├── profile.py       # profile mode: Engine metrics, wall boundaries, and RSS
+├── report.py        # combined text and legacy-style grouped chart
+├── verify.py        # upstream answer comparison semantics
 ├── answers/         # pinned upstream CSV and type-faithful Parquet answers
 ├── utils.py         # data loading, measurement, and reporting
-├── config.yaml      # fixed infra config: bucket, instance type, repo URL + branch
-├── bootstrap.sh     # EC2 user-data: install deps, clone repo, build PyCanopy, run suite
-└── queries/
-    ├── __init__.py  # registers all query modules in _BY_ID
-    ├── q01.py       # one module per current query definition
-    ├── ...
-    └── q12.py
+├── config.py        # workload, dataset, engine, timing, and infrastructure settings
+├── bootstrap.sh     # EC2 user-data: install one engine and run its suite
+├── queries/
+│   ├── pycanopy/    # q01.py through q12.py
+│   ├── duckdb/      # q01.py through q12.py
+│   ├── sedonadb/    # q01.py through q12.py
+│   └── geopandas/   # q01.py through q12.py
+└── engines/
+    ├── pycanopy/    # ordinary execution adapter
+    ├── duckdb/      # ordinary execution adapter
+    ├── sedonadb/    # ordinary execution adapter
+    └── geopandas/   # ordinary execution adapter
 ```

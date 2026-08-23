@@ -1032,7 +1032,6 @@ bench = [
     { name = "geoarrow-pyarrow" },
     { name = "matplotlib", version = "3.10.9", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "matplotlib", version = "3.11.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "pyyaml" },
     { name = "shapely" },
 ]
 dev = [
@@ -1063,7 +1062,6 @@ bench = [
     { name = "boto3", specifier = ">=1.34" },
     { name = "geoarrow-pyarrow", specifier = ">=0.1" },
     { name = "matplotlib", specifier = ">=3.7" },
-    { name = "pyyaml", specifier = ">=6.0" },
     { name = "shapely", specifier = ">=2.0" },
 ]
 dev = [

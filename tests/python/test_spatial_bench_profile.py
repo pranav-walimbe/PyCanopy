@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-_profile = pytest.importorskip("bench.spatial_bench._profile")
+_profile = pytest.importorskip("bench.spatial_bench.profile")
 
 
 def _engine(engine_id, calls, rows, elapsed):

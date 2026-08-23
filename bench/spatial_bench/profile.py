@@ -13,7 +13,7 @@ from pathlib import Path
 
 import polars as pl
 
-from bench.spatial_bench._verify import DATASET_VERSION, WORKLOAD_REVISION
+from bench.spatial_bench.config import DATASET_VERSION, WORKLOAD_REVISION
 from bench.spatial_bench.utils import _ASSETS_DIR, SpatialBenchTables, spawn_query
 
 _STAGES = ("fetch", "execute", "materialize")

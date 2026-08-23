@@ -7,17 +7,16 @@ from __future__ import annotations
 import argparse
 import sys
 
-from bench.spatial_bench import queries as query_registry
-from bench.spatial_bench._profile import run_profile_suite
+from bench.spatial_bench.config import DEFAULT_RUNS, PUBLIC_DATA_TEMPLATE, SUPPORTED_SCALE_FACTORS
+from bench.spatial_bench.profile import run_profile_suite
+from bench.spatial_bench.queries import pycanopy as query_registry
 from bench.spatial_bench.utils import run_suite
-
-_DATA_TEMPLATE = "s3://wherobots-examples/data/spatialbench/SpatialBench_sf{sf}"
 
 
 def _build_parser() -> argparse.ArgumentParser:
     # CLI for the on-box benchmark runner
     parser = argparse.ArgumentParser(description="Measure PyCanopy on SpatialBench.")
-    parser.add_argument("--scale-factor", type=int, choices=(1, 10), required=True)
+    parser.add_argument("--scale-factor", type=int, choices=SUPPORTED_SCALE_FACTORS, required=True)
     parser.add_argument(
         "--data-dir",
         help="Dataset root, defaulting to the published SpatialBench S3 source.",
@@ -29,7 +28,7 @@ def _build_parser() -> argparse.ArgumentParser:
     index_group.add_argument("--index-auto", action="store_const", const="auto", dest="index_mode")
     index_group.add_argument("--index-none", action="store_const", const="none", dest="index_mode")
     parser.set_defaults(index_mode="auto")
-    parser.add_argument("--n", type=int, default=3, metavar="N")
+    parser.add_argument("--n", type=int, default=DEFAULT_RUNS, metavar="N")
     parser.add_argument("--profile", action="store_true")
     parser.add_argument("--query", nargs="+", metavar="ID", help="Run only these query IDs.")
     return parser
@@ -49,10 +48,10 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--profile runs the SF1 workload; pass --scale-factor 1")
     if args.n < 1:
         raise SystemExit("--n must be at least 1")
-    data_dir = args.data_dir or _DATA_TEMPLATE.replace("{sf}", str(args.scale_factor))
+    data_dir = args.data_dir or PUBLIC_DATA_TEMPLATE.format(scale_factor=args.scale_factor)
     qs = query_registry.ALL
     if args.query:
-        unknown = sorted(set(args.query) - query_registry._BY_ID.keys())
+        unknown = sorted(set(args.query) - query_registry.BY_ID.keys())
         if unknown:
             raise SystemExit(f"unknown query IDs: {', '.join(unknown)}")
         ids = set(args.query)

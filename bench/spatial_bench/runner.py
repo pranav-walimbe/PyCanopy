@@ -9,10 +9,10 @@ import json
 import sys
 import time as _time
 
-from bench.spatial_bench import queries
-from bench.spatial_bench._profile import ProfilingTables, profile_payload
-from bench.spatial_bench._verify import verify_output
+from bench.spatial_bench.profile import ProfilingTables, profile_payload
+from bench.spatial_bench.queries import pycanopy as queries
 from bench.spatial_bench.utils import SpatialBenchTables
+from bench.spatial_bench.verify import verify_output
 from pycanopy.engine import _capture_engine_metrics
 
 
@@ -34,7 +34,7 @@ def main() -> None:
     parser.add_argument("--profile", action="store_true")
     args = parser.parse_args()
 
-    qmodule = queries._BY_ID.get(args.query_id)
+    qmodule = queries.BY_ID.get(args.query_id)
     if qmodule is None:
         print(f"PYCANOPY_ERROR=unknown query {args.query_id!r}", flush=True)
         sys.exit(1)

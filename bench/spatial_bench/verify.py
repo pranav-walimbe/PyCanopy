@@ -7,8 +7,9 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-WORKLOAD_REVISION = "b9221a9c4b02b10db20611d79b4019d2b3c4b68e"
-DATASET_VERSION = "v0.1.0"
+from bench.spatial_bench.config import DATASET_VERSION, WORKLOAD_REVISION
+
+__all__ = ["DATASET_VERSION", "WORKLOAD_REVISION", "verify_output"]
 
 _ANSWERS_DIR = Path(__file__).with_name("answers")
 _LIMIT_QUERIES = {"q1", "q5", "q7", "q9", "q10", "q12"}

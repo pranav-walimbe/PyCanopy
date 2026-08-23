@@ -1,0 +1,1 @@
+"""SedonaDB SpatialBench adapter."""

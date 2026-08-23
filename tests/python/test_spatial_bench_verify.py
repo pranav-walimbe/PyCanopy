@@ -6,8 +6,8 @@ import polars as pl
 import pytest
 import shapely
 
-from bench.spatial_bench import _verify
-from bench.spatial_bench.queries import q04, q05, q12
+from bench.spatial_bench import verify as _verify
+from bench.spatial_bench.queries.pycanopy import q04, q05, q12
 from pycanopy import SpatialFrame, executor
 
 
@@ -110,7 +110,7 @@ def test_measure_query_does_not_require_verification(monkeypatch):
     ],
 )
 def test_onbox_rejects_invalid_run_selection(args, message):
-    _onbox = pytest.importorskip("bench.spatial_bench._onbox")
+    _onbox = pytest.importorskip("bench.spatial_bench.onbox")
     with pytest.raises(SystemExit, match=message):
         _onbox.main(args)
 
