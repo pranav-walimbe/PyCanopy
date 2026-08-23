@@ -35,9 +35,6 @@ def write_transport(
         engine_version: Installed version of the measured engine.
         metadata: Run metadata recorded on the box.
         results: Per-query result dicts keyed by query id.
-
-    Returns:
-        None.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="") as stream:
@@ -68,9 +65,6 @@ def read_transport(path: Path) -> dict:
 
     Returns:
         A dict with the engine id, version, metadata, and per-query results.
-
-    Raises:
-        ValueError: If the file carries no engine row.
     """
     result = {"metadata": {}, "queries": {}}
     with path.open(newline="") as stream:
@@ -97,16 +91,13 @@ _SEP = "=" * 76
 _SUBSEP = "-" * 76
 
 
-def combine_transports(
-    paths: list[Path], engines: list[str], scale_factor: int, index_mode: str
-) -> dict:
+def combine_transports(paths: list[Path], engines: list[str], scale_factor: int) -> dict:
     """Combine transports in the requested engine order.
 
     Args:
         paths: Downloaded transport files, in any order.
         engines: Engine ids in the order they should be reported.
         scale_factor: Dataset scale factor for the run.
-        index_mode: PyCanopy index build policy for the run.
 
     Returns:
         One combined results dict covering every requested engine.
@@ -114,7 +105,6 @@ def combine_transports(
     parsed = {item["id"]: item for item in (read_transport(path) for path in paths)}
     combined = {
         "scale_factor": scale_factor,
-        "index_mode": index_mode,
         "engine_order": engines,
         "engines": {},
         "metadata": {},
@@ -137,8 +127,6 @@ def combine_transports(
         f"{ENGINES[engine]['display_name']} {combined['engines'][engine]['version']}"
         for engine in engines
     )
-    if "pycanopy" in engines:
-        combined["metadata"]["PyCanopy index mode"] = index_mode
     return combined
 
 
@@ -154,9 +142,6 @@ def write_results_txt(results: dict, out_path: Path) -> None:
     Args:
         results: Combined results dict from combine_transports.
         out_path: Destination text path.
-
-    Returns:
-        None.
     """
     sf = results["scale_factor"]
     engines = results["engine_order"]
@@ -220,9 +205,6 @@ def write_chart(results: dict, out_path: Path) -> None:
     Args:
         results: Combined results dict from combine_transports.
         out_path: Destination PNG path.
-
-    Returns:
-        None.
     """
     import matplotlib  # noqa: PLC0415
 
@@ -306,8 +288,6 @@ def write_chart(results: dict, out_path: Path) -> None:
         axis.spines[spine].set_visible(False)
 
     subtitle = f"dataset {DATASET_VERSION}    all engines measured on isolated matching nodes"
-    if "pycanopy" in engines:
-        subtitle += f"    PyCanopy index mode: {results['index_mode']}"
     if truncated:
         subtitle += f"    bars past {cap:g}s truncated"
     labels = " / ".join(ENGINES[engine]["display_name"] for engine in engines)
@@ -376,19 +356,15 @@ def _section(query_id: str, result: dict) -> str:
     return "\n".join(lines)
 
 
-def write_profile(results: dict, index_mode: str, out_path: Path) -> None:
+def write_profile(results: dict, out_path: Path) -> None:
     """Write the human-readable SF1 profile report.
 
     Args:
         results: Per-query profile result dicts keyed by query id.
-        index_mode: PyCanopy index build policy used for the run.
         out_path: Destination text path.
-
-    Returns:
-        None.
     """
     head = (
-        f"PyCanopy Apache SpatialBench SF1 profile (index_mode={index_mode}, 1 run/query)\n"
+        "PyCanopy Apache SpatialBench SF1 profile (1 run/query)\n"
         f"Dataset {DATASET_VERSION}, workload revision {WORKLOAD_REVISION}\n"
         "Engine times are always-on production metrics. Harness stages are wall boundaries.\n"
         f"RSS is sampled every {int(RSS_SAMPLE_INTERVAL * 1000)} ms. Verification uses the "

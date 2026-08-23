@@ -6,21 +6,25 @@ from __future__ import annotations
 
 import polars as pl
 
-from pycanopy import wkb_points_to_xy
+from bench.spatial_bench.config import STORAGE_OPTIONS
+from pycanopy import SpatialFrame, wkb_points_to_xy
 
 id = "q11"
 title = "Count trips that cross between different zones"
 
-TABLES_NEEDED = {
-    "trip": ["t_tripkey", "t_pickuploc", "t_dropoffloc"],
-    "zone": ["z_zonekey", "z_boundary"],
-}
 
-
-def pycanopy(tables) -> pl.DataFrame:
-    inputs = tables.parallel_fetch(TABLES_NEEDED)
-    trip, zone = inputs["trip"], inputs["zone"]
-    sf = tables.polygon_frame(zone, "z_boundary")
+def pycanopy(data_paths: dict[str, str]) -> pl.DataFrame:
+    trip, zone = pl.collect_all(
+        [
+            pl.scan_parquet(data_paths["trip"], storage_options=STORAGE_OPTIONS).select(
+                ["t_tripkey", "t_pickuploc", "t_dropoffloc"]
+            ),
+            pl.scan_parquet(data_paths["zone"], storage_options=STORAGE_OPTIONS).select(
+                ["z_zonekey", "z_boundary"]
+            ),
+        ]
+    )
+    sf = SpatialFrame.from_wkb_polygons(zone, "z_boundary")
 
     px, py = wkb_points_to_xy(trip["t_pickuploc"])
     dx, dy = wkb_points_to_xy(trip["t_dropoffloc"])

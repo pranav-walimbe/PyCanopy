@@ -9,9 +9,9 @@ import time
 
 from bench.spatial_bench.config import (
     ENGINE_IDS,
-    INDEX_MODES,
     RUNNER_PREFIX,
     SUPPORTED_SCALE_FACTORS,
+    TABLES,
 )
 from bench.spatial_bench.engines import load_runner
 
@@ -29,11 +29,11 @@ def _materialize(result):
     return result
 
 
-def _run_timed(engine: str, query_id: str, data_dir: str, index_mode: str) -> None:
+def _run_timed(engine: str, query_id: str, data_dir: str) -> None:
     # Ordinary measurement path: prepare the engine, then time execution plus materialization
     runner = load_runner(engine)
     try:
-        runner.prepare(data_dir, index_mode)
+        runner.prepare(data_dir)
         started = time.perf_counter()
         result = runner.execute(query_id)
         materialize_started = time.perf_counter()
@@ -45,12 +45,12 @@ def _run_timed(engine: str, query_id: str, data_dir: str, index_mode: str) -> No
     _emit("TIME", f"{finished - started:.6f}")
 
 
-def _run_profiled(query_id: str, data_dir: str, index_mode: str, scale_factor: int) -> None:
+def _run_profiled(query_id: str, data_dir: str, scale_factor: int) -> None:
     # Profile path: PyCanopy only, with stage boundaries, Engine metrics, and answer
     # verification. These imports are deferred because an ordinary run of another engine
     # installs neither PyCanopy nor Polars on the box.
-    from bench.spatial_bench.fetch_utils import ProfilingTables  # noqa: PLC0415
     from bench.spatial_bench.profiler_utils import (  # noqa: PLC0415
+        StageProfiler,
         profile_payload,
         verify_output,
     )
@@ -61,18 +61,20 @@ def _run_profiled(query_id: str, data_dir: str, index_mode: str, scale_factor: i
     if query is None:
         raise SystemExit(f"unknown query {query_id!r}")
 
-    tables = ProfilingTables(data_dir=data_dir, index_mode=index_mode)
+    root = data_dir.rstrip("/")
+    data_paths = {table: f"{root}/{table}/**/*.parquet" for table in TABLES}
+    profiler = StageProfiler()
     with _capture_engine_metrics() as capture:
         started = time.perf_counter()
-        result = query.pycanopy(tables)
-        with tables.profiler.stage("materialize"):
+        result = query.pycanopy(data_paths)
+        with profiler.stage("materialize"):
             result = _materialize(result)
         elapsed = time.perf_counter() - started
         engine_metrics = capture.take_metrics()
-    tables.profiler.stop()
+    profiler.stop()
 
     _emit("TIME", f"{elapsed:.6f}")
-    _emit("PROFILE", json.dumps(profile_payload(tables.profiler, elapsed, engine_metrics)))
+    _emit("PROFILE", json.dumps(profile_payload(profiler, elapsed, engine_metrics)))
     try:
         matched, detail = verify_output(result, query_id, scale_factor)
         _emit("MATCH" if matched else "MISMATCH", detail)
@@ -93,7 +95,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("engine", choices=ENGINE_IDS)
     parser.add_argument("query_id")
     parser.add_argument("data_dir")
-    parser.add_argument("index_mode", choices=INDEX_MODES)
     parser.add_argument("--profile", action="store_true")
     parser.add_argument("--scale-factor", type=int, choices=SUPPORTED_SCALE_FACTORS, default=1)
     args = parser.parse_args(argv)
@@ -104,9 +105,9 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.profile:
-            _run_profiled(args.query_id, args.data_dir, args.index_mode, args.scale_factor)
+            _run_profiled(args.query_id, args.data_dir, args.scale_factor)
         else:
-            _run_timed(args.engine, args.query_id, args.data_dir, args.index_mode)
+            _run_timed(args.engine, args.query_id, args.data_dir)
     except Exception as exc:
         _emit("ERROR", f"{type(exc).__name__}: {exc}")
         return 1

@@ -6,7 +6,7 @@ import shapely
 
 from bench.spatial_bench import profiler_utils as _verify
 from bench.spatial_bench.queries.pycanopy import q04, q05, q12
-from pycanopy import SpatialFrame, executor
+from pycanopy import executor
 
 
 def _write_answer(root, query_id: str, frame: pl.DataFrame) -> None:
@@ -71,7 +71,7 @@ def test_measure_rejects_partial_sample_set(monkeypatch):
     responses = [{"status": "ok", "time": 1.0, "values": {}}, {"status": "timeout"}]
     monkeypatch.setattr(driver, "_spawn", lambda *args, **kwargs: responses.pop(0))
 
-    result = driver._measure("pycanopy", "q1", "/data", "auto", runs=3)
+    result = driver._measure("pycanopy", "q1", "/data", runs=3)
 
     assert result == {"status": "timeout", "run_times": [1.0]}
 
@@ -82,7 +82,7 @@ def test_measure_averages_every_completed_run(monkeypatch):
         driver, "_spawn", lambda *args, **kwargs: {"status": "ok", "time": 1.0, "values": {}}
     )
 
-    result = driver._measure("pycanopy", "q1", "/data", "auto", runs=1)
+    result = driver._measure("pycanopy", "q1", "/data", runs=1)
 
     assert result == {"status": "ok", "seconds": 1.0, "run_times": [1.0]}
 
@@ -107,9 +107,9 @@ def test_suite_rejects_invalid_run_selection(args, message):
 
 def test_results_txt_records_public_metadata_without_source_path(tmp_path):
     driver = pytest.importorskip("bench.spatial_bench.driver_utils")
-    results = pytest.importorskip("bench.spatial_bench.results_utils")
+    results = pytest.importorskip("bench.spatial_bench.report_utils")
 
-    metadata = driver.collect_metadata("pycanopy", "s3://private-bucket/data", 1, "auto", 3)
+    metadata = driver.collect_metadata("pycanopy", "s3://private-bucket/data", 1, 3)
     path = tmp_path / "pycanopy-results.tsv"
     results.write_transport(
         path,
@@ -118,7 +118,7 @@ def test_results_txt_records_public_metadata_without_source_path(tmp_path):
         metadata,
         {"q1": {"status": "ok", "seconds": 1.0, "run_times": [1.0]}},
     )
-    combined = results.combine_transports([path], ["pycanopy"], 1, "auto")
+    combined = results.combine_transports([path], ["pycanopy"], 1)
     output = tmp_path / "results.txt"
 
     results.write_results_txt(combined, output)
@@ -140,29 +140,18 @@ def test_pinned_answers_include_csv_and_typed_parquet():
             assert answer.width > 0
 
 
-class _QueryTables:
-    def __init__(self, frames: dict[str, pl.DataFrame]) -> None:
-        self._frames = frames
-        self.scan_requests: list[tuple[str, list[str]]] = []
-
-    def parallel_fetch(self, needs) -> dict[str, pl.DataFrame]:
-        return {name: self._frames[name].select(columns) for name, columns in needs.items()}
-
-    def table(self, name: str, columns: list[str]) -> pl.DataFrame:
-        return self._frames[name].select(columns)
-
-    def scan(self, name: str, columns: list[str]) -> pl.LazyFrame:
-        self.scan_requests.append((name, columns))
-        return self._frames[name].lazy().select(columns)
-
-    def collect_all(self, frames: list[pl.LazyFrame]) -> list[pl.DataFrame]:
-        return pl.collect_all(frames)
-
-    def polygon_frame(self, frame: pl.DataFrame, geometry_col: str) -> SpatialFrame:
-        return SpatialFrame.from_wkb_polygons(frame, geometry_col, index_mode="none")
+def _data_paths(tmp_path, frames: dict[str, pl.DataFrame]) -> dict[str, str]:
+    # Write the frames as parquet and return the table -> glob map the runner hands to a query
+    paths = {}
+    for name, frame in frames.items():
+        directory = tmp_path / name
+        directory.mkdir(parents=True, exist_ok=True)
+        frame.write_parquet(directory / "0.parquet")
+        paths[name] = f"{directory}/**/*.parquet"
+    return paths
 
 
-def test_q4_fetches_geometry_after_selecting_top_trips():
+def test_q4_fetches_geometry_after_selecting_top_trips(monkeypatch, tmp_path):
     trips = pl.DataFrame(
         {
             "t_tripkey": list(range(1001)),
@@ -177,19 +166,31 @@ def test_q4_fetches_geometry_after_selecting_top_trips():
             "z_boundary": [shapely.box(0, 0, 1, 1).wkb],
         }
     )
-    tables = _QueryTables({"trip": trips, "zone": zones})
+    paths = _data_paths(tmp_path, {"trip": trips, "zone": zones})
+    collected: list[tuple[list[str], int]] = []
+    base_collect, base_collect_all = pl.LazyFrame.collect, pl.collect_all
 
-    result = q04.pycanopy(tables)
+    def record(frame: pl.DataFrame) -> pl.DataFrame:
+        collected.append((frame.columns, frame.height))
+        return frame
+
+    monkeypatch.setattr(
+        pl.LazyFrame, "collect", lambda self, *a, **k: record(base_collect(self, *a, **k))
+    )
+    monkeypatch.setattr(
+        pl,
+        "collect_all",
+        lambda frames, *a, **k: [record(f) for f in base_collect_all(frames, *a, **k)],
+    )
+
+    result = q04.pycanopy(paths)
 
     assert result["trip_count"].to_list() == [1000]
-    assert tables.scan_requests == [
-        ("trip", ["t_tripkey", "t_tip"]),
-        ("zone", ["z_zonekey", "z_name", "z_boundary"]),
-        ("trip", ["t_tripkey", "t_pickuploc"]),
-    ]
+    # The geometry column must only ever materialize for the top trips, never for all 1001.
+    assert [height for columns, height in collected if "t_pickuploc" in columns] == [q04.TOP_N]
 
 
-def test_q5_groups_before_customer_lookup_without_changing_result():
+def test_q5_groups_before_customer_lookup_without_changing_result(tmp_path):
     timestamp = pl.datetime_range(
         pl.datetime(2000, 1, 1),
         pl.datetime(2000, 1, 12),
@@ -221,7 +222,7 @@ def test_q5_groups_before_customer_lookup_without_changing_result():
     )
     customers = pl.DataFrame({"c_custkey": [1, 2], "c_name": ["alice", "bob"]})
 
-    result = q05.pycanopy(_QueryTables({"trip": trips, "customer": customers}))
+    result = q05.pycanopy(_data_paths(tmp_path, {"trip": trips, "customer": customers}))
 
     assert result["c_custkey"].to_list() == [2, 1]
     assert result["customer_name"].to_list() == ["bob", "alice"]
@@ -229,7 +230,7 @@ def test_q5_groups_before_customer_lookup_without_changing_result():
     assert result["monthly_travel_hull_area"].to_list() == [4.0, 1.0]
 
 
-def test_q12_reduces_knn_pairs_to_ranked_trip_averages(monkeypatch):
+def test_q12_reduces_knn_pairs_to_ranked_trip_averages(monkeypatch, tmp_path):
     monkeypatch.setattr(executor, "MORSEL_ROWS", 1)
     buildings = pl.DataFrame(
         {
@@ -244,7 +245,7 @@ def test_q12_reduces_knn_pairs_to_ranked_trip_averages(monkeypatch):
         }
     )
 
-    result = q12.pycanopy(_QueryTables({"building": buildings, "trip": trips}))
+    result = q12.pycanopy(_data_paths(tmp_path, {"building": buildings, "trip": trips}))
 
     assert result.columns == ["t_tripkey", "avg_distance_to_5_nearest"]
     assert result["t_tripkey"].to_list() == [2, 1]

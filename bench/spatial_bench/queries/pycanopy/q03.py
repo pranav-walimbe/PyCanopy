@@ -5,6 +5,9 @@ from __future__ import annotations
 import polars as pl
 from shapely.geometry import Polygon
 
+from bench.spatial_bench.config import STORAGE_OPTIONS
+from pycanopy import SpatialFrame
+
 id = "q3"
 title = "Monthly trip stats within ~5km of a Sedona bounding box"
 
@@ -22,9 +25,13 @@ BASE_POLY = Polygon(
 _COLS = ["t_pickuploc", "t_pickuptime", "t_dropofftime", "t_distance", "t_fare"]
 
 
-def pycanopy(tables) -> pl.DataFrame:
-    trip = tables.table("trip", _COLS)
-    sf = tables.point_frame(trip, "t_pickuploc")
+def pycanopy(data_paths: dict[str, str]) -> pl.DataFrame:
+    trip = pl.read_parquet(
+        data_paths["trip"],
+        columns=_COLS,
+        storage_options=STORAGE_OPTIONS,
+    )
+    sf = SpatialFrame.from_wkb_points(trip, "t_pickuploc")
     filtered = sf.points_within_distance_of_polygon(BASE_POLY, DISTANCE)
     filtered = filtered.with_columns(
         pickup_month=pl.col("t_pickuptime").dt.truncate("1mo"),

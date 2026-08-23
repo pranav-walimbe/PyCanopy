@@ -6,6 +6,9 @@ from __future__ import annotations
 
 import polars as pl
 
+from bench.spatial_bench.config import STORAGE_OPTIONS
+from pycanopy import SpatialFrame
+
 id = "q1"
 title = "Trips starting within ~50km of Sedona center"
 
@@ -13,9 +16,13 @@ CENTER = (-111.7610, 34.8697)
 RADIUS = 0.45  # degrees (~50km, planar)
 
 
-def pycanopy(tables) -> pl.DataFrame:
-    trip = tables.table("trip", ["t_tripkey", "t_pickuploc", "t_pickuptime"])
-    sf = tables.point_frame(trip, "t_pickuploc")
+def pycanopy(data_paths: dict[str, str]) -> pl.DataFrame:
+    trip = pl.read_parquet(
+        data_paths["trip"],
+        columns=["t_tripkey", "t_pickuploc", "t_pickuptime"],
+        storage_options=STORAGE_OPTIONS,
+    )
+    sf = SpatialFrame.from_wkb_points(trip, "t_pickuploc")
     near = sf.radius_query(CENTER[0], CENTER[1], RADIUS)
     result = near.with_columns(
         distance_to_center=(

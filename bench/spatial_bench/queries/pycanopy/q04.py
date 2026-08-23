@@ -7,36 +7,34 @@ from __future__ import annotations
 import polars as pl
 
 import pycanopy as pc
-from pycanopy import wkb_points_to_xy
+from bench.spatial_bench.config import STORAGE_OPTIONS
+from pycanopy import SpatialFrame, wkb_points_to_xy
 
 id = "q4"
 title = "Zone distribution of the top 1000 trips by tip"
 
 TOP_N = 1000
 
-TABLES_NEEDED = {
-    "trip": ["t_tripkey", "t_tip", "t_pickuploc"],
-    "zone": ["z_zonekey", "z_name", "z_boundary"],
-}
 
-
-def pycanopy(tables) -> pl.DataFrame:
-    top, zone = tables.collect_all(
+def pycanopy(data_paths: dict[str, str]) -> pl.DataFrame:
+    trip_scan = pl.scan_parquet(data_paths["trip"], storage_options=STORAGE_OPTIONS)
+    top, zone = pl.collect_all(
         [
-            tables.scan("trip", ["t_tripkey", "t_tip"])
+            trip_scan.select(["t_tripkey", "t_tip"])
             .sort(["t_tip", "t_tripkey"], descending=[True, False])
             .head(TOP_N)
             .select("t_tripkey"),
-            tables.scan("zone", TABLES_NEEDED["zone"]),
+            pl.scan_parquet(data_paths["zone"], storage_options=STORAGE_OPTIONS).select(
+                ["z_zonekey", "z_name", "z_boundary"]
+            ),
         ]
     )
-    trip = tables.collect_all(
-        [
-            tables.scan("trip", ["t_tripkey", "t_pickuploc"]).filter(
-                pl.col("t_tripkey").is_in(top["t_tripkey"].implode())
-            )
-        ]
-    )[0]
+    # Only the top trips need their geometry, so this second scan runs after the first result
+    trip = (
+        trip_scan.select(["t_tripkey", "t_pickuploc"])
+        .filter(pl.col("t_tripkey").is_in(top["t_tripkey"].implode()))
+        .collect()
+    )
 
     qx, qy = wkb_points_to_xy(trip["t_pickuploc"])
     query_df = trip.select("t_tripkey").with_columns(
@@ -45,7 +43,7 @@ def pycanopy(tables) -> pl.DataFrame:
     )
     del trip
 
-    sf = tables.polygon_frame(zone, "z_boundary")
+    sf = SpatialFrame.from_wkb_polygons(zone, "z_boundary")
 
     return (
         sf.lazy()

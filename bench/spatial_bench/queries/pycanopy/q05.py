@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import polars as pl
 
+from bench.spatial_bench.config import STORAGE_OPTIONS
 from pycanopy import Engine, wkb_points_to_xy
 
 id = "q5"
@@ -13,15 +14,18 @@ title = "Monthly travel hull area for repeat customers"
 
 MIN_TRIPS = 5
 
-TABLES_NEEDED = {
-    "trip": ["t_custkey", "t_dropoffloc", "t_pickuptime"],
-    "customer": ["c_custkey", "c_name"],
-}
 
-
-def pycanopy(tables) -> pl.DataFrame:
-    inputs = tables.parallel_fetch(TABLES_NEEDED)
-    trip, cust = inputs["trip"], inputs["customer"]
+def pycanopy(data_paths: dict[str, str]) -> pl.DataFrame:
+    trip, cust = pl.collect_all(
+        [
+            pl.scan_parquet(data_paths["trip"], storage_options=STORAGE_OPTIONS).select(
+                ["t_custkey", "t_dropoffloc", "t_pickuptime"]
+            ),
+            pl.scan_parquet(data_paths["customer"], storage_options=STORAGE_OPTIONS).select(
+                ["c_custkey", "c_name"]
+            ),
+        ]
+    )
 
     dx, dy = wkb_points_to_xy(trip["t_dropoffloc"])
     t = (

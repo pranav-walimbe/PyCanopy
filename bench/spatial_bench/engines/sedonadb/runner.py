@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+from bench.spatial_bench.config import TABLES
 from bench.spatial_bench.queries.sedonadb import QUERIES
 
 
 class Runner:
     """Execute pinned queries with SedonaDB."""
 
-    def prepare(self, data_dir: str, index_mode: str) -> None:
+    def prepare(self, data_dir: str) -> None:
         import sedonadb  # noqa: PLC0415
 
         self._connection = sedonadb.connect()
-        for table in ("building", "customer", "driver", "trip", "vehicle", "zone"):
+        for table in TABLES:
             path = f"{data_dir.rstrip('/')}/{table}/*.parquet"
             self._connection.read_parquet(
                 path,

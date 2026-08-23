@@ -7,9 +7,9 @@ DATASET_VERSION = "v0.1.0"
 SUPPORTED_SCALE_FACTORS = (1, 10)
 DEFAULT_RUNS = 3
 QUERY_TIMEOUT_SECONDS = 1200
-INDEX_MODES = ("auto", "eager", "none")
 RUNNER_PREFIX = "SPATIALBENCH"
 QUERY_IDS = tuple(f"q{index}" for index in range(1, 13))
+TABLES = ("building", "customer", "driver", "trip", "vehicle", "zone")
 
 ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
 ANSWERS_DIR = Path(__file__).resolve().parent / "answers"
@@ -25,6 +25,8 @@ ENGINES = {
     "geopandas": {"display_name": "GeoPandas", "package": "geopandas", "color": "#C9BBA8"},
 }
 ENGINE_IDS = tuple(ENGINES)
+
+STORAGE_OPTIONS = {"skip_signature": "true"}
 
 PUBLIC_DATA_ROOT = "s3://wherobots-examples/data/spatialbench"
 PUBLIC_DATA_TEMPLATE = f"{PUBLIC_DATA_ROOT}/SpatialBench_sf{{scale_factor}}"

@@ -3,7 +3,7 @@
 import pytest
 
 _profiling = pytest.importorskip("bench.spatial_bench.profiler_utils")
-_results = pytest.importorskip("bench.spatial_bench.results_utils")
+_results = pytest.importorskip("bench.spatial_bench.report_utils")
 
 
 def _engine(engine_id, calls, rows, elapsed):
@@ -74,7 +74,7 @@ def test_profile_suite_writes_artifacts_then_rejects_oracle_mismatch(tmp_path, m
     monkeypatch.setattr(driver, "ASSETS_DIR", tmp_path)
 
     with pytest.raises(RuntimeError, match="q1"):
-        driver.run_profile_suite(["q1"], "s3://example", "auto")
+        driver.run_profile_suite(["q1"], "s3://example")
 
     assert (tmp_path / "profile.txt").is_file()
     assert not (tmp_path / "profile.json").exists()
