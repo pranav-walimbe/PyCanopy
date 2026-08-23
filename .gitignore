@@ -41,6 +41,7 @@ docs/assets/
 
 # Internal development files
 CLAUDE.md
+AGENTS.md
 pycanopy_logo_files/
 scripts/
 
