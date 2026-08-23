@@ -57,9 +57,9 @@ report; `--profile` writes `assets/profile.txt`.
 
 ## Profiling
 
-`--profile` runs SF1 once per query and reports total and materialize wall time, sampled RSS
-against baseline, PyCanopy's own Engine metrics (per-index build cost and per-operation compute
-nanoseconds), and a verdict against the committed answer.
+`--profile` runs SF1 once per query and reports total wall time, sampled RSS against baseline,
+PyCanopy's own Engine metrics (per-index build cost and per-operation compute nanoseconds), and a
+verdict against the committed answer.
 
 Engine times are exact Rust compute; everything else, parquet reads included, falls into
 `non-engine wall`. Ordinary runs are timing-only.

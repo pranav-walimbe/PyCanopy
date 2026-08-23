@@ -326,8 +326,7 @@ def _section(query_id: str, result: dict) -> str:
         result["verify"], result["verify"]
     )
     lines += [
-        f"wall (s)      total {wall['total']:7.3f}  materialize {wall['materialize']:7.3f}",
-        f"               non-engine wall {wall['non_engine']:7.3f}",
+        f"wall (s)      total {wall['total']:7.3f}  non-engine {wall['non_engine']:7.3f}",
         f"memory (MiB)  peak {mib['peak']:8.1f}  baseline {mib['baseline']:8.1f}  "
         f"demand {mib['peak'] - mib['baseline']:+8.1f}",
         f"engines       {len(engine['engines'])}  WKB decode "

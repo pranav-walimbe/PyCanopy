@@ -48,7 +48,6 @@ def test_profile_suite_writes_artifacts_then_rejects_oracle_mismatch(tmp_path, m
     payload = {
         "time": {
             "total": 1.0,
-            "materialize": 0.1,
             "non_engine": 0.7,
         },
         "mem": {
