@@ -7,20 +7,25 @@ from __future__ import annotations
 import polars as pl
 
 import pycanopy as pc
-from pycanopy import wkb_points_to_xy
+from bench.spatial_bench.config import STORAGE_OPTIONS
+from pycanopy import SpatialFrame, wkb_points_to_xy
 
 id = "q10"
 title = "Per-zone trip stats (zones with zero trips retained)"
 
 _TRIP_COLS = ["t_pickuploc", "t_pickuptime", "t_dropofftime", "t_distance"]
 
-TABLES_NEEDED = {"zone": ["z_zonekey", "z_name", "z_boundary"], "trip": _TRIP_COLS}
 
-
-def pycanopy(tables) -> pl.DataFrame:
-    inputs = tables.parallel_fetch(TABLES_NEEDED)
-    zone, trip = inputs["zone"], inputs["trip"]
-    sf = tables.polygon_frame(zone, "z_boundary")
+def pycanopy(data_paths: dict[str, str]) -> pl.DataFrame:
+    zone, trip = pl.collect_all(
+        [
+            pl.scan_parquet(data_paths["zone"], storage_options=STORAGE_OPTIONS).select(
+                ["z_zonekey", "z_name", "z_boundary"]
+            ),
+            pl.scan_parquet(data_paths["trip"], storage_options=STORAGE_OPTIONS).select(_TRIP_COLS),
+        ]
+    )
+    sf = SpatialFrame.from_wkb_polygons(zone, "z_boundary")
 
     qx, qy = wkb_points_to_xy(trip["t_pickuploc"])
     qdf = trip.with_columns(

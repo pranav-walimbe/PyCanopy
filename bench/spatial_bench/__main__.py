@@ -35,7 +35,7 @@ from bench.spatial_bench.config import (
     VOLUME_IOPS,
     VOLUME_THROUGHPUT_MBPS,
 )
-from bench.spatial_bench.results_utils import (
+from bench.spatial_bench.report_utils import (
     combine_transports,
     write_chart,
     write_results_txt,
@@ -48,7 +48,6 @@ def _user_data(
     ami: str,
     run_id: str,
     scale_factor: int,
-    index_mode: str,
     profile: bool,
     n: int,
     engine: str,
@@ -59,7 +58,7 @@ def _user_data(
     if profile:
         bench_flags: list[str] = ["--profile"]
     else:
-        bench_flags = [f"--n {n}", f"--index-mode {index_mode}"]
+        bench_flags = [f"--n {n}"]
     if query_ids:
         bench_flags.append("--query " + " ".join(query_ids))
     repl = {
@@ -91,7 +90,6 @@ def _launch(
     ssm,
     run_id: str,
     scale_factor: int,
-    index_mode: str,
     profile: bool,
     n: int,
     engine: str,
@@ -104,7 +102,7 @@ def _launch(
         InstanceType=INSTANCE_TYPE,
         MinCount=1,
         MaxCount=1,
-        UserData=_user_data(ami, run_id, scale_factor, index_mode, profile, n, engine, query_ids),
+        UserData=_user_data(ami, run_id, scale_factor, profile, n, engine, query_ids),
         InstanceInitiatedShutdownBehavior="terminate",
         IamInstanceProfile={"Name": INSTANCE_PROFILE},
         BlockDeviceMappings=[
@@ -131,8 +129,7 @@ def _launch(
     )
     instance_id = resp["Instances"][0]["InstanceId"]
     print(
-        f"[ec2] launched {instance_id} ({INSTANCE_TYPE}, sf{scale_factor}, "
-        f"{engine}, {index_mode}, run {run_id})",
+        f"[ec2] launched {instance_id} ({INSTANCE_TYPE}, sf{scale_factor}, {engine}, run {run_id})",
         flush=True,
     )
     return instance_id
@@ -219,28 +216,6 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=SUPPORTED_SCALE_FACTORS,
         help="Scale factor to benchmark (1 or 10). Required unless --profile is given.",
     )
-    index_group = parser.add_mutually_exclusive_group()
-    index_group.add_argument(
-        "--index-eager",
-        action="store_const",
-        const="eager",
-        dest="index_mode",
-        help="Build an index at frame construction time (index build cost is inside the timed window).",
-    )
-    index_group.add_argument(
-        "--index-auto",
-        action="store_const",
-        const="auto",
-        dest="index_mode",
-        help="Build the index only when the cost model estimates it beats a full scan (default).",
-    )
-    index_group.add_argument(
-        "--index-none",
-        action="store_const",
-        const="none",
-        dest="index_mode",
-        help="Always scan; no index is built.",
-    )
     parser.add_argument(
         "--n",
         type=int,
@@ -273,14 +248,9 @@ def main(argv: list[str] | None = None) -> int:
     """
     args = _build_parser().parse_args(argv)
     if args.profile:
-        if (
-            args.engine is not None
-            or args.scale_factor is not None
-            or args.index_mode is not None
-            or args.n is not None
-        ):
+        if args.engine is not None or args.scale_factor is not None or args.n is not None:
             sys.exit("--profile takes no other flags (it runs SF1, one run, with verification)")
-        scale_factor, index_mode, n = 1, "auto", 1
+        scale_factor, n = 1, 1
         engines = ["pycanopy"]
     else:
         if args.scale_factor is None:
@@ -290,7 +260,6 @@ def main(argv: list[str] | None = None) -> int:
         if len(set(args.engine)) != len(args.engine):
             sys.exit("--engine values must be unique")
         scale_factor = args.scale_factor
-        index_mode = args.index_mode or "auto"
         n = args.n if args.n is not None else DEFAULT_RUNS
         engines = args.engine
         if n < 1:
@@ -314,7 +283,6 @@ def main(argv: list[str] | None = None) -> int:
                     ssm,
                     run_id,
                     scale_factor,
-                    index_mode,
                     args.profile,
                     n,
                     engine,
@@ -340,10 +308,9 @@ def main(argv: list[str] | None = None) -> int:
     else:
         transports = [path for path in paths if path.suffix == ".tsv"]
         if transports:
-            results = combine_transports(transports, engines, scale_factor, index_mode)
-            suffix = "" if "pycanopy" not in engines or index_mode == "eager" else f"_{index_mode}"
-            chart_path = ASSETS_DIR / f"spatialbench_sf{scale_factor}{suffix}.png"
-            text_path = ASSETS_DIR / f"spatial-bench-sf{scale_factor}{suffix}-results.txt"
+            results = combine_transports(transports, engines, scale_factor)
+            chart_path = ASSETS_DIR / f"spatialbench_sf{scale_factor}.png"
+            text_path = ASSETS_DIR / f"spatial-bench-sf{scale_factor}-results.txt"
             write_chart(results, chart_path)
             write_results_txt(results, text_path)
             produced = [chart_path, text_path]

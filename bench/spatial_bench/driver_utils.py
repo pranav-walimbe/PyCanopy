@@ -18,7 +18,6 @@ from bench.spatial_bench.config import (
     DEFAULT_RUNS,
     ENGINE_IDS,
     ENGINES,
-    INDEX_MODES,
     PUBLIC_DATA_ROOT,
     PUBLIC_DATA_TEMPLATE,
     QUERY_IDS,
@@ -27,10 +26,10 @@ from bench.spatial_bench.config import (
     SUPPORTED_SCALE_FACTORS,
     WORKLOAD_REVISION,
 )
-from bench.spatial_bench.results_utils import write_profile, write_transport
+from bench.spatial_bench.report_utils import write_profile, write_transport
 
 
-def _spawn(engine: str, query_id: str, data_dir: str, index_mode: str, *flags: str) -> dict:
+def _spawn(engine: str, query_id: str, data_dir: str, *flags: str) -> dict:
     # Run one query in an isolated interpreter and parse its structured stdout
     command = [
         sys.executable,
@@ -39,7 +38,6 @@ def _spawn(engine: str, query_id: str, data_dir: str, index_mode: str, *flags: s
         engine,
         query_id,
         data_dir,
-        index_mode,
         *flags,
     ]
     try:
@@ -63,11 +61,11 @@ def _spawn(engine: str, query_id: str, data_dir: str, index_mode: str, *flags: s
     return {"status": "ok", "time": float(values["TIME"]), "values": values}
 
 
-def _measure(engine: str, query_id: str, data_dir: str, index_mode: str, runs: int) -> dict:
+def _measure(engine: str, query_id: str, data_dir: str, runs: int) -> dict:
     # Average the requested number of timed runs, abandoning the query on the first failure
     samples: list[float] = []
     for attempt in range(1, runs + 1):
-        result = _spawn(engine, query_id, data_dir, index_mode)
+        result = _spawn(engine, query_id, data_dir)
         if result["status"] != "ok":
             detail = result.get("error", "")
             print(
@@ -89,9 +87,9 @@ def _measure(engine: str, query_id: str, data_dir: str, index_mode: str, runs: i
     return {"status": "ok", "seconds": average, "run_times": samples}
 
 
-def _profile_query(query, data_dir: str, index_mode: str) -> dict:
+def _profile_query(query, data_dir: str) -> dict:
     # Run one profiled SF1 query and fold its verification verdict into the result
-    result = _spawn("pycanopy", query.id, data_dir, index_mode, "--profile")
+    result = _spawn("pycanopy", query.id, data_dir, "--profile")
     if result["status"] != "ok":
         print(f"[testcase] {result['status']} {query.id}: {result.get('error', '')}", flush=True)
         return {"status": result["status"], "title": query.title, "error": result.get("error", "")}
@@ -139,16 +137,13 @@ def _memory_gib() -> float | None:
     return pages * page_size / (1024**3)
 
 
-def collect_metadata(
-    engine: str, data_dir: str, scale_factor: int, index_mode: str, runs: int
-) -> dict[str, str]:
+def collect_metadata(engine: str, data_dir: str, scale_factor: int, runs: int) -> dict[str, str]:
     """Collect public, durable metadata describing where and how this run happened.
 
     Args:
         engine: Engine id being measured.
         data_dir: SpatialBench dataset root, recorded only as public or custom.
         scale_factor: Dataset scale factor.
-        index_mode: PyCanopy index build policy.
         runs: Timed repetitions per query.
 
     Returns:
@@ -170,8 +165,6 @@ def collect_metadata(
         "CPU": _cpu_model(),
         "logical CPUs": str(os.cpu_count() or "not recorded"),
     }
-    if engine == "pycanopy":
-        values["PyCanopy index mode"] = index_mode
     if (memory := _memory_gib()) is not None:
         values["memory"] = f"{memory:.1f} GiB"
     for label, variable in (
@@ -189,29 +182,25 @@ def collect_metadata(
     return values
 
 
-def run_profile_suite(query_ids: list[str], data_dir: str, index_mode: str) -> Path:
+def run_profile_suite(query_ids: list[str], data_dir: str) -> Path:
     """Profile and oracle-verify every selected SF1 query exactly once.
 
     Args:
         query_ids: Query ids to profile.
         data_dir: SpatialBench dataset root.
-        index_mode: PyCanopy index build policy.
 
     Returns:
         The path of the profile report written under assets.
-
-    Raises:
-        RuntimeError: If any query fails or its answer does not match.
     """
     # Deferred because only a profile run installs PyCanopy and Polars on the box
     from bench.spatial_bench.queries import pycanopy as pycanopy_queries  # noqa: PLC0415
 
     results = {
-        query_id: _profile_query(pycanopy_queries.BY_ID[query_id], data_dir, index_mode)
+        query_id: _profile_query(pycanopy_queries.BY_ID[query_id], data_dir)
         for query_id in query_ids
     }
     text_path = ASSETS_DIR / "profile.txt"
-    write_profile(results, index_mode, text_path)
+    write_profile(results, text_path)
 
     invalid = [
         query_id
@@ -224,7 +213,7 @@ def run_profile_suite(query_ids: list[str], data_dir: str, index_mode: str) -> P
 
 
 def run_timing_suite(
-    engine: str, query_ids: list[str], data_dir: str, scale_factor: int, index_mode: str, runs: int
+    engine: str, query_ids: list[str], data_dir: str, scale_factor: int, runs: int
 ) -> Path:
     """Measure every selected query for one engine and write its transport file.
 
@@ -233,21 +222,18 @@ def run_timing_suite(
         query_ids: Query ids to run.
         data_dir: SpatialBench dataset root.
         scale_factor: Dataset scale factor.
-        index_mode: PyCanopy index build policy.
         runs: Timed repetitions per query.
 
     Returns:
         The path of the transport file written under assets.
     """
-    results = {
-        query_id: _measure(engine, query_id, data_dir, index_mode, runs) for query_id in query_ids
-    }
+    results = {query_id: _measure(engine, query_id, data_dir, runs) for query_id in query_ids}
     transport_path = ASSETS_DIR / f"{engine}-results.tsv"
     write_transport(
         transport_path,
         engine,
         version(ENGINES[engine]["package"]),
-        collect_metadata(engine, data_dir, scale_factor, index_mode, runs),
+        collect_metadata(engine, data_dir, scale_factor, runs),
         results,
     )
     print(f"[testcase] wrote {ENGINES[engine]['display_name']} results", flush=True)
@@ -262,7 +248,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--data-dir", help="Dataset root, defaulting to the published SpatialBench S3 source."
     )
-    parser.add_argument("--index-mode", choices=INDEX_MODES, default="auto")
     parser.add_argument("--n", type=int, default=DEFAULT_RUNS, metavar="N")
     parser.add_argument("--query", nargs="+", metavar="ID", help="Run only these query IDs.")
     parser.add_argument("--profile", action="store_true")
@@ -295,11 +280,9 @@ def main(argv: list[str] | None = None) -> int:
 
     data_dir = args.data_dir or PUBLIC_DATA_TEMPLATE.format(scale_factor=args.scale_factor)
     if args.profile:
-        run_profile_suite(query_ids, data_dir, args.index_mode)
+        run_profile_suite(query_ids, data_dir)
     else:
-        run_timing_suite(
-            args.engine, query_ids, data_dir, args.scale_factor, args.index_mode, args.n
-        )
+        run_timing_suite(args.engine, query_ids, data_dir, args.scale_factor, args.n)
     return 0
 
 

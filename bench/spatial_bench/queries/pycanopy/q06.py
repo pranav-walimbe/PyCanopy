@@ -7,7 +7,8 @@ from __future__ import annotations
 import polars as pl
 
 import pycanopy as pc
-from pycanopy import wkb_points_to_xy
+from bench.spatial_bench.config import STORAGE_OPTIONS
+from pycanopy import SpatialFrame, wkb_points_to_xy
 
 id = "q6"
 title = "Zone stats for trips intersecting a bounding box"
@@ -17,25 +18,18 @@ BBOX = (-112.2110, 34.4197, -111.3110, 35.3197)
 
 _TRIP_COLS = ["t_pickuploc", "t_distance", "t_pickuptime", "t_dropofftime"]
 
-TABLES_NEEDED = {"zone": ["z_zonekey", "z_name", "z_boundary"], "trip": _TRIP_COLS}
 
-
-def pycanopy(tables) -> pl.DataFrame:
-    inputs = tables.parallel_fetch(TABLES_NEEDED)
-    zone, trip = inputs["zone"], inputs["trip"]
-    zsf = tables.polygon_frame(zone, "z_boundary")
+def pycanopy(data_paths: dict[str, str]) -> pl.DataFrame:
+    zone, trip = pl.collect_all(
+        [
+            pl.scan_parquet(data_paths["zone"], storage_options=STORAGE_OPTIONS).select(
+                ["z_zonekey", "z_name", "z_boundary"]
+            ),
+            pl.scan_parquet(data_paths["trip"], storage_options=STORAGE_OPTIONS).select(_TRIP_COLS),
+        ]
+    )
+    zsf = SpatialFrame.from_wkb_polygons(zone, "z_boundary")
     cand_sf = zsf.range_filter(*BBOX)
-    if cand_sf.engine.n == 0:
-        return pl.DataFrame(
-            schema={
-                "z_zonekey": pl.Int64,
-                "z_name": pl.Utf8,
-                "total_pickups": pl.UInt32,
-                "avg_distance": pl.Float64,
-                "avg_duration": pl.Float64,
-            }
-        )
-
     qx, qy = wkb_points_to_xy(trip["t_pickuploc"])
     qdf = trip.select(["t_distance", "t_pickuptime", "t_dropofftime"]).with_columns(
         pl.Series("qx", qx),

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import polars as pl
 
+from bench.spatial_bench.config import STORAGE_OPTIONS
 from pycanopy import wkb_point_distance
 
 id = "q7"
@@ -14,8 +15,12 @@ title = "Route detour ratio (reported vs straight-line distance)"
 DEG_PER_M = 0.000009  # 1 meter ~= 0.000009 degrees
 
 
-def pycanopy(tables) -> pl.DataFrame:
-    trip = tables.table("trip", ["t_tripkey", "t_distance", "t_pickuploc", "t_dropoffloc"])
+def pycanopy(data_paths: dict[str, str]) -> pl.DataFrame:
+    trip = pl.read_parquet(
+        data_paths["trip"],
+        columns=["t_tripkey", "t_distance", "t_pickuploc", "t_dropoffloc"],
+        storage_options=STORAGE_OPTIONS,
+    )
     line_m = wkb_point_distance(trip["t_pickuploc"], trip["t_dropoffloc"]) / DEG_PER_M
 
     df = trip.select("t_tripkey", "t_distance").with_columns(

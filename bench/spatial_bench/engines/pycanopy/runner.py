@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
-from bench.spatial_bench.fetch_utils import SpatialBenchTables
+from bench.spatial_bench.config import TABLES
 from bench.spatial_bench.queries import pycanopy
 
 
 class Runner:
     """Execute pinned query functions with PyCanopy."""
 
-    def prepare(self, data_dir: str, index_mode: str) -> None:
-        self._tables = SpatialBenchTables(data_dir=data_dir, index_mode=index_mode)
+    def prepare(self, data_dir: str) -> None:
+        root = data_dir.rstrip("/")
+        self._paths = {table: f"{root}/{table}/**/*.parquet" for table in TABLES}
 
     def execute(self, query_id: str):
-        return pycanopy.BY_ID[query_id].pycanopy(self._tables)
+        return pycanopy.BY_ID[query_id].pycanopy(self._paths)
 
     def close(self) -> None:
-        self._tables = None
+        self._paths = {}

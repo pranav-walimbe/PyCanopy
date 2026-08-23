@@ -6,25 +6,21 @@ from __future__ import annotations
 
 import polars as pl
 
+from bench.spatial_bench.config import STORAGE_OPTIONS
+from pycanopy import SpatialFrame
+
 id = "q9"
 title = "Building overlap detection via IoU"
 
 
-def pycanopy(tables) -> pl.DataFrame:
-    buildings = tables.table("building", ["b_buildingkey", "b_boundary"])
-    sf = tables.polygon_frame(buildings, "b_boundary")
+def pycanopy(data_paths: dict[str, str]) -> pl.DataFrame:
+    buildings = pl.read_parquet(
+        data_paths["building"],
+        columns=["b_buildingkey", "b_boundary"],
+        storage_options=STORAGE_OPTIONS,
+    )
+    sf = SpatialFrame.from_wkb_polygons(buildings, "b_boundary")
     pairs = sf.intersects_pairs(key_col="b_buildingkey")
-    if pairs.height == 0:
-        return pl.DataFrame(
-            schema={
-                "building_1": pl.Int64,
-                "building_2": pl.Int64,
-                "area1": pl.Float64,
-                "area2": pl.Float64,
-                "overlap_area": pl.Float64,
-                "iou": pl.Float64,
-            }
-        )
     return (
         pairs.select(
             pl.col("b_buildingkey_1").alias("building_1"),

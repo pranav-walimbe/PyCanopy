@@ -49,8 +49,8 @@ configuration.
 python -m bench.spatial_bench --scale-factor 1 \
   --engine pycanopy duckdb sedonadb geopandas
 
-# PyCanopy-only run with an explicit index policy and repetition count
-python -m bench.spatial_bench --scale-factor 10 --engine pycanopy --index-auto --n 3
+# PyCanopy-only run with an explicit repetition count
+python -m bench.spatial_bench --scale-factor 10 --engine pycanopy --n 3
 
 # Run only specific queries (useful for debugging individual queries)
 python -m bench.spatial_bench --scale-factor 1 --engine pycanopy duckdb --query q12
@@ -75,7 +75,7 @@ The local launcher also needs SSM read, EC2 lifecycle, `iam:PassRole`, and resul
 
 ## Directory layout
 
-`__main__.py` runs on your machine and needs `boto3`; `results_utils.py` spans both
+`__main__.py` runs on your machine and needs `boto3`; `report_utils.py` spans both
 sides (the box writes the transport, your machine reads it and draws the chart, which
 needs `matplotlib`). Everything marked on-box runs on EC2 from a fresh clone of
 `repository_branch`, so **on-box changes only take effect once pushed**, and an
@@ -83,15 +83,14 @@ ordinary run installs only the measured engine's own packages.
 
 ```
 bench/spatial_bench/
-├── __main__.py      # local: launch, monitor, and combine isolated engine nodes
-├── config.py        # workload, dataset, engine, path, timing, and infrastructure settings
-├── driver_utils.py  # on-box: drive one engine over the queries, timed or profiled
-├── run_query.py     # on-box: isolated subprocess running exactly one query
-├── fetch_utils.py   # on-box: SpatialBench table fetching and query-scoped frames
-├── profiler_utils.py  # on-box: stage boundaries, sampled RSS, Engine metrics, answer verification
-├── results_utils.py # the TSV transport (both sides) plus text, chart, and profile reports
-├── answers/         # pinned upstream CSV and type-faithful Parquet answers
-├── bootstrap.sh     # EC2 user-data: install one engine and run its suite
+├── __main__.py       # local: launch, monitor, and combine isolated engine nodes
+├── config.py         # workload, dataset, engine, path, timing, and infrastructure settings
+├── driver_utils.py   # on-box: drive one engine over the queries, timed or profiled
+├── run_query.py      # on-box: isolated subprocess running exactly one query
+├── profiler_utils.py # on-box: stage boundaries, sampled RSS, Engine metrics, answer verification
+├── report_utils.py   # the TSV transport (both sides) plus text, chart, and profile reports
+├── answers/          # pinned upstream CSV and type-faithful Parquet answers
+├── bootstrap.sh      # EC2 user-data: install one engine and run its suite
 ├── queries/
 │   ├── pycanopy/    # q01.py through q12.py
 │   ├── duckdb/      # q01.py through q12.py

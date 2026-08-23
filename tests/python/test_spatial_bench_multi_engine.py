@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from bench.spatial_bench import driver_utils, results_utils
+from bench.spatial_bench import driver_utils, report_utils
 from bench.spatial_bench.config import (
     DEFAULT_RUNS,
     INSTANCE_TYPE,
@@ -53,9 +53,7 @@ def test_combine_transports_preserves_requested_engine_order(tmp_path):
     _transport(duckdb, "duckdb", "2.0", 2.0)
     _transport(pycanopy, "pycanopy", "1.0", 1.0)
 
-    results = results_utils.combine_transports(
-        [duckdb, pycanopy], ["pycanopy", "duckdb"], 1, "auto"
-    )
+    results = report_utils.combine_transports([duckdb, pycanopy], ["pycanopy", "duckdb"], 1)
 
     assert results["engine_order"] == ["pycanopy", "duckdb"]
     assert results["engines"]["pycanopy"]["queries"]["q1"]["seconds"] == 1.0
@@ -65,10 +63,10 @@ def test_combine_transports_preserves_requested_engine_order(tmp_path):
 def test_combined_text_contains_engine_columns_and_raw_samples(tmp_path):
     transport = tmp_path / "duckdb.tsv"
     _transport(transport, "duckdb", "2.0", 2.0)
-    results = results_utils.combine_transports([transport], ["duckdb"], 10, "auto")
+    results = report_utils.combine_transports([transport], ["duckdb"], 10)
     output = tmp_path / "results.txt"
 
-    results_utils.write_results_txt(results, output)
+    report_utils.write_results_txt(results, output)
 
     text = output.read_text()
     assert "Apache SpatialBench SF10" in text
@@ -86,11 +84,11 @@ def test_all_engines_use_the_shared_runner(monkeypatch, engine):
 
     monkeypatch.setattr(driver_utils.subprocess, "run", run)
 
-    result = driver_utils._spawn(engine, "q1", "s3://data", "auto")
+    result = driver_utils._spawn(engine, "q1", "s3://data")
 
     assert result["status"] == "ok"
     assert result["time"] == 1.25
-    assert captured["command"][-4:] == [engine, "q1", "s3://data", "auto"]
+    assert captured["command"][-3:] == [engine, "q1", "s3://data"]
 
 
 def test_grouped_chart_supports_live_engine_results(tmp_path):
@@ -99,11 +97,9 @@ def test_grouped_chart_supports_live_engine_results(tmp_path):
     pycanopy = tmp_path / "pycanopy.tsv"
     _transport(duckdb, "duckdb", "2.0", 2.0)
     _transport(pycanopy, "pycanopy", "1.0", 1.0)
-    results = results_utils.combine_transports(
-        [duckdb, pycanopy], ["pycanopy", "duckdb"], 1, "auto"
-    )
+    results = report_utils.combine_transports([duckdb, pycanopy], ["pycanopy", "duckdb"], 1)
     output = tmp_path / "chart.png"
 
-    results_utils.write_chart(results, output)
+    report_utils.write_chart(results, output)
 
     assert output.stat().st_size > 0
