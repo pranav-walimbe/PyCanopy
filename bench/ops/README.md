@@ -1,25 +1,45 @@
 # Ops Calibration Benchmark
 
-Calibrates the ten `CostFactors` values used by the query planner (`src/planner/cost.rs`).
-The canonical bundled profile is `python/pycanopy/cost_profiles/default.json`. Normal runs replace
-that file atomically; `--dry-run` performs the same measurements and fitting without changing it.
+Fits the ten `CostFactors` values the query planner uses (`src/planner/cost.rs`) and writes them to
+the bundled profile at `python/pycanopy/cost_profiles/default.json`.
 
-The Python Engine wrapper reads the bundled profile once per process and applies it to each Rust
-Engine. Rust-only users and tests use the same file embedded at build time, so the values are not
-duplicated in source code. Hardware detection, alternate-profile selection, and a user-facing
-tuning API are not part of this harness yet.
+The Python Engine wrapper reads that profile once per process and applies it to each Rust Engine;
+Rust-only users and tests read the same file embedded at build time, so no constant is duplicated
+in source. Hardware detection, alternate-profile selection, and a user-facing tuning API are not
+part of this harness yet.
+
+## Running
+
+Must run against an optimized build, since the fitted constants describe release-mode timings.
+
+```bash
+# Build --release, calibrate, and replace default.json
+make tune-engine
+
+# Same measurements and fitting, leaves default.json untouched
+uv run python -m bench.ops --dry-run
+```
+
+```text
+--runs R         probe samples per configuration (default: 5)
+--build-runs R   fresh build samples per size (default: 3)
+--seed S         synthetic data and query seed (default: 42)
+--dry-run        print fitted constants without updating default.json
+```
+
+The rendered report also lands in `assets/ops.txt`. The JSON holds only the ten fitted constants.
 
 ## Method
 
-- Build and probe durations come from the Engine's Rust metrics, not Python stopwatches.
-- Builds use an internal calibration hook to explicitly construct Grid, KD-tree, or R-tree on a
-  fresh Engine. SpatialFrame construction and statistics collection are excluded.
-- Probe indexes are built and warmed before five measured samples. Each configuration contributes
-  its median Engine time.
-- Each factor is fit across its applicable configurations using the exact planner workload term
-  and a least-squares line through the origin: `elapsed_ns = factor * term`.
-- The bbox scan uses a tiny box around a known input point, ensuring histogram statistics cannot
-  return early before the brute-force scan.
+Build and probe durations come from the Engine's own Rust metrics, not Python stopwatches. Builds
+use an internal calibration hook to construct Grid, KD-tree, or R-tree explicitly on a fresh
+Engine, excluding SpatialFrame construction and statistics collection. Probe indexes are built and
+warmed before five measured samples, and each configuration contributes its median Engine time.
+
+Each factor is fit across its applicable configurations using the exact planner workload term and a
+least-squares line through the origin: `elapsed_ns = factor * term`. The bbox scan uses a tiny box
+around a known input point so histogram statistics cannot return early ahead of the brute-force
+scan.
 
 ## Calibration matrix
 
@@ -48,29 +68,3 @@ tuning API are not part of this harness yet.
 | `rtree_range_ns` | R-tree range | `Q * log2(N) + actual output rows` |
 | `kdtree_knn_ns` | KD-tree kNN | `Q * (log2(N) + k)` |
 | `rtree_knn_ns` | R-tree kNN | `Q * (log2(N) + k)` |
-
-## Running
-
-Build the optimized extension, calibrate, and update `default.json`:
-
-```bash
-make tune-engine
-```
-
-Preview without changing `default.json`:
-
-```bash
-uv run python -m bench.ops --dry-run
-```
-
-Options:
-
-```text
---runs R         probe samples per configuration (default: 5)
---build-runs R   fresh build samples per size (default: 3)
---seed S         synthetic data and query seed (default: 42)
---dry-run        print results without replacing default.json
-```
-
-The rendered report is also written to `assets/ops.txt`. The loadable JSON contains only the ten
-fitted constants.
