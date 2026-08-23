@@ -28,8 +28,10 @@ ENGINE_IDS = tuple(ENGINES)
 
 STORAGE_OPTIONS = {"skip_signature": "true"}
 
-PUBLIC_DATA_ROOT = "s3://wherobots-examples/data/spatialbench"
-PUBLIC_DATA_TEMPLATE = f"{PUBLIC_DATA_ROOT}/SpatialBench_sf{{scale_factor}}"
+# Mirror of the upstream Hugging Face dataset (apache-sedona/spatialbench), which is what the
+# committed answers were generated from. Public read, so queries stay anonymous.
+PUBLIC_DATA_ROOT = "s3://pycanopy-bench-data/spatialbench"
+PUBLIC_DATA_TEMPLATE = f"{PUBLIC_DATA_ROOT}/{DATASET_VERSION}/sf{{scale_factor}}"
 
 REGION = "us-west-2"
 INSTANCE_TYPE = "m7i.2xlarge"
