@@ -71,7 +71,7 @@ impl PreparedPolygons {
     }
 
     /// True when polygon `p` contains the point. Matches `pip_raw` for valid polygons.
-    /// Edge coordinates are read from the shared `xs`/`ys` by index, not stored here
+    /// Edge coordinates are read from the shared `xs`/`ys` by index, not stored here.
     #[inline]
     pub fn contains(&self, p: usize, qx: f64, qy: f64, xs: &[f64], ys: &[f64]) -> bool {
         let bstart = self.band_base[p];

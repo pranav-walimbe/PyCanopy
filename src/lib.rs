@@ -710,7 +710,7 @@ impl Engine {
         Ok(engine)
     }
 
-    /// Copy selected logical polygons into a compact Engine with no inherited indexes.
+    /// Copy selected logical polygons into a compact Engine with no inherited indexes
     fn subset(&self, indices: PyReadonlyArray1<u32>) -> PyResult<Self> {
         let indices = indices
             .as_slice()
@@ -732,7 +732,7 @@ impl Engine {
         Ok(())
     }
 
-    /// Build a specific index kind for the internal calibration harness.
+    /// Build a specific index kind for the internal calibration harness
     fn _build_index_for_calibration(&mut self, kind: &str) -> PyResult<()> {
         let kind = match kind {
             "grid" => IndexKind::Grid,
@@ -783,7 +783,7 @@ impl Engine {
         Ok(prev.to_string())
     }
 
-    /// Replace the planner cost factors from the ordered values supplied by the Python wrapper.
+    /// Replace the planner cost factors from the ordered values supplied by the Python wrapper
     fn set_cost_factors(&mut self, values: Vec<f64>) -> PyResult<()> {
         let values: [f64; 10] = values.try_into().map_err(|values: Vec<f64>| {
             PyValueError::new_err(format!(
@@ -1853,7 +1853,7 @@ impl Engine {
         Ok(output)
     }
 
-    /// Aggregate a point-to-polygon distance join directly into per-polygon state.
+    /// Aggregate a point-to-polygon distance join directly into per-polygon state
     #[allow(clippy::type_complexity)]
     #[pyo3(signature = (query_xs, query_ys, distance, value_columns, validity_columns))]
     fn batch_within_distance_to_polygons_aggregate<'py>(
@@ -2517,7 +2517,7 @@ impl Engine {
         Ok(PyArray1::from_vec(py, dists).into())
     }
 
-    /// Return all metrics accumulated by this Engine and reset its counters.
+    /// Return all metrics accumulated by this Engine and reset its counters
     fn take_metrics<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let metrics = std::mem::take(&mut self.metrics);
         let operations = PyList::empty(py);
