@@ -5,6 +5,8 @@ import pytest
 _profiling = pytest.importorskip("bench.spatial_bench.profiler_utils")
 _results = pytest.importorskip("bench.spatial_bench.report_utils")
 
+MIB = 1024 * 1024
+
 
 def _engine(engine_id, calls, rows, elapsed):
     return {
@@ -44,18 +46,16 @@ def test_engine_metrics_aggregate_across_engines_and_streamed_calls():
     ]
 
 
-def test_profile_suite_writes_artifacts_then_rejects_oracle_mismatch(tmp_path, monkeypatch):
-    payload = {
-        "time": {
-            "total": 1.0,
-            "non_engine": 0.7,
-        },
-        "mem": {
-            "baseline": 100,
-            "peak": 200,
-        },
+def _payload():
+    return {
+        "time": {"total": 1.0, "non_engine": 0.7},
+        "mem": {"baseline": 100, "peak": 200},
         "engine": _profiling._aggregate_engine_metrics([_engine(0, 1, 2, 3)]),
     }
+
+
+def test_profile_suite_writes_artifacts_then_rejects_oracle_mismatch(tmp_path, monkeypatch):
+    payload = _payload()
     result = {
         "status": "ok",
         "title": "query",
@@ -70,5 +70,114 @@ def test_profile_suite_writes_artifacts_then_rejects_oracle_mismatch(tmp_path, m
     with pytest.raises(RuntimeError, match="q1"):
         driver.run_profile_suite(["q1"], "s3://example")
 
-    assert (tmp_path / "profile.txt").is_file()
-    assert not (tmp_path / "profile.json").exists()
+    assert (tmp_path / "profile-branch.txt").is_file()
+    assert (tmp_path / "profile-branch.json").is_file()
+
+
+def test_released_build_records_a_mismatch_instead_of_failing_the_run(tmp_path, monkeypatch):
+    driver = pytest.importorskip("bench.spatial_bench.driver_utils")
+    result = {
+        "status": "ok",
+        "title": "query",
+        "profile": _payload(),
+        "verify": "MISMATCH",
+        "verify_detail": "rows differ",
+    }
+    monkeypatch.setattr(driver, "_profile_query", lambda *args: result)
+    monkeypatch.setattr(driver, "ASSETS_DIR", tmp_path)
+
+    transport = driver.run_profile_suite(["q1"], "s3://example", "release")
+
+    assert transport == tmp_path / "profile-release.json"
+    payload = _results.read_profile_transport(transport)
+    assert payload["variant"] == "release"
+    assert payload["results"]["q1"]["verify"] == "MISMATCH"
+    assert "pycanopy build" in payload["metadata"]
+
+
+def _transport(variant, wall, peak, build_ns, op_ns):
+    return {
+        "variant": variant,
+        "metadata": {"run ID": f"run-{variant}", "pycanopy build": f"pycanopy {variant}"},
+        "results": {
+            "q1": {
+                "status": "ok",
+                "title": "query",
+                "verify": "match",
+                "verify_detail": "1 row",
+                "profile": {
+                    "time": {"total": wall, "non_engine": wall / 2},
+                    "mem": {"baseline": 100 * MIB, "peak": peak * MIB},
+                    "engine": {
+                        "construction": {"wkb_decode_ns": 0, "statistics_ns": 0},
+                        "index_builds": [
+                            {
+                                "index": "prepared_polygons",
+                                "build_count": 1,
+                                "elapsed_compute_ns": build_ns,
+                            }
+                        ],
+                        "operations": [
+                            {
+                                "name": "batch_contains",
+                                "index": "r_tree",
+                                "calls": 1,
+                                "elapsed_compute_ns": op_ns,
+                                "output_rows": 1,
+                            }
+                        ],
+                        "engines": [],
+                    },
+                },
+            }
+        },
+    }
+
+
+def test_comparison_report_carries_metadata_deltas_and_stage_breakdown(tmp_path):
+    transports = {
+        "branch": _transport("branch", wall=4.0, peak=400, build_ns=10**7, op_ns=2 * 10**9),
+        "release": _transport("release", wall=5.0, peak=800, build_ns=10**9, op_ns=10**9),
+    }
+    out = tmp_path / "profile.txt"
+    _results.write_profile_comparison(transports, out)
+    text = out.read_text()
+
+    assert "Run metadata" in text
+    assert "pycanopy branch" in text and "pycanopy release" in text
+    assert "branch run ID" in text and "released run ID" in text
+    # Wall 4 against 5, peak 400 against 800
+    assert "-20.0%" in text
+    assert "-50.0%" in text
+    # The build sheds 0.99s while the operation gains 1.0s
+    assert "build prepared_polygons" in text
+    assert "batch_contains (r_tree)" in text
+    assert "total engine compute" in text
+    assert "PASS / PASS" in text
+
+
+def test_comparison_report_falls_back_to_one_build(tmp_path):
+    transports = {"branch": _transport("branch", wall=4.0, peak=400, build_ns=1, op_ns=1)}
+    out = tmp_path / "profile.txt"
+    _results.write_profile_comparison(transports, out)
+    text = out.read_text()
+
+    assert "Run metadata" in text
+    assert "Wall time and peak memory" not in text
+    assert "q1  query" in text
+
+
+def test_comparison_report_flags_a_query_only_one_build_ran(tmp_path):
+    transports = {
+        "branch": _transport("branch", wall=4.0, peak=400, build_ns=1, op_ns=1),
+        "release": _transport("release", wall=5.0, peak=800, build_ns=1, op_ns=1),
+    }
+    transports["release"]["results"]["q1"] = {
+        "status": "error",
+        "title": "query",
+        "error": "AttributeError: no such method",
+    }
+    out = tmp_path / "profile.txt"
+    _results.write_profile_comparison(transports, out)
+
+    assert "no profile from the released build" in out.read_text()
