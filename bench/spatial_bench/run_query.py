@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 import time
+from contextlib import contextmanager
 
 from bench.spatial_bench.config import ENGINE_IDS, RUNNER_PREFIX, SUPPORTED_SCALE_FACTORS
 from bench.spatial_bench.engines import load_runner
@@ -40,33 +41,43 @@ def _run_timed(engine: str, query_id: str, data_dir: str) -> None:
     _emit("TIME", f"{finished - started:.6f}")
 
 
+@contextmanager
+def _capture_metrics():
+    # Engine metrics come from a private hook that published wheels need not export
+    try:
+        from pycanopy.engine import _capture_engine_metrics  # noqa: PLC0415
+    except ImportError:
+        yield None
+        return
+    with _capture_engine_metrics() as capture:
+        yield capture
+
+
 def _run_profiled(query_id: str, data_dir: str, scale_factor: int) -> None:
-    # Profile path: the same runner the timed path drives, observed by a stage profiler and
-    # Engine metrics. These imports are deferred because an ordinary run of another engine
-    # installs neither PyCanopy nor Polars on the box.
+    # Deferred because an ordinary run of another engine installs neither PyCanopy nor Polars
     from bench.spatial_bench.profiler_utils import (  # noqa: PLC0415
         StageProfiler,
         profile_payload,
         verify_output,
     )
-    from pycanopy.engine import _capture_engine_metrics  # noqa: PLC0415
 
     runner = load_runner("pycanopy")
     profiler = StageProfiler()
     try:
         runner.prepare(data_dir)
-        with _capture_engine_metrics() as capture:
+        with _capture_metrics() as capture:
             started = time.perf_counter()
             result = runner.execute(query_id)
             result = _materialize(result)
             elapsed = time.perf_counter() - started
-            engine_metrics = capture.take_metrics()
+            engine_metrics = capture.take_metrics() if capture is not None else []
     finally:
         runner.close()
         profiler.stop()
 
     _emit("TIME", f"{elapsed:.6f}")
-    _emit("PROFILE", json.dumps(profile_payload(profiler, elapsed, engine_metrics)))
+    payload = profile_payload(profiler, elapsed, engine_metrics, capture is not None)
+    _emit("PROFILE", json.dumps(payload))
     try:
         matched, detail = verify_output(result, query_id, scale_factor)
         _emit("MATCH" if matched else "MISMATCH", detail)

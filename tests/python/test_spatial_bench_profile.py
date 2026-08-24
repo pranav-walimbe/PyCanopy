@@ -1,5 +1,7 @@
 """Focused tests for the SpatialBench Engine-metrics profile path."""
 
+import builtins
+
 import pytest
 
 _profiling = pytest.importorskip("bench.spatial_bench.profiler_utils")
@@ -181,3 +183,41 @@ def test_comparison_report_flags_a_query_only_one_build_ran(tmp_path):
     _results.write_profile_comparison(transports, out)
 
     assert "no profile from the released build" in out.read_text()
+
+
+def test_profile_runs_when_the_installed_wheel_has_no_metrics_hook(monkeypatch):
+    runner = pytest.importorskip("bench.spatial_bench.run_query")
+    real_import = builtins.__import__
+
+    def blocked(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "pycanopy.engine" and "_capture_engine_metrics" in (fromlist or ()):
+            raise ImportError("cannot import name '_capture_engine_metrics'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", blocked)
+    with runner._capture_metrics() as capture:
+        assert capture is None
+
+
+def test_payload_marks_a_build_that_reports_no_metrics():
+    payload = _profiling.profile_payload(_profiling.StageProfiler(), 1.0, [], metrics=False)
+
+    assert payload["metrics"] is False
+    assert payload["time"]["non_engine"] == 1.0
+    assert _results._stage_times({"status": "ok", "profile": payload}) == {}
+
+
+def test_stage_table_drops_the_released_column_when_it_has_no_metrics(tmp_path):
+    branch = _transport("branch", wall=4.0, peak=400, build_ns=10**7, op_ns=2 * 10**9)
+    release = _transport("release", wall=5.0, peak=800, build_ns=0, op_ns=0)
+    release["results"]["q1"]["profile"]["metrics"] = False
+    release["results"]["q1"]["profile"]["engine"]["index_builds"] = []
+    release["results"]["q1"]["profile"]["engine"]["operations"] = []
+    out = tmp_path / "profile.txt"
+    _results.write_profile_comparison({"branch": branch, "release": release}, out)
+    text = out.read_text()
+
+    # Wall and peak still compare, so the released build stays in the top table
+    assert "-20.0%" in text and "-50.0%" in text
+    assert "reports no engine metrics" in text
+    assert "build prepared_polygons" in text
