@@ -9,6 +9,9 @@ DEFAULT_RUNS = 3
 QUERY_TIMEOUT_SECONDS = 1200
 RUNNER_PREFIX = "SPATIALBENCH"
 QUERY_IDS = tuple(f"q{index}" for index in range(1, 13))
+
+PROFILE_VARIANTS = ("branch", "release")
+PROFILE_VARIANT_LABELS = {"branch": "branch", "release": "released"}
 TABLES = ("building", "customer", "driver", "trip", "vehicle", "zone")
 
 ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"

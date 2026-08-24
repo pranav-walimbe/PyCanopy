@@ -22,6 +22,7 @@ from bench.spatial_bench.config import (
     INSTANCE_TYPE,
     MAX_RUNTIME_MINUTES,
     POLL_SECONDS,
+    PROFILE_VARIANTS,
     PROJECT_TAG,
     PUBLIC_DATA_TEMPLATE,
     QUERY_IDS,
@@ -37,7 +38,9 @@ from bench.spatial_bench.config import (
 )
 from bench.spatial_bench.report_utils import (
     combine_transports,
+    read_profile_transport,
     write_chart,
+    write_profile_comparison,
     write_results_txt,
 )
 
@@ -52,6 +55,7 @@ def _user_data(
     n: int,
     engine: str,
     query_ids: list[str] | None = None,
+    variant: str = "branch",
 ) -> str:
     # Substitute @@NAME@@ placeholders in bootstrap.sh for this run
     script = (_DIR / "bootstrap.sh").read_text()
@@ -77,6 +81,7 @@ def _user_data(
         "DATA_ROOT": PUBLIC_DATA_TEMPLATE.format(scale_factor=scale_factor),
         "MAX_RUNTIME_MIN": str(MAX_RUNTIME_MINUTES),
         "PROFILE_MODE": "1" if profile else "0",
+        "PROFILE_VARIANT": variant,
         "ENGINE": engine,
         "BENCH_FLAGS": " ".join(bench_flags),
     }
@@ -94,6 +99,7 @@ def _launch(
     n: int,
     engine: str,
     query_ids: list[str] | None = None,
+    variant: str = "branch",
 ) -> str:
     # Launch the benchmark instance and return its id
     ami = ssm.get_parameter(Name=AMI_PARAMETER)["Parameter"]["Value"]
@@ -102,7 +108,7 @@ def _launch(
         InstanceType=INSTANCE_TYPE,
         MinCount=1,
         MaxCount=1,
-        UserData=_user_data(ami, run_id, scale_factor, profile, n, engine, query_ids),
+        UserData=_user_data(ami, run_id, scale_factor, profile, n, engine, query_ids, variant),
         InstanceInitiatedShutdownBehavior="terminate",
         IamInstanceProfile={"Name": INSTANCE_PROFILE},
         BlockDeviceMappings=[
@@ -128,8 +134,9 @@ def _launch(
         ],
     )
     instance_id = resp["Instances"][0]["InstanceId"]
+    label = variant if profile else engine
     print(
-        f"[ec2] launched {instance_id} ({INSTANCE_TYPE}, sf{scale_factor}, {engine}, run {run_id})",
+        f"[ec2] launched {instance_id} ({INSTANCE_TYPE}, sf{scale_factor}, {label}, run {run_id})",
         flush=True,
     )
     return instance_id
@@ -192,7 +199,7 @@ def _download(s3, run_id: str) -> list[Path]:
         name = obj["Key"].rsplit("/", 1)[-1]
         if name in ("_SUCCESS", "progress.log"):
             continue
-        keep = name.endswith((".png", ".txt"))
+        keep = name.endswith((".png", ".txt", ".json"))
         dest = ASSETS_DIR if keep else Path(tempfile.gettempdir())
         dest.mkdir(parents=True, exist_ok=True)
         local = dest / name if keep else dest / f"{run_id}-{name}"
@@ -269,14 +276,17 @@ def main(argv: list[str] | None = None) -> int:
     s3 = boto3.client("s3", region_name=REGION)
     ssm = boto3.client("ssm", region_name=REGION)
 
+    # Profile mode fans out over builds of PyCanopy, not over engines
+    nodes = list(PROFILE_VARIANTS) if args.profile else engines
+
     instances = {}
     paths: list[Path] = []
     statuses = {}
     try:
         group_id = uuid.uuid4().hex[:12]
-        for engine in engines:
-            run_id = group_id if args.profile else f"{group_id}-{engine}"
-            instances[engine] = (
+        for node in nodes:
+            run_id = f"{group_id}-{node}"
+            instances[node] = (
                 run_id,
                 _launch(
                     ec2,
@@ -285,16 +295,17 @@ def main(argv: list[str] | None = None) -> int:
                     scale_factor,
                     args.profile,
                     n,
-                    engine,
+                    "pycanopy" if args.profile else node,
                     args.query,
+                    node if args.profile else "branch",
                 ),
             )
         with ThreadPoolExecutor(max_workers=len(instances)) as executor:
             futures = {
-                engine: executor.submit(_wait_for_success, s3, ec2, run_id, instance_id, engine)
-                for engine, (run_id, instance_id) in instances.items()
+                node: executor.submit(_wait_for_success, s3, ec2, run_id, instance_id, node)
+                for node, (run_id, instance_id) in instances.items()
             }
-            statuses = {engine: future.result() for engine, future in futures.items()}
+            statuses = {node: future.result() for node, future in futures.items()}
         for run_id, _ in instances.values():
             paths.extend(_download(s3, run_id))
     finally:
@@ -304,7 +315,21 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[ec2] terminated {', '.join(instance_ids)}", flush=True)
 
     if args.profile:
-        produced = [path for path in paths if path.name == "profile.txt"]
+        transports = {
+            variant: read_profile_transport(path)
+            for variant in PROFILE_VARIANTS
+            for path in paths
+            if path.name == f"profile-{variant}.json"
+        }
+        if transports:
+            profile_path = ASSETS_DIR / "profile.txt"
+            write_profile_comparison(transports, profile_path)
+            produced = [profile_path]
+            missing = [v for v in PROFILE_VARIANTS if v not in transports]
+            note = f", no profile from the {', '.join(missing)} build" if missing else ""
+            print(f"[profile] wrote {profile_path}{note}", flush=True)
+        else:
+            produced = []
     else:
         transports = [path for path in paths if path.suffix == ".tsv"]
         if transports:
@@ -318,7 +343,9 @@ def main(argv: list[str] | None = None) -> int:
         else:
             produced = []
 
-    if not all(statuses.values()) or not produced:
+    # A failing released baseline is a result, so only the branch build is required
+    required = ["branch"] if args.profile else list(statuses)
+    if not all(statuses.get(node, False) for node in required) or not produced:
         logs = [p for p in paths if p.suffix == ".log"]
         print(f"[ec2] run failed; inspect {logs[0]}" if logs else "[ec2] run failed", flush=True)
         return 1

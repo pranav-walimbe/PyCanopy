@@ -25,9 +25,10 @@ uv run --group bench python -m bench.spatial_bench --scale-factor 1 --engine pyc
 uv run --group bench python -m bench.spatial_bench --profile
 ```
 
-The launcher starts one EC2 instance per engine, polls them concurrently, combines their transport
-files, and terminates every instance when done. Ordinary runs write one grouped PNG and one text
-report; `--profile` writes `assets/profile.txt`.
+The launcher starts one EC2 instance per node, polls them concurrently, combines their transport
+files, and terminates every instance when done. Ordinary runs fan out over engines and write one
+grouped PNG and one text report. `--profile` fans out over builds of PyCanopy instead, and writes
+`assets/profile.txt`.
 
 ## Methodology
 
@@ -63,6 +64,34 @@ verdict against the committed answer.
 
 Engine times are exact Rust compute; everything else, parquet reads included, falls into
 `non-engine wall`. Ordinary runs are timing-only.
+
+### Comparing against the last release
+
+A profile run launches **two** instances concurrently, both `m7i.2xlarge` in `us-west-2`:
+
+| variant | PyCanopy under test | how it is installed |
+|---|---|---|
+| `branch` | `repository_branch` | Rust toolchain plus `maturin develop --release` |
+| `release` | latest published wheel | `uv pip install pycanopy` |
+
+Both clone the same branch, so both run **identical query code** and the difference between them
+is the library alone. A change to a query under `queries/pycanopy/` therefore moves both columns
+and does not appear as a delta.
+
+Running them side by side is the point. A single profile compared against an earlier one confounds
+the code change with whatever the machine and the S3 read path were doing that day, and one run
+per query gives no variance estimate to separate them. Two concurrent boxes meet the same
+conditions, so the delta between the columns is attributable.
+
+`assets/profile.txt` then carries a run metadata block, a per-query wall and peak comparison with
+percentage deltas, a per-query engine breakdown by stage, and the full per-query detail for the
+branch build. Each box also uploads its own `assets/profile-<variant>.{txt,json}`, the second of
+which is the machine-readable payload the launcher combines.
+
+The released build is a baseline, not the thing under test. If it fails or mismatches, that is
+recorded and the run still reports; only a failing branch build fails the run. A query the
+released wheel cannot run at all, because the branch uses an API it does not have, shows as
+`no profile from the released build`.
 
 Verification compares against the committed upstream answer, with the answer Parquet's schema
 controlling comparison types. Integer keys, strings, timestamps, and row order must match exactly;

@@ -18,6 +18,7 @@ SCALE_FACTOR="@@SCALE_FACTOR@@"
 DATA_ROOT="@@DATA_ROOT@@"
 MAX_RUNTIME_MIN="@@MAX_RUNTIME_MIN@@"
 PROFILE_MODE="@@PROFILE_MODE@@"
+PROFILE_VARIANT="@@PROFILE_VARIANT@@"
 ENGINE="@@ENGINE@@"
 
 export PYCANOPY_BENCH_RUN_ID="$RUN_ID"
@@ -40,7 +41,8 @@ upload_artifacts() {
     return
   fi
   for artifact in \
-    profile.txt \
+    "profile-${PROFILE_VARIANT}.txt" \
+    "profile-${PROFILE_VARIANT}.json" \
     "${ENGINE}-results.tsv"; do
     if [ -f "/opt/pycanopy/assets/$artifact" ]; then
       aws s3 cp "/opt/pycanopy/assets/$artifact" "${S3_BASE}/$artifact" --region "$REGION" || return 1
@@ -82,7 +84,7 @@ log "cloning ${REPO_URL} @ ${REPO_BRANCH}"
 git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" /opt/pycanopy
 cd /opt/pycanopy
 
-if [ "$PROFILE_MODE" = "1" ]; then
+if [ "$PROFILE_MODE" = "1" ] && [ "$PROFILE_VARIANT" = "branch" ]; then
   log "installing rust"
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
   source "$HOME/.cargo/env"
@@ -91,6 +93,12 @@ if [ "$PROFILE_MODE" = "1" ]; then
   uv sync --no-install-project --group bench
   uv run maturin develop --release
   BENCH_PYTHON=(uv run python)
+elif [ "$PROFILE_MODE" = "1" ]; then
+  # PyCanopy pulls polars, numpy, pyarrow and shapely, all the queries need
+  log "installing latest published pycanopy"
+  uv venv --python 3.10 /opt/spatialbench-env
+  uv pip install --python /opt/spatialbench-env/bin/python pycanopy
+  BENCH_PYTHON=(/opt/spatialbench-env/bin/python)
 else
   log "installing latest ${ENGINE} release"
   uv venv --python 3.10 /opt/spatialbench-env
@@ -125,11 +133,13 @@ export TMPDIR=/data/scratch
 # object_store picks up IMDS credentials automatically once the region is set
 export AWS_DEFAULT_REGION="$REGION"
 log "measuring sf${SCALE_FACTOR}"
-rm -f /opt/pycanopy/assets/profile.txt "/opt/pycanopy/assets/${ENGINE}-results.tsv"
+rm -f "/opt/pycanopy/assets/profile-${PROFILE_VARIANT}."{txt,json} \
+  "/opt/pycanopy/assets/${ENGINE}-results.tsv"
 "${BENCH_PYTHON[@]}" -m bench.spatial_bench.driver_utils \
   --engine "$ENGINE" \
   --scale-factor "$SCALE_FACTOR" \
   --data-dir "$DATA_ROOT" \
+  --variant "$PROFILE_VARIANT" \
   @@BENCH_FLAGS@@
 
 upload_artifacts

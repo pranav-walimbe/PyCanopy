@@ -10,8 +10,7 @@ const EDGES_PER_BAND: usize = 8;
 const MAX_BANDS: usize = 1024;
 const VERTS_PER_EDGE: usize = 2; // vertex indices per edge into shared xs/ys
 
-// Fewer bands than this and a probe reads most of the polygon's edges anyway, so the band
-// lookup and its two dependent loads cost more than the edges they skip.
+// Below this a probe reads most edges anyway and the band lookup costs more than it skips
 const MIN_BANDS_TO_PAY: usize = 4;
 
 /// Prepared point-in-polygon accelerator over a flat polygon dataset.
@@ -132,7 +131,7 @@ fn build_part(ys: &[f64], ring_offsets: &[i64], poly_offsets: &[i64], p: usize) 
             continue;
         }
         let mut j = e - 1;
-        // k is the global vertex index we store, not just a ys probe, so enumerate does not fit
+        // k is the global vertex index we store rather than just a ys probe
         #[allow(clippy::needless_range_loop)]
         for k in s..e {
             edge_verts.push(k as u32);
@@ -277,7 +276,7 @@ mod tests {
 
     #[test]
     fn small_polygons_never_build_bands() {
-        // A square yields one band, well under MIN_BANDS_TO_PAY, so it keeps the raw scan
+        // A square yields one band and so stays under MIN_BANDS_TO_PAY
         let xs = vec![0.0, 1.0, 1.0, 0.0];
         let ys = vec![0.0, 0.0, 1.0, 1.0];
         let (ring, poly) = (vec![0, 4], vec![0, 1]);

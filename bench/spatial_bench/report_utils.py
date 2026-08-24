@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import math
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from bench.spatial_bench.config import (
     ENGINES,
     MIB,
     NS_PER_SECOND,
+    PROFILE_VARIANT_LABELS,
     RSS_SAMPLE_INTERVAL,
     WORKLOAD_REVISION,
 )
@@ -89,6 +91,8 @@ def read_transport(path: Path) -> dict:
 
 _SEP = "=" * 76
 _SUBSEP = "-" * 76
+_WIDE_SEP = "=" * 100
+_WIDE_SUB = "-" * 100
 
 
 def combine_transports(paths: list[Path], engines: list[str], scale_factor: int) -> dict:
@@ -310,7 +314,7 @@ def write_chart(results: dict, out_path: Path) -> None:
 
 
 def _section(query_id: str, result: dict) -> str:
-    # One profile block per query: wall boundaries, RSS, Engine work, and the verify verdict
+    # One profile block per query covering wall and RSS and Engine work and the verdict
     lines = [_SEP, f"{query_id}  {result.get('title', '')}".rstrip(), _SUBSEP]
     if result["status"] != "ok":
         return "\n".join(
@@ -352,14 +356,57 @@ def _section(query_id: str, result: dict) -> str:
     return "\n".join(lines)
 
 
-def write_profile(results: dict, out_path: Path) -> None:
-    """Write the human-readable SF1 profile report.
+def write_profile(results: dict, out_path: Path, metadata: dict[str, str] | None = None) -> None:
+    """Write the human-readable SF1 profile report for a single build.
 
     Args:
         results: Per-query profile result dicts keyed by query id.
         out_path: Destination text path.
+        metadata: Run metadata to record above the per-query sections, if collected.
     """
-    head = (
+    parts = [_profile_head()]
+    if metadata:
+        parts.append(_metadata_block(metadata))
+    parts.extend(_section(query_id, result) for query_id, result in results.items())
+    parts.append(_SEP)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(parts) + "\n")
+
+
+def write_profile_transport(
+    path: Path, variant: str, metadata: dict[str, str], results: dict
+) -> None:
+    """Write one build's profile payload for the launcher to combine.
+
+    Args:
+        path: Destination JSON path.
+        variant: Build variant id this box measured.
+        metadata: Run metadata collected on the box.
+        results: Per-query profile result dicts keyed by query id.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"variant": variant, "metadata": metadata, "results": results}
+    path.write_text(json.dumps(payload, indent=2, sort_keys=False) + "\n")
+
+
+def read_profile_transport(path: Path) -> dict:
+    """Read one build's profile payload back.
+
+    Args:
+        path: Profile transport downloaded from the results bucket.
+
+    Returns:
+        A dict with the variant id, run metadata, and per-query results.
+    """
+    payload = json.loads(path.read_text())
+    if "variant" not in payload:
+        raise ValueError(f"invalid profile transport: {path}")
+    return payload
+
+
+def _profile_head() -> str:
+    # Fixed preamble naming the workload and the units
+    return (
         "PyCanopy Apache SpatialBench SF1 profile (1 run/query)\n"
         f"Dataset {DATASET_VERSION}, workload revision {WORKLOAD_REVISION}\n"
         "Engine times are always-on production metrics. Wall times are harness boundaries and\n"
@@ -367,6 +414,170 @@ def write_profile(results: dict, out_path: Path) -> None:
         f"{int(RSS_SAMPLE_INTERVAL * 1000)} ms.\n"
         "Verification uses the committed upstream answers."
     )
-    parts = [head, *[_section(query_id, result) for query_id, result in results.items()], _SEP]
+
+
+def _metadata_block(metadata: dict[str, str]) -> str:
+    # Run metadata, so a later reader can tell a code change from a machine change
+    lines = [_SEP, "Run metadata", _SUBSEP]
+    lines.extend(f"{key:<22}{value}" for key, value in metadata.items())
+    return "\n".join(lines)
+
+
+def _summary(result: dict) -> dict | None:
+    # Wall and memory and verdict for one query or None when it produced no profile
+    if result.get("status") != "ok":
+        return None
+    profile = result["profile"]
+    return {
+        "wall": profile["time"]["total"],
+        "non_engine": profile["time"]["non_engine"],
+        "peak": profile["mem"]["peak"] / MIB,
+        "verdict": {"match": "PASS", "MISMATCH": "FAIL", "error": "ERROR"}.get(
+            result.get("verify", ""), str(result.get("verify", "?"))
+        ),
+    }
+
+
+def _stage_times(result: dict) -> dict[str, float]:
+    # Engine compute per stage, keyed alike for both builds and kept in pipeline order
+    if result.get("status") != "ok":
+        return {}
+    engine = result["profile"]["engine"]
+    stages: dict[str, float] = {}
+    construction = engine["construction"]
+    for name, label in (("wkb_decode_ns", "WKB decode"), ("statistics_ns", "statistics")):
+        if construction.get(name):
+            stages[label] = construction[name] / NS_PER_SECOND
+    for metric in engine["index_builds"]:
+        stages[f"build {metric['index']}"] = metric["elapsed_compute_ns"] / NS_PER_SECOND
+    for metric in engine["operations"]:
+        stages[f"{metric['name']} ({metric['index']})"] = (
+            metric["elapsed_compute_ns"] / NS_PER_SECOND
+        )
+    return stages
+
+
+def _stage_order(stages: list[dict[str, float]]) -> list[str]:
+    # Union both builds' stages, keeping pipeline order and appending whatever only one has
+    ordered: list[str] = []
+    for stage in stages:
+        for name in stage:
+            if name not in ordered:
+                ordered.append(name)
+    return ordered
+
+
+def _delta(new: float, old: float) -> str:
+    # Percent change of new against old, guarding a zero baseline
+    if old == 0:
+        return "new" if new > 0 else "same"
+    return f"{100 * (new - old) / old:+.1f}%"
+
+
+def _comparison_table(results: dict[str, dict], query_ids: list[str], labels: list[str]) -> str:
+    # Both builds side by side with a totals row
+    head = (
+        f"{'query':<7}{labels[0] + ' wall':>13}{labels[1] + ' wall':>15}{'delta':>9}"
+        f"{labels[0] + ' peak':>14}{labels[1] + ' peak':>15}{'delta':>9}{'verify':>18}"
+    )
+    lines = [
+        _WIDE_SEP,
+        f"Wall time and peak memory, {labels[0]} against {labels[1]}",
+        _WIDE_SUB,
+        head,
+        "-" * len(head),
+    ]
+    totals = {label: [0.0, 0.0] for label in labels}
+    for query_id in query_ids:
+        pair = [_summary(results[label].get(query_id, {})) for label in labels]
+        if not all(pair):
+            missing = labels[pair.index(None)] if None in pair else "?"
+            lines.append(f"{query_id:<7}no profile from the {missing} build")
+            continue
+        for label, item in zip(labels, pair):
+            totals[label][0] += item["wall"]
+            totals[label][1] += item["peak"]
+        lines.append(
+            f"{query_id:<7}{pair[0]['wall']:>13.3f}{pair[1]['wall']:>15.3f}"
+            f"{_delta(pair[0]['wall'], pair[1]['wall']):>9}"
+            f"{pair[0]['peak']:>14.1f}{pair[1]['peak']:>15.1f}"
+            f"{_delta(pair[0]['peak'], pair[1]['peak']):>9}"
+            f"{pair[0]['verdict'] + ' / ' + pair[1]['verdict']:>18}"
+        )
+    lines.append("-" * len(head))
+    lines.append(
+        f"{'total':<7}{totals[labels[0]][0]:>13.3f}{totals[labels[1]][0]:>15.3f}"
+        f"{_delta(totals[labels[0]][0], totals[labels[1]][0]):>9}"
+        f"{totals[labels[0]][1]:>14.1f}{totals[labels[1]][1]:>15.1f}"
+        f"{_delta(totals[labels[0]][1], totals[labels[1]][1]):>9}{'':>18}"
+    )
+    lines.append(
+        f"\nA negative delta means the {labels[0]} build is faster or smaller than {labels[1]}."
+    )
+    return "\n".join(lines)
+
+
+def _stage_table(results: dict[str, dict], query_ids: list[str], labels: list[str]) -> str:
+    # Per-query engine compute by stage, showing where a wall change came from
+    head = f"{'query':<7}{'stage':<54}{labels[0]:>12}{labels[1]:>13}{'delta':>14}"
+    lines = [_WIDE_SEP, "Engine compute by stage, seconds", _WIDE_SUB, head, "-" * len(head)]
+    for query_id in query_ids:
+        stages = [_stage_times(results[label].get(query_id, {})) for label in labels]
+        names = _stage_order(stages)
+        if not names:
+            continue
+        for position, name in enumerate(names):
+            new, old = stages[0].get(name, 0.0), stages[1].get(name, 0.0)
+            lines.append(
+                f"{query_id if position == 0 else '':<7}{name:<54}"
+                f"{new:>12.4f}{old:>13.4f}{_delta(new, old):>14}"
+            )
+        totals = [sum(stage.values()) for stage in stages]
+        lines.append(
+            f"{'':<7}{'total engine compute':<54}"
+            f"{totals[0]:>12.4f}{totals[1]:>13.4f}{_delta(totals[0], totals[1]):>14}"
+        )
+    lines.append(
+        "\nStages absent from one build show as 0.0000. A stage marked new exists only in "
+        f"the {labels[0]} build."
+    )
+    return "\n".join(lines)
+
+
+def write_profile_comparison(transports: dict[str, dict], out_path: Path) -> None:
+    """Write the SF1 profile report comparing the branch build against the released one.
+
+    Args:
+        transports: Profile payloads keyed by variant id, as read from each box.
+        out_path: Destination text path.
+    """
+    labels = {variant: PROFILE_VARIANT_LABELS.get(variant, variant) for variant in transports}
+    results = {labels[variant]: payload["results"] for variant, payload in transports.items()}
+    order = [labels[variant] for variant in PROFILE_VARIANT_LABELS if variant in transports]
+
+    metadata: dict[str, str] = {}
+    for variant in PROFILE_VARIANT_LABELS:
+        if variant in transports:
+            metadata = dict(transports[variant]["metadata"])
+            break
+    for variant, payload in transports.items():
+        metadata[f"{labels[variant]} build"] = payload["metadata"].get("pycanopy build", "unknown")
+        metadata[f"{labels[variant]} run ID"] = payload["metadata"].get("run ID", "unknown")
+    for key in ("pycanopy build", "run ID"):
+        metadata.pop(key, None)
+
+    primary = results[order[0]]
+    query_ids = sorted(
+        {query for build in results.values() for query in build}, key=lambda q: int(q[1:])
+    )
+    parts = [_profile_head(), _metadata_block(metadata)]
+    if len(order) == 2:
+        parts.append(_comparison_table(results, query_ids, order))
+        parts.append(_stage_table(results, query_ids, order))
+        parts.append(f"{_WIDE_SEP}\nPer-query detail, {order[0]} build")
+    parts.extend(
+        _section(query_id, primary[query_id]) for query_id in query_ids if query_id in primary
+    )
+    parts.append(_SEP)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(parts) + "\n")

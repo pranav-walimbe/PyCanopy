@@ -18,15 +18,21 @@ from bench.spatial_bench.config import (
     DEFAULT_RUNS,
     ENGINE_IDS,
     ENGINES,
+    PROFILE_VARIANTS,
     PUBLIC_DATA_ROOT,
     PUBLIC_DATA_TEMPLATE,
     QUERY_IDS,
     QUERY_TIMEOUT_SECONDS,
+    REPOSITORY_BRANCH,
     RUNNER_PREFIX,
     SUPPORTED_SCALE_FACTORS,
     WORKLOAD_REVISION,
 )
-from bench.spatial_bench.report_utils import write_profile, write_transport
+from bench.spatial_bench.report_utils import (
+    write_profile,
+    write_profile_transport,
+    write_transport,
+)
 
 
 def _spawn(engine: str, query_id: str, data_dir: str, *flags: str) -> dict:
@@ -127,6 +133,28 @@ def _cpu_model() -> str:
     return platform.processor() or "not recorded"
 
 
+def _git_revision() -> str:
+    # Short commit the box is running, tying a profile back to its source
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(Path(__file__).resolve().parents[2]), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    return completed.stdout.strip() or "unknown"
+
+
+def _build_description(variant: str) -> str:
+    # Name the PyCanopy under test well enough to tell two profile runs apart
+    installed = version("pycanopy")
+    if variant == "release":
+        return f"pycanopy {installed} from PyPI"
+    return f"pycanopy {installed} built from {REPOSITORY_BRANCH} at {_git_revision()}"
+
+
 def _memory_gib() -> float | None:
     # Total physical memory, or None where the platform does not report it
     try:
@@ -182,15 +210,16 @@ def collect_metadata(engine: str, data_dir: str, scale_factor: int, runs: int) -
     return values
 
 
-def run_profile_suite(query_ids: list[str], data_dir: str) -> Path:
-    """Profile and oracle-verify every selected SF1 query exactly once.
+def run_profile_suite(query_ids: list[str], data_dir: str, variant: str = "branch") -> Path:
+    """Profile and oracle-verify every selected SF1 query exactly once for one build.
 
     Args:
         query_ids: Query ids to profile.
         data_dir: SpatialBench dataset root.
+        variant: Build under test, either the repository branch or the published release.
 
     Returns:
-        The path of the profile report written under assets.
+        The path of the profile transport written under assets.
     """
     # Deferred because only a profile run installs PyCanopy and Polars on the box
     from bench.spatial_bench.queries import pycanopy as pycanopy_queries  # noqa: PLC0415
@@ -199,17 +228,23 @@ def run_profile_suite(query_ids: list[str], data_dir: str) -> Path:
         query_id: _profile_query(pycanopy_queries.BY_ID[query_id], data_dir)
         for query_id in query_ids
     }
-    text_path = ASSETS_DIR / "profile.txt"
-    write_profile(results, text_path)
+    metadata = collect_metadata("pycanopy", data_dir, 1, 1)
+    metadata["pycanopy build"] = _build_description(variant)
+    write_profile(results, ASSETS_DIR / f"profile-{variant}.txt", metadata)
+    transport_path = ASSETS_DIR / f"profile-{variant}.json"
+    write_profile_transport(transport_path, variant, metadata, results)
 
     invalid = [
         query_id
         for query_id, result in results.items()
         if result["status"] != "ok" or result.get("verify") != "match"
     ]
-    if invalid:
+    # The released build is a baseline, so only the branch build has to verify clean
+    if invalid and variant == "branch":
         raise RuntimeError(f"profile verification failed for: {', '.join(invalid)}")
-    return text_path
+    if invalid:
+        print(f"[verification] {variant} build did not verify: {', '.join(invalid)}", flush=True)
+    return transport_path
 
 
 def run_timing_suite(
@@ -251,6 +286,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--n", type=int, default=DEFAULT_RUNS, metavar="N")
     parser.add_argument("--query", nargs="+", metavar="ID", help="Run only these query IDs.")
     parser.add_argument("--profile", action="store_true")
+    parser.add_argument("--variant", choices=PROFILE_VARIANTS, default="branch")
     return parser
 
 
@@ -280,7 +316,7 @@ def main(argv: list[str] | None = None) -> int:
 
     data_dir = args.data_dir or PUBLIC_DATA_TEMPLATE.format(scale_factor=args.scale_factor)
     if args.profile:
-        run_profile_suite(query_ids, data_dir)
+        run_profile_suite(query_ids, data_dir, args.variant)
     else:
         run_timing_suite(args.engine, query_ids, data_dir, args.scale_factor, args.n)
     return 0
