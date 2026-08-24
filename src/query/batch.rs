@@ -101,7 +101,7 @@ pub fn par_contains<I: SpatialIndex + Sync>(
             let mut seen: Vec<u32> = Vec::new();
             for ei in index.range(qx, qy, qx, qy) {
                 let hit = match prepared {
-                    Some(p) => p.contains(ei, qx, qy, xs, ys),
+                    Some(p) => p.contains(ei, qx, qy, xs, ys, ring_offsets, poly_offsets),
                     None => pip_raw(qx, qy, xs, ys, ring_offsets, poly_offsets, ei),
                 };
                 if !hit {
@@ -253,7 +253,7 @@ pub fn par_contains_aggregate<I: SpatialIndex + Sync>(
         let mut seen = Vec::new();
         for part in index.range(qx, qy, qx, qy) {
             let hit = match prepared {
-                Some(p) => p.contains(part, qx, qy, xs, ys),
+                Some(p) => p.contains(part, qx, qy, xs, ys, ring_offsets, poly_offsets),
                 None => pip_raw(qx, qy, xs, ys, ring_offsets, poly_offsets, part),
             };
             if !hit {
