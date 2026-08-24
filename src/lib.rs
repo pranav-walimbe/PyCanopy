@@ -550,7 +550,7 @@ impl Engine {
             (self.ring_offsets.as_deref(), self.poly_offsets.as_deref())
         {
             let started = Instant::now();
-            self.prepared_polys = Some(PreparedPolygons::build(&self.ys, ring, poly));
+            self.prepared_polys = Some(PreparedPolygons::new(ring, poly));
             let elapsed = elapsed_ns(started);
             self.metrics.prepared_build.build_count =
                 self.metrics.prepared_build.build_count.saturating_add(1);
