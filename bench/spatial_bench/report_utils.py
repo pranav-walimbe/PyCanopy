@@ -314,7 +314,7 @@ def write_chart(results: dict, out_path: Path) -> None:
 
 
 def _section(query_id: str, result: dict) -> str:
-    # One profile block per query: wall boundaries, RSS, Engine work, and the verify verdict
+    # One profile block per query covering wall and RSS and Engine work and the verdict
     lines = [_SEP, f"{query_id}  {result.get('title', '')}".rstrip(), _SUBSEP]
     if result["status"] != "ok":
         return "\n".join(
@@ -397,9 +397,6 @@ def read_profile_transport(path: Path) -> dict:
 
     Returns:
         A dict with the variant id, run metadata, and per-query results.
-
-    Raises:
-        ValueError: If the file does not carry a variant id.
     """
     payload = json.loads(path.read_text())
     if "variant" not in payload:
@@ -408,7 +405,7 @@ def read_profile_transport(path: Path) -> dict:
 
 
 def _profile_head() -> str:
-    # Fixed preamble naming the workload, the units, and the verification source
+    # Fixed preamble naming the workload and the units
     return (
         "PyCanopy Apache SpatialBench SF1 profile (1 run/query)\n"
         f"Dataset {DATASET_VERSION}, workload revision {WORKLOAD_REVISION}\n"
@@ -427,7 +424,7 @@ def _metadata_block(metadata: dict[str, str]) -> str:
 
 
 def _summary(result: dict) -> dict | None:
-    # Wall, memory, and verdict for one query, or None when it produced no profile
+    # Wall and memory and verdict for one query or None when it produced no profile
     if result.get("status") != "ok":
         return None
     profile = result["profile"]
@@ -478,7 +475,7 @@ def _delta(new: float, old: float) -> str:
 
 
 def _comparison_table(results: dict[str, dict], query_ids: list[str], labels: list[str]) -> str:
-    # Wall, peak, and verdict for both builds side by side, plus a totals row
+    # Both builds side by side with a totals row
     head = (
         f"{'query':<7}{labels[0] + ' wall':>13}{labels[1] + ' wall':>15}{'delta':>9}"
         f"{labels[0] + ' peak':>14}{labels[1] + ' peak':>15}{'delta':>9}{'verify':>18}"

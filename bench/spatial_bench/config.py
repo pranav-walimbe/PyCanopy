@@ -10,7 +10,6 @@ QUERY_TIMEOUT_SECONDS = 1200
 RUNNER_PREFIX = "SPATIALBENCH"
 QUERY_IDS = tuple(f"q{index}" for index in range(1, 13))
 
-# Profile mode measures the branch build against the last PyPI release, on concurrent boxes
 PROFILE_VARIANTS = ("branch", "release")
 PROFILE_VARIANT_LABELS = {"branch": "branch", "release": "released"}
 TABLES = ("building", "customer", "driver", "trip", "vehicle", "zone")

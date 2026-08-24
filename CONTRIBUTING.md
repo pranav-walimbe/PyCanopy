@@ -60,3 +60,6 @@ To avoid a slopocolypse, I like these guidelines:
 - Private Python functions use a `#` comment as the first line in the body.
 - Rust `pub` items require `///` doc comments; every module file requires `//!`.
 - Single-line comments have no trailing period, multi-line comment blocks end each sentence with a period.
+- Comments annotate code in one line. Reach for a multi-line block only when one line truly cannot carry it.
+- Comments use minimal commas. Say the one thing the reader needs and stop.
+- Docstrings carry no `Raises:` section.

@@ -220,9 +220,6 @@ def run_profile_suite(query_ids: list[str], data_dir: str, variant: str = "branc
 
     Returns:
         The path of the profile transport written under assets.
-
-    Raises:
-        RuntimeError: If the branch build fails or mismatches on any query.
     """
     # Deferred because only a profile run installs PyCanopy and Polars on the box
     from bench.spatial_bench.queries import pycanopy as pycanopy_queries  # noqa: PLC0415
