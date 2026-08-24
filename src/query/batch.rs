@@ -629,17 +629,12 @@ impl KnnScratch {
 
 /// The k nearest polygons to one query by exact point-to-polygon distance.
 ///
-/// The index orders candidates by point-to-MBR distance, which only lower-bounds the exact
-/// point-to-polygon distance, so ranking by it alone can drop a polygon whose MBR ranks poorly.
-/// A seed pass refines the MBR-nearest parts and takes the MBR bound of the furthest one it saw:
-/// nothing unseen can be nearer than that, so once the bound reaches the kth exact distance the
-/// answer is already exact. The seed fetches a little beyond k because the two agree often enough
-/// at that width to retire most queries there.
+/// MBR distance only lower-bounds exact distance, so a seed pass refines the MBR-nearest parts
+/// and takes the bound of the furthest it saw: once that reaches the kth exact distance nothing
+/// unseen can qualify. Otherwise a sweep refines the radius that distance defines, nearest-MBR
+/// first, which keeps holes, concavity, and MultiPolygons exact.
 ///
-/// Otherwise the kth exact distance defines a radius holding every part that can still qualify,
-/// and a sweep refines that box nearest-MBR-first, stopping once the next lower bound cannot beat
-/// the kth held. Either way the result is exact for holes, concavity, and MultiPolygons alike.
-/// Leaves it in `scratch.kept`, padded with `(u32::MAX, inf)` when fewer than k polygons exist.
+/// Leaves the answer in `scratch.kept`, padded with `(u32::MAX, inf)` when fewer than k exist.
 #[allow(clippy::too_many_arguments)]
 fn knn_polys_exact<I: SpatialIndex>(
     index: &I,

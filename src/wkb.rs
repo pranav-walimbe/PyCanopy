@@ -20,7 +20,7 @@ pub struct ParsedPolygons {
     pub part_poly: Option<Vec<u32>>, // logical polygon per part, None if no MultiPolygons
 }
 
-/// Accumulates decoded polygon batches before constructing an immutable Engine.
+/// Accumulates decoded polygon batches before constructing an immutable Engine
 pub struct PolygonBuilder {
     xs: Vec<f64>,
     ys: Vec<f64>,

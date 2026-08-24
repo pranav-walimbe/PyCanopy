@@ -45,7 +45,7 @@ thread_local! {
     static SEARCH_QUEUE: RefCell<VecDeque<usize>> = const { RefCell::new(VecDeque::new()) };
 }
 
-/// End of the level holding `value`, mirroring geo-index's internal level lookup.
+/// End of the level holding `value`, mirroring geo-index's internal level lookup
 fn level_end(value: usize, level_bounds: &[usize]) -> usize {
     let mut lo = 0;
     let mut hi = level_bounds.len() - 1;

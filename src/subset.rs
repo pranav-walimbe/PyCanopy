@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::{query::multipoly::polygon_parts_csr, Engine};
 
-/// Copy selected logical polygons into a compact engine with no inherited indexes.
+/// Copy selected logical polygons into a compact engine with no inherited indexes
 pub(crate) fn polygons(source: &Engine, indices: &[u32]) -> Result<Engine, String> {
     let ring_offsets = source
         .ring_offsets
@@ -101,7 +101,8 @@ mod tests {
     use crate::{planner::cost::IndexMode, query::geodesy::DistanceMetric};
 
     fn engine() -> Engine {
-        // Logical polygon 0 is one square. Logical polygon 1 is two disjoint squares.
+        // Logical polygon 0 is one square.
+        // Logical polygon 1 is two disjoint squares.
         Engine::new_polygons(
             vec![
                 0.0, 1.0, 1.0, 0.0, 0.0, 2.0, 3.0, 3.0, 2.0, 2.0, 4.0, 5.0, 5.0, 4.0, 4.0,
