@@ -77,6 +77,10 @@ struct Engine {
 
 const DELTA_FLUSH_FRACTION: f64 = 0.1;
 
+const PREPARE_BUILD_PER_VERTEX: f64 = 10.4;
+const PREPARE_SAVED_PER_VERTEX: f64 = 0.874;
+const PREPARE_PROBE_OVERHEAD: f64 = 24.2;
+
 fn elapsed_ns(started: Instant) -> u64 {
     started.elapsed().as_nanos().min(u64::MAX as u128) as u64
 }
@@ -542,8 +546,11 @@ impl Engine {
         elapsed
     }
 
-    fn build_prepared_if_needed(&mut self) -> u64 {
+    fn build_prepared_if_needed(&mut self, n_queries: usize) -> u64 {
         if self.index_mode == IndexMode::None || self.prepared_polys.is_some() {
+            return 0;
+        }
+        if !self.preparation_pays(n_queries) {
             return 0;
         }
         if let (Some(ring), Some(poly)) =
@@ -562,6 +569,24 @@ impl Engine {
             return elapsed;
         }
         0
+    }
+
+    /// Whether preparing every polygon earns its build cost back over `n_queries` probes
+    fn preparation_pays(&self, n_queries: usize) -> bool {
+        let parts = self
+            .poly_offsets
+            .as_deref()
+            .map_or(0, |offsets| offsets.len().saturating_sub(1));
+        let vertices = self.xs.len();
+        if parts == 0 || vertices == 0 {
+            return false;
+        }
+        let mean_vertices = vertices as f64 / parts as f64;
+        let saved_per_probe = PREPARE_SAVED_PER_VERTEX * mean_vertices - PREPARE_PROBE_OVERHEAD;
+        if saved_per_probe <= 0.0 {
+            return false;
+        }
+        n_queries as f64 * saved_per_probe >= PREPARE_BUILD_PER_VERTEX * vertices as f64
     }
 }
 
@@ -1609,15 +1634,16 @@ impl Engine {
             ));
         }
         let started = Instant::now();
+        let probe_rows = total_q_count.unwrap_or(qxs.len());
         let kind = self.plan_index_kind(
             &Query::Contains {
                 point: Point::new(0.0, 0.0),
             },
-            total_q_count.unwrap_or(qxs.len()),
+            probe_rows,
             IndexKind::RTree,
         );
         let build_ns = self.build_index_if_needed(kind);
-        let prepared_build_ns = self.build_prepared_if_needed();
+        let prepared_build_ns = self.build_prepared_if_needed(probe_rows);
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
         let prepared = self.prepared_polys.as_ref();
@@ -1723,7 +1749,7 @@ impl Engine {
             IndexKind::RTree,
         );
         let build_ns = self.build_index_if_needed(kind);
-        let prepared_build_ns = self.build_prepared_if_needed();
+        let prepared_build_ns = self.build_prepared_if_needed(qxs.len());
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
         let prepared = self.prepared_polys.as_ref();

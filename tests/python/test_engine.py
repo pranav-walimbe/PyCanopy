@@ -136,6 +136,15 @@ def test_stats_returns_string(engine):
 # production metrics
 
 
+def _rings(count, sides=60, radius=0.44):
+    # Polygons wide enough per part that preparing them beats a raw edge scan
+    angles = np.linspace(0.0, 2.0 * np.pi, sides, endpoint=False)
+    return [
+        Polygon([(i + 0.45 + radius * np.cos(a), 0.45 + radius * np.sin(a)) for a in angles])
+        for i in range(count)
+    ]
+
+
 def _metric(metrics, name, index):
     return next(
         item for item in metrics["operations"] if item["name"] == name and item["index"] == index
@@ -253,12 +262,12 @@ def test_none_index_mode_reports_brute_force_selection():
 
 
 def test_batch_metrics_aggregate_streamed_style_calls_and_reuse_indexes():
-    polygons = [Polygon([(i, 0), (i + 0.9, 0), (i + 0.9, 0.9), (i, 0.9)]) for i in range(600)]
+    polygons = _rings(600)
     eng = Engine.from_polygons(polygons)
     eng.take_metrics()
 
-    first = eng.batch_contains(np.array([0.5]), np.array([0.5]), total_q_count=2)
-    second = eng.batch_contains(np.array([1.5]), np.array([0.5]), total_q_count=2)
+    first = eng.batch_contains(np.array([0.45]), np.array([0.45]), total_q_count=200_000)
+    second = eng.batch_contains(np.array([1.45]), np.array([0.45]), total_q_count=200_000)
     assert len(first) == len(second) == 2
     assert first.dtype == second.dtype == np.uint32
 
@@ -269,6 +278,43 @@ def test_batch_metrics_aggregate_streamed_style_calls_and_reuse_indexes():
     builds = {item["index"]: item for item in metrics["index_builds"]}
     assert builds["r_tree"]["build_count"] == 1
     assert builds["prepared_polygons"]["build_count"] == 1
+
+
+def test_few_probes_skip_preparing_polygons():
+    eng = Engine.from_polygons(_rings(600))
+    eng.take_metrics()
+
+    eng.batch_contains(np.array([0.45]), np.array([0.45]), total_q_count=2)
+
+    builds = {item["index"]: item for item in eng.take_metrics()["index_builds"]}
+    assert "prepared_polygons" not in builds
+    assert builds["r_tree"]["build_count"] == 1
+
+
+def test_small_polygons_skip_preparing_at_any_probe_count():
+    polygons = [Polygon([(i, 0), (i + 0.9, 0), (i + 0.9, 0.9), (i, 0.9)]) for i in range(600)]
+    eng = Engine.from_polygons(polygons)
+    eng.take_metrics()
+
+    eng.batch_contains(np.array([0.5]), np.array([0.5]), total_q_count=100_000_000)
+
+    builds = {item["index"]: item for item in eng.take_metrics()["index_builds"]}
+    assert "prepared_polygons" not in builds
+
+
+def test_prepared_and_raw_containment_agree():
+    polygons = _rings(600)
+    qxs = np.tile(np.linspace(0.1, 599.9, 500), 2)
+    qys = np.tile(np.linspace(0.05, 0.85, 500), 2)
+
+    raw = Engine.from_polygons(polygons)
+    prepared = Engine.from_polygons(polygons)
+    raw_hits = raw.batch_contains(qxs, qys, total_q_count=2)
+    prepared_hits = prepared.batch_contains(qxs, qys, total_q_count=200_000)
+
+    assert "prepared_polygons" not in {i["index"] for i in raw.take_metrics()["index_builds"]}
+    assert "prepared_polygons" in {i["index"] for i in prepared.take_metrics()["index_builds"]}
+    assert np.array_equal(raw_hits, prepared_hits)
 
 
 def test_profile_capture_collects_temporary_and_live_engines():
