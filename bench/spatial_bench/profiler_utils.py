@@ -74,8 +74,7 @@ class StageProfiler:
 
 
 def _aggregate_engine_metrics(engines: list[dict]) -> dict:
-    # Fold every Engine created during the run into one set of construction, build,
-    # and operation totals, keeping the per-engine detail alongside.
+    # Fold every Engine created during the run into one set of totals
     construction = {"wkb_decode_ns": 0, "statistics_ns": 0}
     builds: dict[str, dict] = {}
     operations: dict[tuple[str, str], dict] = {}
@@ -112,13 +111,17 @@ def _aggregate_engine_metrics(engines: list[dict]) -> dict:
     }
 
 
-def profile_payload(profiler: StageProfiler, elapsed: float, engines: list[dict]) -> dict:
+def profile_payload(
+    profiler: StageProfiler, elapsed: float, engines: list[dict], metrics: bool = True
+) -> dict:
     """Build the raw profile payload from harness boundaries and Engine-reported work.
 
     Args:
         profiler: The stage profiler that observed the run.
         elapsed: Total wall time of the timed region, in seconds.
         engines: Per-Engine metric dicts captured during the run.
+        metrics: False when the installed PyCanopy exports no metrics hook, which makes
+            the Engine section empty rather than genuinely zero.
 
     Returns:
         A JSON-serialisable payload with time, memory, and Engine sections.
@@ -137,6 +140,7 @@ def profile_payload(profiler: StageProfiler, elapsed: float, engines: list[dict]
             "peak": profiler.peak,
         },
         "engine": engine,
+        "metrics": metrics,
     }
 
 

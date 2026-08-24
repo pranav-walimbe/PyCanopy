@@ -457,6 +457,15 @@ def _stage_times(result: dict) -> dict[str, float]:
     return stages
 
 
+def _reports_metrics(results: dict) -> bool:
+    # A wheel without the private metrics hook still profiles wall time and memory
+    return any(
+        result.get("profile", {}).get("metrics", True)
+        for result in results.values()
+        if result.get("status") == "ok"
+    )
+
+
 def _stage_order(stages: list[dict[str, float]]) -> list[str]:
     # Union both builds' stages, keeping pipeline order and appending whatever only one has
     ordered: list[str] = []
@@ -519,7 +528,10 @@ def _comparison_table(results: dict[str, dict], query_ids: list[str], labels: li
 
 def _stage_table(results: dict[str, dict], query_ids: list[str], labels: list[str]) -> str:
     # Per-query engine compute by stage, showing where a wall change came from
-    head = f"{'query':<7}{'stage':<54}{labels[0]:>12}{labels[1]:>13}{'delta':>14}"
+    paired = _reports_metrics(results[labels[1]])
+    head = f"{'query':<7}{'stage':<54}{labels[0]:>12}"
+    if paired:
+        head += f"{labels[1]:>13}{'delta':>14}"
     lines = [_WIDE_SEP, "Engine compute by stage, seconds", _WIDE_SUB, head, "-" * len(head)]
     for query_id in query_ids:
         stages = [_stage_times(results[label].get(query_id, {})) for label in labels]
@@ -528,19 +540,23 @@ def _stage_table(results: dict[str, dict], query_ids: list[str], labels: list[st
             continue
         for position, name in enumerate(names):
             new, old = stages[0].get(name, 0.0), stages[1].get(name, 0.0)
-            lines.append(
-                f"{query_id if position == 0 else '':<7}{name:<54}"
-                f"{new:>12.4f}{old:>13.4f}{_delta(new, old):>14}"
-            )
+            row = f"{query_id if position == 0 else '':<7}{name:<54}{new:>12.4f}"
+            lines.append(row + (f"{old:>13.4f}{_delta(new, old):>14}" if paired else ""))
         totals = [sum(stage.values()) for stage in stages]
+        row = f"{'':<7}{'total engine compute':<54}{totals[0]:>12.4f}"
         lines.append(
-            f"{'':<7}{'total engine compute':<54}"
-            f"{totals[0]:>12.4f}{totals[1]:>13.4f}{_delta(totals[0], totals[1]):>14}"
+            row + (f"{totals[1]:>13.4f}{_delta(totals[0], totals[1]):>14}" if paired else "")
         )
-    lines.append(
-        "\nStages absent from one build show as 0.0000. A stage marked new exists only in "
-        f"the {labels[0]} build."
-    )
+    if paired:
+        lines.append(
+            "\nStages absent from one build show as 0.0000. A stage marked new exists only in "
+            f"the {labels[0]} build."
+        )
+    else:
+        lines.append(
+            f"\nThe {labels[1]} build reports no engine metrics. Its published wheel exports no "
+            f"metrics hook, so only wall time and peak memory compare against it."
+        )
     return "\n".join(lines)
 
 
