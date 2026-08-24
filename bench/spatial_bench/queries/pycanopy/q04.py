@@ -21,8 +21,7 @@ def pycanopy(data_paths: dict[str, str]) -> pl.DataFrame:
     top, zone = pl.collect_all(
         [
             trip_scan.select(["t_tripkey", "t_tip"])
-            .sort(["t_tip", "t_tripkey"], descending=[True, False])
-            .head(TOP_N)
+            .top_k(TOP_N, by=["t_tip", "t_tripkey"], reverse=[False, True])
             .select("t_tripkey"),
             pl.scan_parquet(data_paths["zone"], storage_options=STORAGE_OPTIONS).select(
                 ["z_zonekey", "z_name", "z_boundary"]
