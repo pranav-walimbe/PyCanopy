@@ -52,6 +52,31 @@ use query::{
 use rayon::prelude::*;
 use stats::{collector, types::GeometryKind};
 
+impl Engine {
+    // Build a polygon Engine from a decoded column and record what the decode cost
+    fn from_parsed_polygons(parsed: wkb::ParsedPolygons, wkb_decode_ns: u64) -> PyResult<Engine> {
+        let n_polygons = match &parsed.part_poly {
+            Some(pp) => pp.iter().copied().max().map_or(0, |m| m as usize + 1),
+            None => parsed.poly_offsets.len().saturating_sub(1),
+        };
+        ensure_u32_indexable(
+            parsed.poly_offsets.len().saturating_sub(1),
+            "polygon dataset",
+        )?;
+        ensure_u32_indexable(n_polygons, "logical polygon dataset")?;
+        let mut engine = Engine::new_polygons(
+            parsed.xs.into(),
+            parsed.ys.into(),
+            parsed.ring_offsets.into(),
+            parsed.poly_offsets.into(),
+            parsed.part_poly.map(Arc::from),
+            n_polygons,
+        );
+        engine.metrics.wkb_decode_ns = wkb_decode_ns;
+        Ok(engine)
+    }
+}
+
 #[pyclass]
 struct Engine {
     xs: Arc<[f64]>,
@@ -688,26 +713,29 @@ impl Engine {
             .map_err(|_| PyValueError::new_err("offsets must be a contiguous int64 array"))?;
         let decode_started = Instant::now();
         let parsed = wkb::parse_polygons(data_sl, off_sl).map_err(PyValueError::new_err)?;
-        let wkb_decode_ns = elapsed_ns(decode_started);
-        let n_polygons = match &parsed.part_poly {
-            Some(pp) => pp.iter().copied().max().map_or(0, |m| m as usize + 1),
-            None => parsed.poly_offsets.len().saturating_sub(1),
-        };
-        ensure_u32_indexable(
-            parsed.poly_offsets.len().saturating_sub(1),
-            "polygon dataset",
-        )?;
-        ensure_u32_indexable(n_polygons, "logical polygon dataset")?;
-        let mut engine = Engine::new_polygons(
-            parsed.xs.into(),
-            parsed.ys.into(),
-            parsed.ring_offsets.into(),
-            parsed.poly_offsets.into(),
-            parsed.part_poly.map(Arc::from),
-            n_polygons,
-        );
-        engine.metrics.wkb_decode_ns = wkb_decode_ns;
-        Ok(engine)
+        Engine::from_parsed_polygons(parsed, elapsed_ns(decode_started))
+    }
+
+    /// Construct from Arrow BinaryView descriptors and the buffers they name without copying
+    #[staticmethod]
+    fn from_wkb_polygon_views(
+        views: PyReadonlyArray1<u8>,
+        buffers: Vec<PyReadonlyArray1<u8>>,
+    ) -> PyResult<Self> {
+        let views_sl = views
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("views must be a contiguous uint8 array"))?;
+        let owned: Vec<&[u8]> = buffers
+            .iter()
+            .map(|b| {
+                b.as_slice().map_err(|_| {
+                    PyValueError::new_err("each buffer must be a contiguous uint8 array")
+                })
+            })
+            .collect::<PyResult<_>>()?;
+        let decode_started = Instant::now();
+        let parsed = wkb::parse_polygon_views(views_sl, &owned).map_err(PyValueError::new_err)?;
+        Engine::from_parsed_polygons(parsed, elapsed_ns(decode_started))
     }
 
     /// Copy selected logical polygons into a compact Engine with no inherited indexes
