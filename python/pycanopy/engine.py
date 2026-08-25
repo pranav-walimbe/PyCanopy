@@ -329,6 +329,41 @@ def _wkb_points_fast(arr: pa.Array) -> tuple[np.ndarray, np.ndarray] | None:
     )
 
 
+# Bytes per Arrow BinaryView descriptor
+_VIEW_WIDTH = 16
+
+
+@lru_cache(maxsize=1)
+def _newest_compat_level():
+    # Polars compat level that keeps a Binary column in its view layout
+    import polars as pl  # noqa: PLC0415
+
+    return pl.CompatLevel.newest()
+
+
+def _wkb_view_buffers(column) -> tuple[np.ndarray, list[np.ndarray]] | None:
+    # Return a WKB column's Arrow view descriptors and data buffers without copying its bytes
+    to_arrow = getattr(column, "to_arrow", None)
+    is_view = getattr(pa.types, "is_binary_view", None)
+    if to_arrow is None or is_view is None:
+        return None
+    try:
+        array = to_arrow(compat_level=_newest_compat_level())
+    except (TypeError, ValueError, AttributeError):
+        return None
+    if not isinstance(array, pa.Array) or not is_view(array.type):
+        return None
+    if array.null_count != 0:
+        return None
+    buffers = array.buffers()
+    if len(buffers) < 2 or buffers[1] is None:
+        return None
+    start = array.offset * _VIEW_WIDTH
+    views = np.frombuffer(buffers[1], dtype=np.uint8)[start : start + len(array) * _VIEW_WIDTH]
+    data = [np.frombuffer(buffer, dtype=np.uint8) for buffer in buffers[2:] if buffer is not None]
+    return views, data
+
+
 def _wkb_binary_buffers(column) -> tuple[np.ndarray, np.ndarray] | None:
     # Return zero-copy (data, offsets) numpy buffers of a WKB binary column, where data is
     # the concatenated value bytes and offsets the n+1 bounds, or None for null/non-binary.
@@ -485,6 +520,13 @@ class Engine:
         eng = cls.__new__(cls)
         eng._metrics_capture = None
         eng._metrics_capture_id = -1
+        views = _wkb_view_buffers(column)
+        if views is not None:
+            try:
+                eng._core = _configure_core(_CoreEngine.from_wkb_polygon_views(*views))
+                return _register_metrics_engine(eng)
+            except ValueError:
+                pass  # unusual WKB variant -> contiguous buffers then shapely
         buffers = _wkb_binary_buffers(column)
         if buffers is not None:
             try:

@@ -187,17 +187,78 @@ fn count_geometry(r: &mut Reader) -> Result<usize, String> {
     }
 }
 
-/// Total coordinate count of geometries `[g_start, g_end)`, used to size each chunk's slices
-fn count_chunk(
-    data: &[u8],
-    offsets: &[i64],
-    g_start: usize,
-    g_end: usize,
-) -> Result<usize, String> {
+/// Addressing for the WKB bytes of each geometry in a column
+pub trait Blobs: Sync {
+    /// Bytes of geometry `g` or an error when the source is malformed
+    fn blob(&self, g: usize) -> Result<&[u8], String>;
+
+    /// Number of geometries the column holds
+    fn count(&self) -> usize;
+}
+
+/// One concatenated value buffer where geometry g is `data[offsets[g]..offsets[g+1]]`
+pub struct Contiguous<'a> {
+    pub data: &'a [u8],
+    pub offsets: &'a [i64],
+}
+
+impl Blobs for Contiguous<'_> {
+    fn blob(&self, g: usize) -> Result<&[u8], String> {
+        let (start, end) = (self.offsets[g] as usize, self.offsets[g + 1] as usize);
+        self.data
+            .get(start..end)
+            .ok_or_else(|| "WKB offset out of bounds".to_string())
+    }
+
+    fn count(&self) -> usize {
+        self.offsets.len().saturating_sub(1)
+    }
+}
+
+/// Arrow BinaryView descriptors naming a length and a buffer and an offset per geometry
+pub struct Views<'a> {
+    pub views: &'a [u8],
+    pub buffers: &'a [&'a [u8]],
+}
+
+/// Bytes per Arrow BinaryView descriptor
+const VIEW_WIDTH: usize = 16;
+
+/// Length at or below which a view stores its bytes inline instead of naming a buffer
+const VIEW_INLINE_MAX: u32 = 12;
+
+impl Blobs for Views<'_> {
+    fn blob(&self, g: usize) -> Result<&[u8], String> {
+        let base = g * VIEW_WIDTH;
+        let view = self
+            .views
+            .get(base..base + VIEW_WIDTH)
+            .ok_or_else(|| "WKB view out of bounds".to_string())?;
+        let length = u32::from_le_bytes([view[0], view[1], view[2], view[3]]) as usize;
+        if length <= VIEW_INLINE_MAX as usize {
+            return Ok(&view[4..4 + length]);
+        }
+        let index = u32::from_le_bytes([view[8], view[9], view[10], view[11]]) as usize;
+        let offset = u32::from_le_bytes([view[12], view[13], view[14], view[15]]) as usize;
+        let buffer = self
+            .buffers
+            .get(index)
+            .ok_or_else(|| "WKB view names a missing buffer".to_string())?;
+        buffer
+            .get(offset..offset + length)
+            .ok_or_else(|| "WKB view offset out of bounds".to_string())
+    }
+
+    fn count(&self) -> usize {
+        self.views.len() / VIEW_WIDTH
+    }
+}
+
+/// Total coordinate count of geometries `[g_start, g_end)` that sizes each chunk's slices
+fn count_chunk<B: Blobs>(blobs: &B, g_start: usize, g_end: usize) -> Result<usize, String> {
     let mut coords = 0usize;
     for g in g_start..g_end {
-        let (start, end) = (offsets[g] as usize, offsets[g + 1] as usize);
-        let slice = data.get(start..end).ok_or("WKB offset out of bounds")?;
+        let slice = blobs.blob(g)?;
         coords += count_geometry(&mut Reader::new(slice))?;
     }
     Ok(coords)
@@ -283,9 +344,8 @@ struct ChunkSmall {
 
 /// Decode geometries `[g_start, g_end)` straight into the pre-sized `xs`/`ys` slices. The slices
 /// must hold exactly this chunk's coordinate count, which is asserted so the caller may set_len.
-fn fill_chunk(
-    data: &[u8],
-    offsets: &[i64],
+fn fill_chunk<B: Blobs>(
+    blobs: &B,
     g_start: usize,
     g_end: usize,
     xs: &mut [MaybeUninit<f64>],
@@ -297,8 +357,7 @@ fn fill_chunk(
     let mut part_poly = Vec::new();
     let mut multipart = false;
     for g in g_start..g_end {
-        let (start, end) = (offsets[g] as usize, offsets[g + 1] as usize);
-        let slice = data.get(start..end).ok_or("WKB offset out of bounds")?;
+        let slice = blobs.blob(g)?;
         let parts = fill_geometry(
             &mut Reader::new(slice),
             g,
@@ -325,12 +384,11 @@ fn fill_chunk(
 
 /// Parse a WKB column in `chunk_size`-geometry chunks. A cheap count pass sizes the output, then
 /// the chunks decode in parallel into disjoint slices. The result is independent of `chunk_size`.
-fn parse_polygons_chunked(
-    data: &[u8],
-    offsets: &[i64],
+fn parse_polygons_chunked<B: Blobs>(
+    blobs: &B,
     chunk_size: usize,
 ) -> Result<ParsedPolygons, String> {
-    let n = offsets.len().saturating_sub(1);
+    let n = blobs.count();
     if n == 0 {
         return Ok(ParsedPolygons {
             xs: Vec::new(),
@@ -349,7 +407,7 @@ fn parse_polygons_chunked(
     // Pass 1: count coordinates per chunk so each chunk's output region is known before filling
     let coord_counts: Vec<usize> = bounds
         .par_iter()
-        .map(|&(s, e)| count_chunk(data, offsets, s, e))
+        .map(|&(s, e)| count_chunk(blobs, s, e))
         .collect::<Result<_, _>>()?;
     let total_coords: usize = coord_counts.iter().sum();
 
@@ -371,7 +429,7 @@ fn parse_polygons_chunked(
         }
         tasks
             .into_par_iter()
-            .map(|((s, e), xa, ya)| fill_chunk(data, offsets, s, e, xa, ya))
+            .map(|((s, e), xa, ya)| fill_chunk(blobs, s, e, xa, ya))
             .collect::<Result<_, _>>()?
     };
 
@@ -414,15 +472,86 @@ fn parse_polygons_chunked(
 /// Parse a whole WKB column. `data` is the concatenated value buffer, geometry g is
 /// `data[offsets[g]..offsets[g+1]]`.
 pub fn parse_polygons(data: &[u8], offsets: &[i64]) -> Result<ParsedPolygons, String> {
-    let n = offsets.len().saturating_sub(1);
+    parse_blobs(&Contiguous { data, offsets })
+}
+
+/// Parse a whole WKB column addressed by Arrow BinaryView descriptors over borrowed buffers
+pub fn parse_polygon_views(views: &[u8], buffers: &[&[u8]]) -> Result<ParsedPolygons, String> {
+    parse_blobs(&Views { views, buffers })
+}
+
+/// Split a column into one chunk per thread and decode the chunks in parallel
+fn parse_blobs<B: Blobs>(blobs: &B) -> Result<ParsedPolygons, String> {
     let n_threads = rayon::current_num_threads().max(1);
-    let chunk_size = n.div_ceil(n_threads).max(MIN_DECODE_CHUNK);
-    parse_polygons_chunked(data, offsets, chunk_size)
+    let chunk_size = blobs.count().div_ceil(n_threads).max(MIN_DECODE_CHUNK);
+    parse_polygons_chunked(blobs, chunk_size)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Build a BinaryView descriptor naming a buffer or holding the bytes inline
+    fn view_descriptor(bytes: &[u8], buffer: u32, offset: u32) -> [u8; 16] {
+        let mut view = [0u8; 16];
+        view[0..4].copy_from_slice(&(bytes.len() as u32).to_le_bytes());
+        if bytes.len() <= 12 {
+            view[4..4 + bytes.len()].copy_from_slice(bytes);
+            return view;
+        }
+        view[4..8].copy_from_slice(&bytes[..4]);
+        view[8..12].copy_from_slice(&buffer.to_le_bytes());
+        view[12..16].copy_from_slice(&offset.to_le_bytes());
+        view
+    }
+
+    #[test]
+    fn views_address_the_same_geometry_as_concatenated_offsets() {
+        let geoms: Vec<Vec<u8>> = (0..3).map(|g| square_with_hole(g as f64 * 10.0)).collect();
+        let mut data = Vec::new();
+        let mut offsets = vec![0i64];
+        for geom in &geoms {
+            data.extend_from_slice(geom);
+            offsets.push(data.len() as i64);
+        }
+        let mut views = Vec::new();
+        for (g, geom) in geoms.iter().enumerate() {
+            // One buffer per geometry proves the decoder follows the buffer index
+            views.extend_from_slice(&view_descriptor(geom, g as u32, 0));
+        }
+        let borrowed: Vec<&[u8]> = geoms.iter().map(|g| g.as_slice()).collect();
+
+        let from_views = parse_polygon_views(&views, &borrowed).unwrap();
+        let from_offsets = parse_polygons(&data, &offsets).unwrap();
+
+        assert_eq!(from_views.xs, from_offsets.xs);
+        assert_eq!(from_views.ys, from_offsets.ys);
+        assert_eq!(from_views.ring_offsets, from_offsets.ring_offsets);
+        assert_eq!(from_views.poly_offsets, from_offsets.poly_offsets);
+    }
+
+    #[test]
+    fn an_inline_view_reads_its_bytes_out_of_the_descriptor() {
+        let inline = view_descriptor(&[1, 2, 3, 4], 0, 0);
+        let blobs = Views {
+            views: &inline,
+            buffers: &[],
+        };
+
+        assert_eq!(blobs.blob(0).unwrap(), &[1, 2, 3, 4]);
+        assert_eq!(blobs.count(), 1);
+    }
+
+    #[test]
+    fn a_view_naming_a_missing_buffer_is_an_error() {
+        let view = view_descriptor(&[0u8; 40], 7, 0);
+        let blobs = Views {
+            views: &view,
+            buffers: &[],
+        };
+
+        assert!(blobs.blob(0).is_err());
+    }
 
     // Little-endian WKB for a unit square at (cx, cy): one closed 5-point ring
     fn le_square(cx: f64, cy: f64) -> Vec<u8> {
@@ -522,9 +651,23 @@ mod tests {
         }
         let n = offsets.len() - 1;
         // chunk_size >= n is a single chunk, the serial reference the parallel paths must match
-        let serial = parse_polygons_chunked(&data, &offsets, n).unwrap();
+        let serial = parse_polygons_chunked(
+            &Contiguous {
+                data: &data,
+                offsets: &offsets,
+            },
+            n,
+        )
+        .unwrap();
         for chunk_size in [1usize, 2, 13, 64, 256] {
-            let p = parse_polygons_chunked(&data, &offsets, chunk_size).unwrap();
+            let p = parse_polygons_chunked(
+                &Contiguous {
+                    data: &data,
+                    offsets: &offsets,
+                },
+                chunk_size,
+            )
+            .unwrap();
             assert_eq!(p.xs, serial.xs, "xs differ at chunk_size {chunk_size}");
             assert_eq!(p.ys, serial.ys, "ys differ at chunk_size {chunk_size}");
             assert_eq!(
@@ -631,6 +774,13 @@ mod tests {
         bad.truncate(bad.len() - 8);
         data.extend_from_slice(&bad);
         offsets.push(data.len() as i64);
-        assert!(parse_polygons_chunked(&data, &offsets, 1).is_err());
+        assert!(parse_polygons_chunked(
+            &Contiguous {
+                data: &data,
+                offsets: &offsets,
+            },
+            1,
+        )
+        .is_err());
     }
 }
