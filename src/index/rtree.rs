@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, VecDeque};
+use std::sync::Arc;
 
 use rayon::prelude::*;
 
@@ -10,7 +11,6 @@ use geo_index::rtree::sort::HilbertSort;
 use geo_index::rtree::{RTree, RTreeBuilder, RTreeIndex};
 
 use crate::index::{point_box_dist2, SpatialIndex};
-use crate::Shared;
 
 /// One entry in the best-first traversal queue, ordered by squared distance to the node's box.
 ///
@@ -96,7 +96,7 @@ pub struct PackedRTree {
 }
 
 impl SpatialIndex for PackedRTree {
-    fn build(xs: Shared<f64>, ys: Shared<f64>) -> Self {
+    fn build(xs: Arc<[f64]>, ys: Arc<[f64]>) -> Self {
         let n = xs.len() as u32;
         let mut builder = RTreeBuilder::<f64>::new(n);
         for (&x, &y) in xs.iter().zip(ys.iter()) {

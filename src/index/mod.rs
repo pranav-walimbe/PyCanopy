@@ -5,13 +5,14 @@ pub mod grid;
 pub mod kdtree;
 pub mod rtree;
 
-use crate::Shared;
+use std::sync::Arc;
 
 /// Common interface for all spatial index backends.
-/// Coordinates arrive as Shared<f64> so an index shares the Engine allocation by refcount.
+/// Coordinates are passed as Arc<[f64]> so indexes can share Engine's allocation
+/// without copying, since storing an Arc<[f64]> is an atomic refcount bump, not a memcpy.
 pub trait SpatialIndex: Send + Sync {
     /// Build an index over the given coordinate arrays
-    fn build(xs: Shared<f64>, ys: Shared<f64>) -> Self
+    fn build(xs: Arc<[f64]>, ys: Arc<[f64]>) -> Self
     where
         Self: Sized;
     /// Indices of the k nearest entries to (qx, qy), sorted nearest-first.

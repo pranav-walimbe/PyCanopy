@@ -1,9 +1,10 @@
 //! Uniform grid index with CSR cell storage for large, uniformly distributed datasets.
 
+use std::sync::Arc;
+
 use rayon::prelude::*;
 
 use crate::index::SpatialIndex;
-use crate::Shared;
 
 /// Uniform grid index with CSR (compressed sparse row) cell storage.
 /// Best for large datasets with uniform spatial distribution.
@@ -14,8 +15,8 @@ pub struct UniformGrid {
     /// cell_offsets[i]..cell_offsets[i+1] is the slice of indices in cell i
     cell_offsets: Vec<u32>,
     indices: Vec<u32>,
-    xs: Shared<f64>,
-    ys: Shared<f64>,
+    xs: Arc<[f64]>,
+    ys: Arc<[f64]>,
     min_x: f64,
     min_y: f64,
     cell_w: f64,
@@ -54,7 +55,7 @@ impl UniformGrid {
 }
 
 impl SpatialIndex for UniformGrid {
-    fn build(xs: Shared<f64>, ys: Shared<f64>) -> Self {
+    fn build(xs: Arc<[f64]>, ys: Arc<[f64]>) -> Self {
         let n = xs.len();
 
         let (min_x, min_y, max_x, max_y) = xs.iter().zip(ys.iter()).fold(
