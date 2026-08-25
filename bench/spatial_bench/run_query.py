@@ -57,15 +57,18 @@ def _run_profiled(query_id: str, data_dir: str, scale_factor: int) -> None:
     # Deferred because an ordinary run of another engine installs neither PyCanopy nor Polars
     from bench.spatial_bench.profiler_utils import (  # noqa: PLC0415
         StageProfiler,
+        instrument_host_stages,
         profile_payload,
         verify_output,
     )
+    from bench.spatial_bench.queries import pycanopy as queries  # noqa: PLC0415
 
     runner = load_runner("pycanopy")
     profiler = StageProfiler()
     try:
         runner.prepare(data_dir)
-        with _capture_metrics() as capture:
+        module = queries.BY_ID[query_id]
+        with _capture_metrics() as capture, instrument_host_stages(profiler, module):
             started = time.perf_counter()
             result = runner.execute(query_id)
             result = _materialize(result)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 import resource
 import sys
@@ -73,6 +74,69 @@ class StageProfiler:
         self._observe()
 
 
+# Host calls no Engine metric can see paired with the stage each belongs to
+_HOST_STAGES = (
+    ("read", "pl", "read_parquet"),
+    ("read", "pl", "collect_all"),
+    ("wkb decode", None, "wkb_points_to_xy"),
+    ("wkb decode", None, "wkb_point_distance"),
+    ("frame build", "SpatialFrame", "from_wkb_points"),
+    ("frame build", "SpatialFrame", "from_wkb_polygons"),
+)
+
+
+def _timed_call(profiler: StageProfiler, stage: str, call):
+    # Wrap one host call and accumulate its wall time under a named stage
+    def wrapper(*args, **kwargs):
+        with profiler.stage(stage):
+            return call(*args, **kwargs)
+
+    return wrapper
+
+
+def _patch_target(profiler: StageProfiler, module, stage: str, holder_name, attr):
+    # Replace one name with a timed wrapper and return what restores it
+    if holder_name is None:
+        original = module.__dict__.get(attr)
+        if original is None:
+            return None
+        module.__dict__[attr] = _timed_call(profiler, stage, original)
+        return (module.__dict__, attr, original)
+    holder = module.__dict__.get(holder_name)
+    original = getattr(holder, attr, None) if holder is not None else None
+    if original is None:
+        return None
+    wrapper = _timed_call(profiler, stage, original)
+    restore = vars(holder).get(attr, original)
+    setattr(holder, attr, staticmethod(wrapper) if inspect.isclass(holder) else wrapper)
+    return (holder, attr, restore)
+
+
+@contextmanager
+def instrument_host_stages(profiler: StageProfiler, module):
+    """Time the read and decode work that runs outside the Engine.
+
+    Args:
+        profiler: Stage profiler that accumulates the timings.
+        module: Query module whose globals hold the names to patch.
+
+    Yields:
+        None, for the duration of the instrumented region.
+    """
+    restore = [_patch_target(profiler, module, *target) for target in _HOST_STAGES]
+    try:
+        yield
+    finally:
+        for entry in reversed(restore):
+            if entry is None:
+                continue
+            holder, attr, original = entry
+            if isinstance(holder, dict):
+                holder[attr] = original
+            else:
+                setattr(holder, attr, original)
+
+
 def _aggregate_engine_metrics(engines: list[dict]) -> dict:
     # Fold every Engine created during the run into one set of totals
     construction = {"wkb_decode_ns": 0, "statistics_ns": 0}
@@ -124,7 +188,7 @@ def profile_payload(
             the Engine section empty rather than genuinely zero.
 
     Returns:
-        A JSON-serialisable payload with time, memory, and Engine sections.
+        A JSON-serialisable payload with time, memory, host stage and Engine sections.
     """
     engine = _aggregate_engine_metrics(engines)
     engine_ns = sum(engine["construction"].values())
@@ -139,6 +203,7 @@ def profile_payload(
             "baseline": profiler.baseline,
             "peak": profiler.peak,
         },
+        "stages": dict(profiler.times),
         "engine": engine,
         "metrics": metrics,
     }

@@ -337,6 +337,11 @@ def _section(query_id: str, result: dict) -> str:
         f"{construction['wkb_decode_ns'] / NS_PER_SECOND:7.3f}s  statistics "
         f"{construction['statistics_ns'] / NS_PER_SECOND:7.3f}s",
     ]
+    host = _host_times(result)
+    if host:
+        lines.append(
+            "host stages   " + "  ".join(f"{name} {value:.3f}s" for name, value in host.items())
+        )
     if engine["index_builds"]:
         lines.append("index builds")
         for metric in engine["index_builds"]:
@@ -455,6 +460,49 @@ def _stage_times(result: dict) -> dict[str, float]:
             metric["elapsed_compute_ns"] / NS_PER_SECOND
         )
     return stages
+
+
+# Host stage order in pipeline sequence with the derived remainder last
+_HOST_ORDER = ("read", "wkb decode", "frame build", "polars compute")
+
+
+def _host_times(result: dict) -> dict[str, float]:
+    # Host wall per stage with everything unattributed folded into polars compute
+    if result.get("status") != "ok":
+        return {}
+    profile = result["profile"]
+    stages = dict(profile.get("stages", {}))
+    if not stages:
+        return {}
+    engine = profile["engine"]
+    outside = sum(metric["elapsed_compute_ns"] for metric in engine["index_builds"])
+    outside += sum(metric["elapsed_compute_ns"] for metric in engine["operations"])
+    accounted = sum(stages.values()) + outside / NS_PER_SECOND
+    stages["polars compute"] = max(profile["time"]["total"] - accounted, 0.0)
+    return {name: stages[name] for name in _HOST_ORDER if name in stages}
+
+
+def _host_table(results: dict[str, dict], query_ids: list[str], labels: list[str]) -> str:
+    # Per-query host wall by stage, covering the time no Engine metric reports
+    head = f"{'query':<7}{'stage':<54}{labels[0]:>12}{labels[1]:>13}{'delta':>14}"
+    lines = [_WIDE_SEP, "Host time by stage, seconds", _WIDE_SUB, head, "-" * len(head)]
+    for query_id in query_ids:
+        stages = [_host_times(results[label].get(query_id, {})) for label in labels]
+        names = _stage_order(stages)
+        if not names:
+            continue
+        for position, name in enumerate(names):
+            new, old = stages[0].get(name, 0.0), stages[1].get(name, 0.0)
+            lines.append(
+                f"{query_id if position == 0 else '':<7}{name:<54}{new:>12.4f}"
+                f"{old:>13.4f}{_delta(new, old):>14}"
+            )
+    lines.append(
+        "\nHost stages are wall clock around the read and decode calls. frame build contains "
+        "the Engine's own WKB decode and statistics. polars compute is the unattributed "
+        "remainder after every host stage and Engine metric is subtracted."
+    )
+    return "\n".join(lines)
 
 
 def _reports_metrics(results: dict) -> bool:
@@ -590,6 +638,7 @@ def write_profile_comparison(transports: dict[str, dict], out_path: Path) -> Non
     if len(order) == 2:
         parts.append(_comparison_table(results, query_ids, order))
         parts.append(_stage_table(results, query_ids, order))
+        parts.append(_host_table(results, query_ids, order))
         parts.append(f"{_WIDE_SEP}\nPer-query detail, {order[0]} build")
     parts.extend(
         _section(query_id, primary[query_id]) for query_id in query_ids if query_id in primary

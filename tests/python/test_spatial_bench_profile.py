@@ -1,6 +1,7 @@
 """Focused tests for the SpatialBench Engine-metrics profile path."""
 
 import builtins
+import types
 
 import pytest
 
@@ -221,3 +222,62 @@ def test_stage_table_drops_the_released_column_when_it_has_no_metrics(tmp_path):
     assert "-20.0%" in text and "-50.0%" in text
     assert "reports no engine metrics" in text
     assert "build prepared_polygons" in text
+
+
+def test_host_stages_time_each_call_then_restore_every_patched_name():
+    class Frame:
+        @classmethod
+        def from_wkb_points(cls, value):
+            return value * 2
+
+    polars_stub = types.SimpleNamespace(read_parquet=lambda path: path, collect_all=list)
+    module = types.ModuleType("fake_query")
+    module.pl = polars_stub
+    module.SpatialFrame = Frame
+    module.wkb_points_to_xy = lambda column: column
+
+    original_read = polars_stub.read_parquet
+    original_frame = Frame.__dict__["from_wkb_points"]
+    original_decode = module.wkb_points_to_xy
+
+    profiler = _profiling.StageProfiler()
+    try:
+        with _profiling.instrument_host_stages(profiler, module):
+            assert module.pl.read_parquet("a") == "a"
+            assert module.SpatialFrame.from_wkb_points(3) == 6
+            assert module.wkb_points_to_xy("c") == "c"
+    finally:
+        profiler.stop()
+
+    assert set(profiler.times) == {"read", "frame build", "wkb decode"}
+    assert all(value >= 0.0 for value in profiler.times.values())
+    assert polars_stub.read_parquet is original_read
+    assert Frame.__dict__["from_wkb_points"] is original_frame
+    assert module.wkb_points_to_xy is original_decode
+
+
+def test_host_stages_skip_names_a_query_never_imports():
+    module = types.ModuleType("bare_query")
+    profiler = _profiling.StageProfiler()
+    try:
+        with _profiling.instrument_host_stages(profiler, module):
+            pass
+    finally:
+        profiler.stop()
+
+    assert profiler.times == {}
+
+
+def test_host_times_fold_the_unattributed_remainder_into_polars_compute():
+    payload = _payload()
+    payload["stages"] = {"frame build": 0.2, "read": 0.3}
+    result = {"status": "ok", "profile": payload}
+
+    host = _results._host_times(result)
+
+    assert list(host) == ["read", "frame build", "polars compute"]
+    assert host["polars compute"] == pytest.approx(0.5, abs=1e-6)
+
+
+def test_host_times_are_empty_without_instrumentation():
+    assert _results._host_times({"status": "ok", "profile": _payload()}) == {}
