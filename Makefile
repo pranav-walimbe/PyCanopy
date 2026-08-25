@@ -2,6 +2,9 @@
 
 sources = python/ tests/python/ bench/
 
+# Engines the sf1 and sf10 targets launch. Override with `make sf1 engines=pycanopy`
+engines = pycanopy duckdb sedonadb geopandas
+
 # Preserve color in cargo output when running from a tty
 export CARGO_TERM_COLOR=$(shell (test -t 0 && echo "always") || echo "auto")
 
@@ -9,24 +12,20 @@ export CARGO_TERM_COLOR=$(shell (test -t 0 && echo "always") || echo "auto")
 setup:
 	uv sync --group dev
 
-.PHONY: format
-format:
+# Build before linting and testing so clippy and nextest reuse maturin's compiled objects
+.PHONY: check ## Format, build, lint and run every test
+check:
 	cargo fmt
 	uv run ruff check --fix $(sources)
 	uv run ruff format $(sources)
-
-.PHONY: lint-python
-lint-python:
+	@rm -f python/pycanopy/*.so
+	uv run maturin develop
 	uv run ruff check $(sources)
 	uv run ruff format --check $(sources)
-
-.PHONY: lint-rust
-lint-rust:
 	cargo fmt --all -- --check
 	cargo clippy --tests -- -D warnings
-
-.PHONY: lint
-lint: lint-python lint-rust
+	cargo nextest run
+	uv run pytest tests/python/ --durations=5
 
 .PHONY: build ## Debug build
 build:
@@ -42,16 +41,17 @@ build-prod:
 tune-engine: build-prod
 	uv run python -m bench.ops
 
-# Build first so clippy and cargo nextest reuse compiled objects from maturin
-.PHONY: check
-check: format build lint
-	cargo nextest run
-	uv run pytest tests/python/ --durations=5
+.PHONY: profile ## Two-build SF1 profile on EC2, writes assets/profile.txt
+profile:
+	uv run --group bench python -m bench.spatial_bench --profile
 
-.PHONY: test
-test: build
-	cargo nextest run
-	uv run pytest tests/python/
+.PHONY: sf1 ## SpatialBench SF1 on EC2, all four engines unless engines= is set
+sf1:
+	uv run --group bench python -m bench.spatial_bench --scale-factor 1 --engine $(engines)
+
+.PHONY: sf10 ## SpatialBench SF10 on EC2, all four engines unless engines= is set
+sf10:
+	uv run --group bench python -m bench.spatial_bench --scale-factor 10 --engine $(engines)
 
 .PHONY: clean
 clean:
