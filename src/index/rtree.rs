@@ -5,6 +5,8 @@ use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, VecDeque};
 use std::sync::Arc;
 
+use rayon::prelude::*;
+
 use geo_index::rtree::sort::HilbertSort;
 use geo_index::rtree::{RTree, RTreeBuilder, RTreeIndex};
 
@@ -60,12 +62,34 @@ fn level_end(value: usize, level_bounds: &[usize]) -> usize {
     level_bounds[lo]
 }
 
+// Exterior ring bounds in one pass with a zero box for an empty ring
+fn part_bounds(xs: &[f64], ys: &[f64], ring_offsets: &[i64], ext_ring: usize) -> [f64; 4] {
+    let start = ring_offsets[ext_ring] as usize;
+    let end = ring_offsets[ext_ring + 1] as usize;
+    if start >= end {
+        return [0.0, 0.0, 0.0, 0.0];
+    }
+    let mut bounds = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for (&x, &y) in xs[start..end].iter().zip(ys[start..end].iter()) {
+        bounds[0] = bounds[0].min(x);
+        bounds[1] = bounds[1].min(y);
+        bounds[2] = bounds[2].max(x);
+        bounds[3] = bounds[3].max(y);
+    }
+    bounds
+}
+
 /// Packed immutable R-tree backed by geo-index with Hilbert sort.
 ///
 /// geo-index stores coordinates internally (one unavoidable copy at build time).
 /// The xs/ys Arcs passed to build() are not retained, they are iterated once
 /// to feed the builder and then dropped.
-/// For polygon datasets use build_polygons, which computes per-polygon MBRs.
+/// For polygon datasets use build_polygons which computes per-part MBRs.
 pub struct PackedRTree {
     tree: RTree<f64>,
 }
@@ -182,8 +206,7 @@ impl PackedRTree {
         self.tree.metadata().data_buffer_length()
     }
 
-    /// Build from two-level polygon ring arrays. Each polygon's MBR is computed from
-    /// its exterior ring only. Holes do not expand the MBR.
+    /// Build from two-level polygon ring arrays with one MBR per part from its exterior ring.
     pub fn build_polygons(
         xs: &[f64],
         ys: &[f64],
@@ -191,22 +214,14 @@ impl PackedRTree {
         poly_offsets: &[i64],
     ) -> Self {
         let n_polys = poly_offsets.len().saturating_sub(1);
+        // Bounds compute across the rayon pool then feed the builder in order
+        let bounds: Vec<[f64; 4]> = poly_offsets[..n_polys]
+            .par_iter()
+            .map(|&ext_ring| part_bounds(xs, ys, ring_offsets, ext_ring as usize))
+            .collect();
         let mut builder = RTreeBuilder::<f64>::new(n_polys as u32);
-        for &ext_ring_i64 in poly_offsets.iter().take(n_polys) {
-            let ext_ring = ext_ring_i64 as usize;
-            let start = ring_offsets[ext_ring] as usize;
-            let end = ring_offsets[ext_ring + 1] as usize;
-            if start >= end {
-                builder.add(0.0, 0.0, 0.0, 0.0);
-                continue;
-            }
-            let ring_xs = &xs[start..end];
-            let ring_ys = &ys[start..end];
-            let min_x = ring_xs.iter().cloned().fold(f64::INFINITY, f64::min);
-            let min_y = ring_ys.iter().cloned().fold(f64::INFINITY, f64::min);
-            let max_x = ring_xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            let max_y = ring_ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            builder.add(min_x, min_y, max_x, max_y);
+        for bound in bounds {
+            builder.add(bound[0], bound[1], bound[2], bound[3]);
         }
         PackedRTree {
             tree: builder.finish::<HilbertSort>(),
@@ -327,6 +342,77 @@ mod tests {
             got.iter().all(|&i| i < 4),
             "the far point must not tie the near ones"
         );
+    }
+
+    // Deterministic polygon parts with varied ring sizes plus one empty ring
+    fn ring_fixture(parts: usize) -> (Vec<f64>, Vec<f64>, Vec<i64>, Vec<i64>) {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let (mut xs, mut ys, mut ring_offsets, mut poly_offsets) =
+            (Vec::new(), Vec::new(), vec![0i64], vec![0i64]);
+        for part in 0..parts {
+            let n = if part == 3 { 0 } else { 1 + (part % 17) };
+            for _ in 0..n {
+                xs.push(next() * 360.0 - 180.0);
+                ys.push(next() * 180.0 - 90.0);
+            }
+            ring_offsets.push(xs.len() as i64);
+            poly_offsets.push(ring_offsets.len() as i64 - 1);
+        }
+        (xs, ys, ring_offsets, poly_offsets)
+    }
+
+    // Four separate folds per ring as build_polygons did before
+    fn reference_bounds(xs: &[f64], ys: &[f64], ring_offsets: &[i64], ext_ring: usize) -> [f64; 4] {
+        let start = ring_offsets[ext_ring] as usize;
+        let end = ring_offsets[ext_ring + 1] as usize;
+        if start >= end {
+            return [0.0, 0.0, 0.0, 0.0];
+        }
+        let (rx, ry) = (&xs[start..end], &ys[start..end]);
+        [
+            rx.iter().cloned().fold(f64::INFINITY, f64::min),
+            ry.iter().cloned().fold(f64::INFINITY, f64::min),
+            rx.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+            ry.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+        ]
+    }
+
+    #[test]
+    fn part_bounds_matches_four_separate_folds() {
+        // Fusing the passes and spreading them over rayon must not move a single bound
+        let (xs, ys, ring_offsets, poly_offsets) = ring_fixture(500);
+        for &ext_ring in &poly_offsets[..poly_offsets.len() - 1] {
+            let ext_ring = ext_ring as usize;
+            assert_eq!(
+                part_bounds(&xs, &ys, &ring_offsets, ext_ring),
+                reference_bounds(&xs, &ys, &ring_offsets, ext_ring),
+                "part bounds differ at ring {ext_ring}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_polygons_answers_ranges_over_an_empty_ring() {
+        let (xs, ys, ring_offsets, poly_offsets) = ring_fixture(500);
+        let tree = PackedRTree::build_polygons(&xs, &ys, &ring_offsets, &poly_offsets);
+        for i in 0..40 {
+            let (qx, qy) = (i as f64 * 9.0 - 180.0, i as f64 * 4.5 - 90.0);
+            let hits = tree.range(qx, qy, qx + 20.0, qy + 20.0);
+            let mut expected: Vec<usize> = (0..poly_offsets.len() - 1)
+                .filter(|&part| {
+                    let b = reference_bounds(&xs, &ys, &ring_offsets, poly_offsets[part] as usize);
+                    b[0] <= qx + 20.0 && b[2] >= qx && b[1] <= qy + 20.0 && b[3] >= qy
+                })
+                .collect();
+            expected.sort_unstable();
+            assert_eq!(sorted(hits), expected, "range differs at ({qx}, {qy})");
+        }
     }
 
     #[test]
