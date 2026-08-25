@@ -41,15 +41,15 @@ build-prod:
 tune-engine: build-prod
 	uv run python -m bench.ops
 
-.PHONY: profile ## Two-build SF1 profile on EC2, writes assets/profile.txt
+.PHONY: profile
 profile:
 	uv run --group bench python -m bench.spatial_bench --profile
 
-.PHONY: sf1 ## SpatialBench SF1 on EC2, all four engines unless engines= is set
+.PHONY: sf1
 sf1:
 	uv run --group bench python -m bench.spatial_bench --scale-factor 1 --engine $(engines)
 
-.PHONY: sf10 ## SpatialBench SF10 on EC2, all four engines unless engines= is set
+.PHONY: sf10
 sf10:
 	uv run --group bench python -m bench.spatial_bench --scale-factor 10 --engine $(engines)
 
