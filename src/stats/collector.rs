@@ -7,6 +7,18 @@ use crate::stats::types::{
     DatasetStats, Distribution, GeometryKind, SpatialHistogram, HISTOGRAM_RESOLUTION,
 };
 
+/// Per-axis cell count of the counting grid
+const COUNT_RESOLUTION: usize = 256;
+
+/// Cells of the counting grid per histogram cell along one axis
+const HISTOGRAM_STRIDE: usize = COUNT_RESOLUTION / HISTOGRAM_RESOLUTION;
+
+/// Morisita index above which a dataset counts as clustered
+const CLUSTERED_INDEX: f64 = 1.5;
+
+/// Point count below which the distribution is left Unknown
+const MIN_POINTS_FOR_DISTRIBUTION: usize = 20;
+
 /// Collect statistics from a flat point coordinate dataset
 pub fn collect_points(xs: &[f64], ys: &[f64]) -> DatasetStats {
     let n = xs.len();
@@ -22,7 +34,6 @@ pub fn collect_points(xs: &[f64], ys: &[f64]) -> DatasetStats {
     }
 
     let extent = compute_extent(xs, ys);
-    let distribution = estimate_distribution(xs, ys, &extent);
     let mean_density = extent
         .map(|e| {
             let area = (e.max().x - e.min().x) * (e.max().y - e.min().y);
@@ -33,7 +44,23 @@ pub fn collect_points(xs: &[f64], ys: &[f64]) -> DatasetStats {
             }
         })
         .unwrap_or(0.0);
-    let histogram = extent.map(|e| build_histogram(xs, ys, &e));
+
+    // One parallel pass fills the counting grid behind both answers
+    let counts = extent.map(|e| count_grid(xs, ys, &e));
+    let distribution = match (&counts, &extent) {
+        (Some(counts), Some(_)) if n >= MIN_POINTS_FOR_DISTRIBUTION => {
+            if morisita_index(counts, n) > CLUSTERED_INDEX {
+                Distribution::Clustered
+            } else {
+                Distribution::Uniform
+            }
+        }
+        _ => Distribution::Unknown,
+    };
+    let histogram = counts
+        .as_deref()
+        .zip(extent)
+        .map(|(counts, e)| fold_to_histogram(counts, &e));
 
     DatasetStats {
         n,
@@ -117,70 +144,76 @@ fn compute_extent(xs: &[f64], ys: &[f64]) -> Option<Rect<f64>> {
     }
 }
 
-// Grid-based coefficient-of-variation test. CV > 1.5 → Clustered, otherwise Uniform
-fn estimate_distribution(xs: &[f64], ys: &[f64], extent: &Option<Rect<f64>>) -> Distribution {
-    let n = xs.len();
-    if n < 20 {
-        return Distribution::Unknown;
-    }
-    let ext = match extent {
-        Some(e) => e,
-        None => return Distribution::Unknown,
-    };
-    let w = ext.max().x - ext.min().x;
-    let h = ext.max().y - ext.min().y;
-    if w <= 0.0 || h <= 0.0 {
-        return Distribution::Unknown;
-    }
-
-    let grid_dim = (n as f64).sqrt().max(4.0) as usize;
-    let mut counts = vec![0u32; grid_dim * grid_dim];
-    for (&x, &y) in xs.iter().zip(ys.iter()) {
-        let cx = ((x - ext.min().x) / w * grid_dim as f64)
-            .min(grid_dim as f64 - 1.0)
-            .max(0.0) as usize;
-        let cy = ((y - ext.min().y) / h * grid_dim as f64)
-            .min(grid_dim as f64 - 1.0)
-            .max(0.0) as usize;
-        counts[cy * grid_dim + cx] += 1;
-    }
-
-    let mean = n as f64 / (grid_dim * grid_dim) as f64;
-    let variance: f64 = counts
-        .iter()
-        .map(|&c| (c as f64 - mean).powi(2))
-        .sum::<f64>()
-        / (grid_dim * grid_dim) as f64;
-    let cv = variance.sqrt() / mean;
-
-    if cv > 1.5 {
-        Distribution::Clustered
-    } else {
-        Distribution::Uniform
-    }
-}
-
-fn build_histogram(xs: &[f64], ys: &[f64], extent: &Rect<f64>) -> SpatialHistogram {
+// Bin every point into a COUNT_RESOLUTION grid
+fn count_grid(xs: &[f64], ys: &[f64], extent: &Rect<f64>) -> Vec<u32> {
+    let cells = COUNT_RESOLUTION * COUNT_RESOLUTION;
     let w = (extent.max().x - extent.min().x).max(f64::EPSILON);
     let h = (extent.max().y - extent.min().y).max(f64::EPSILON);
-    let cell_w = w / HISTOGRAM_RESOLUTION as f64;
-    let cell_h = h / HISTOGRAM_RESOLUTION as f64;
-    let mut counts = vec![0u32; HISTOGRAM_RESOLUTION * HISTOGRAM_RESOLUTION];
-    for (&x, &y) in xs.iter().zip(ys.iter()) {
-        let col = ((x - extent.min().x) / cell_w)
-            .floor()
-            .clamp(0.0, (HISTOGRAM_RESOLUTION - 1) as f64) as usize;
-        let row = ((y - extent.min().y) / cell_h)
-            .floor()
-            .clamp(0.0, (HISTOGRAM_RESOLUTION - 1) as f64) as usize;
-        counts[row * HISTOGRAM_RESOLUTION + col] += 1;
+    let cell_w = w / COUNT_RESOLUTION as f64;
+    let cell_h = h / COUNT_RESOLUTION as f64;
+    let (min_x, min_y) = (extent.min().x, extent.min().y);
+
+    // One chunk per thread bounds the number of 256 KiB accumulators
+    let chunk = (xs.len() / rayon::current_num_threads().max(1)).max(1 << 14);
+    xs.par_chunks(chunk)
+        .zip(ys.par_chunks(chunk))
+        .map(|(chunk_xs, chunk_ys)| {
+            let mut local = vec![0u32; cells];
+            for (&x, &y) in chunk_xs.iter().zip(chunk_ys.iter()) {
+                let col = ((x - min_x) / cell_w)
+                    .floor()
+                    .clamp(0.0, (COUNT_RESOLUTION - 1) as f64) as usize;
+                let row = ((y - min_y) / cell_h)
+                    .floor()
+                    .clamp(0.0, (COUNT_RESOLUTION - 1) as f64) as usize;
+                local[row * COUNT_RESOLUTION + col] += 1;
+            }
+            local
+        })
+        .reduce(
+            || vec![0u32; cells],
+            |mut a, b| {
+                for (x, y) in a.iter_mut().zip(b.iter()) {
+                    *x += y;
+                }
+                a
+            },
+        )
+}
+
+// Q * sum n_i(n_i - 1) / (N(N - 1)) reads 1.0 for a Poisson field at any grid size
+fn morisita_index(counts: &[u32], n: usize) -> f64 {
+    if n < 2 {
+        return 1.0;
+    }
+    let pairs: f64 = counts
+        .iter()
+        .map(|&count| {
+            let count = count as f64;
+            count * (count - 1.0)
+        })
+        .sum();
+    let total = n as f64;
+    counts.len() as f64 * pairs / (total * (total - 1.0))
+}
+
+// Flooring at 256 then dividing by 8 hits the same cell as flooring at 32
+fn fold_to_histogram(counts: &[u32], extent: &Rect<f64>) -> SpatialHistogram {
+    let w = (extent.max().x - extent.min().x).max(f64::EPSILON);
+    let h = (extent.max().y - extent.min().y).max(f64::EPSILON);
+    let mut folded = vec![0u32; HISTOGRAM_RESOLUTION * HISTOGRAM_RESOLUTION];
+    for row in 0..COUNT_RESOLUTION {
+        for col in 0..COUNT_RESOLUTION {
+            folded[(row / HISTOGRAM_STRIDE) * HISTOGRAM_RESOLUTION + col / HISTOGRAM_STRIDE] +=
+                counts[row * COUNT_RESOLUTION + col];
+        }
     }
     SpatialHistogram {
-        counts,
+        counts: folded,
         min_x: extent.min().x,
         min_y: extent.min().y,
-        cell_w,
-        cell_h,
+        cell_w: w / HISTOGRAM_RESOLUTION as f64,
+        cell_h: h / HISTOGRAM_RESOLUTION as f64,
     }
 }
 
@@ -331,6 +364,77 @@ mod tests {
         let hist = stats.histogram.unwrap();
         let total: u32 = hist.counts.iter().sum();
         assert_eq!(total as usize, stats.n);
+    }
+
+    // Deterministic pseudo-random points reproduce a failure without a rand dependency
+    fn scattered(n: usize) -> (Vec<f64>, Vec<f64>) {
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        (0..n).map(|_| (next() * 100.0, next() * 100.0)).unzip()
+    }
+
+    // Bin straight into HISTOGRAM_RESOLUTION cells
+    fn direct_histogram(xs: &[f64], ys: &[f64], extent: &Rect<f64>) -> Vec<u32> {
+        let w = (extent.max().x - extent.min().x).max(f64::EPSILON);
+        let h = (extent.max().y - extent.min().y).max(f64::EPSILON);
+        let cell_w = w / HISTOGRAM_RESOLUTION as f64;
+        let cell_h = h / HISTOGRAM_RESOLUTION as f64;
+        let mut counts = vec![0u32; HISTOGRAM_RESOLUTION * HISTOGRAM_RESOLUTION];
+        for (&x, &y) in xs.iter().zip(ys.iter()) {
+            let col = ((x - extent.min().x) / cell_w)
+                .floor()
+                .clamp(0.0, (HISTOGRAM_RESOLUTION - 1) as f64) as usize;
+            let row = ((y - extent.min().y) / cell_h)
+                .floor()
+                .clamp(0.0, (HISTOGRAM_RESOLUTION - 1) as f64) as usize;
+            counts[row * HISTOGRAM_RESOLUTION + col] += 1;
+        }
+        counts
+    }
+
+    #[test]
+    fn folded_histogram_matches_direct_binning() {
+        // Early exits read a zero cell as proof a region is empty
+        let (xs, ys) = scattered(20_000);
+        let extent = compute_extent(&xs, &ys).expect("scattered points have an extent");
+        let folded = fold_to_histogram(&count_grid(&xs, &ys, &extent), &extent);
+        assert_eq!(folded.counts, direct_histogram(&xs, &ys, &extent));
+    }
+
+    #[test]
+    fn folded_histogram_counts_every_point() {
+        let (xs, ys) = scattered(5_000);
+        let stats = collect_points(&xs, &ys);
+        let total: u32 = stats.histogram.expect("histogram").counts.iter().sum();
+        assert_eq!(total as usize, stats.n);
+    }
+
+    #[test]
+    fn morisita_index_is_one_for_scattered_points() {
+        let (xs, ys) = scattered(200_000);
+        let extent = compute_extent(&xs, &ys).expect("scattered points have an extent");
+        let index = morisita_index(&count_grid(&xs, &ys, &extent), xs.len());
+        assert!(
+            (index - 1.0).abs() < 0.1,
+            "scattered points should sit at the Poisson null, got {index}"
+        );
+    }
+
+    #[test]
+    fn scattered_points_are_not_clustered() {
+        let (xs, ys) = scattered(200_000);
+        assert_eq!(collect_points(&xs, &ys).distribution, Distribution::Uniform);
+    }
+
+    #[test]
+    fn distribution_is_unknown_below_the_point_floor() {
+        let (xs, ys) = scattered(MIN_POINTS_FOR_DISTRIBUTION - 1);
+        assert_eq!(collect_points(&xs, &ys).distribution, Distribution::Unknown);
     }
 
     #[test]
