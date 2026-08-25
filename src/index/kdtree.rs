@@ -1,12 +1,12 @@
 //! Packed immutable KD-tree index optimised for point datasets.
 
 use std::f64::consts::PI;
-use std::sync::Arc;
 
 use geo_index::kdtree::{KDTree, KDTreeBuilder, KDTreeIndex};
 
 use crate::index::SpatialIndex;
 use crate::stats::types::SpatialHistogram;
+use crate::Shared;
 
 /// Packed immutable KD-tree backed by geo-index, optimised for point datasets.
 ///
@@ -15,14 +15,14 @@ use crate::stats::types::SpatialHistogram;
 /// traversal). The xs/ys Arcs are kept for the kNN distance refinement step.
 pub struct PackedKdTree {
     tree: KDTree<f64>,
-    xs: Arc<[f64]>,
-    ys: Arc<[f64]>,
+    xs: Shared<f64>,
+    ys: Shared<f64>,
     extent_area: f64,
     histogram: Option<SpatialHistogram>,
 }
 
 impl SpatialIndex for PackedKdTree {
-    fn build(xs: Arc<[f64]>, ys: Arc<[f64]>) -> Self {
+    fn build(xs: Shared<f64>, ys: Shared<f64>) -> Self {
         let n = xs.len();
         let mut builder = KDTreeBuilder::<f64>::new(n as u32);
 

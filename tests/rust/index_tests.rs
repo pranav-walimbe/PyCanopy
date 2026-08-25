@@ -9,10 +9,10 @@ use pycanopy::index::{
 };
 use pycanopy::query::range::{query_contains_polygons, query_range_polygons};
 
-fn five_point_grid() -> (Arc<[f64]>, Arc<[f64]>) {
+fn five_point_grid() -> (Arc<Vec<f64>>, Arc<Vec<f64>>) {
     (
-        Arc::from([0.0f64, 1.0, 2.0, 0.0, 1.0].as_slice()),
-        Arc::from([0.0f64, 0.0, 0.0, 1.0, 1.0].as_slice()),
+        Arc::new(vec![0.0f64, 1.0, 2.0, 0.0, 1.0]),
+        Arc::new(vec![0.0f64, 0.0, 0.0, 1.0, 1.0]),
     )
 }
 
@@ -192,8 +192,8 @@ fn range_empty_all_implementations_agree() {
 
 #[test]
 fn nearest_k5_on_larger_dataset_all_agree() {
-    let xs: Arc<[f64]> = (0..100).map(|i| (i % 10) as f64).collect::<Vec<_>>().into();
-    let ys: Arc<[f64]> = (0..100).map(|i| (i / 10) as f64).collect::<Vec<_>>().into();
+    let xs: Arc<Vec<f64>> = (0..100).map(|i| (i % 10) as f64).collect::<Vec<_>>().into();
+    let ys: Arc<Vec<f64>> = (0..100).map(|i| (i / 10) as f64).collect::<Vec<_>>().into();
     let oracle = as_set(BruteForce::build(Arc::clone(&xs), Arc::clone(&ys)).nearest(4.6, 3.2, 5));
 
     assert_eq!(
@@ -215,8 +215,8 @@ fn nearest_k5_on_larger_dataset_all_agree() {
 
 #[test]
 fn range_on_larger_dataset_all_agree() {
-    let xs: Arc<[f64]> = (0..100).map(|i| (i % 10) as f64).collect::<Vec<_>>().into();
-    let ys: Arc<[f64]> = (0..100).map(|i| (i / 10) as f64).collect::<Vec<_>>().into();
+    let xs: Arc<Vec<f64>> = (0..100).map(|i| (i % 10) as f64).collect::<Vec<_>>().into();
+    let ys: Arc<Vec<f64>> = (0..100).map(|i| (i / 10) as f64).collect::<Vec<_>>().into();
     let oracle =
         as_set(BruteForce::build(Arc::clone(&xs), Arc::clone(&ys)).range(2.0, 2.0, 5.0, 5.0));
 

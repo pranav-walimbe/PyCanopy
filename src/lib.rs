@@ -52,12 +52,15 @@ use query::{
 use rayon::prelude::*;
 use stats::{collector, types::GeometryKind};
 
+// Shared array storage that adopts a decoded Vec without copying
+pub(crate) type Shared<T> = Arc<Vec<T>>;
+
 #[pyclass]
 struct Engine {
-    xs: Arc<[f64]>,
-    ys: Arc<[f64]>,
-    ring_offsets: Option<Arc<[i64]>>, // coord range per ring, None for point datasets
-    poly_offsets: Option<Arc<[i64]>>, // ring range per polygon, first ring exterior, rest holes
+    xs: Shared<f64>,
+    ys: Shared<f64>,
+    ring_offsets: Option<Shared<i64>>, // coord range per ring, None for point datasets
+    poly_offsets: Option<Shared<i64>>, // ring range per polygon, first ring exterior, rest holes
     stats: stats::types::DatasetStats,
     brute: Option<BruteForce>,
     rtree: Option<PackedRTree>,
@@ -69,7 +72,7 @@ struct Engine {
     index_mode: IndexMode, // index selection policy: Eager (default) / None / Auto / Explicit
     cost_factors: CostFactors,
     prepared_polys: Option<PreparedPolygons>, // sub-linear PIP edge index, built lazily
-    part_poly: Option<Arc<[u32]>>, // logical polygon per index part, None if no MultiPolygons
+    part_poly: Option<Shared<u32>>, // logical polygon per index part, None if no MultiPolygons
     n_polygons: usize, // count of logical polygons, equals part count when part_poly is None
     metric: DistanceMetric, // how threshold distances are measured: Planar (default) / Haversine
     metrics: EngineMetrics, // fixed, always-on counters drained explicitly through Python
@@ -254,7 +257,7 @@ impl PyPolygonBuilder {
 }
 
 impl Engine {
-    fn new_points(xs: Arc<[f64]>, ys: Arc<[f64]>) -> Engine {
+    fn new_points(xs: Shared<f64>, ys: Shared<f64>) -> Engine {
         let stats_started = Instant::now();
         let stats = collector::collect_points(&xs, &ys);
         let statistics_ns = elapsed_ns(stats_started);
@@ -282,11 +285,11 @@ impl Engine {
     }
 
     fn new_polygons(
-        xs: Arc<[f64]>,
-        ys: Arc<[f64]>,
-        ring_offsets: Arc<[i64]>,
-        poly_offsets: Arc<[i64]>,
-        part_poly: Option<Arc<[u32]>>,
+        xs: Shared<f64>,
+        ys: Shared<f64>,
+        ring_offsets: Shared<i64>,
+        poly_offsets: Shared<i64>,
+        part_poly: Option<Shared<u32>>,
         n_polygons: usize,
     ) -> Engine {
         let stats_started = Instant::now();
@@ -568,7 +571,7 @@ impl Engine {
 #[pymethods]
 impl Engine {
     /// Construct from contiguous float64 numpy arrays of x and y coordinates.
-    /// Copies once into an Arc<[f64]> that all later index builds share via Arc::clone.
+    /// Copies the borrowed arrays once into a Shared<f64> that every index build then shares.
     #[staticmethod]
     fn from_points(xs: PyReadonlyArray1<f64>, ys: PyReadonlyArray1<f64>) -> PyResult<Self> {
         let xs_sl = xs
@@ -581,7 +584,10 @@ impl Engine {
             return Err(PyValueError::new_err("xs and ys must have the same length"));
         }
         ensure_u32_indexable(xs_sl.len(), "point dataset")?;
-        Ok(Engine::new_points(xs_sl.into(), ys_sl.into()))
+        Ok(Engine::new_points(
+            Arc::new(xs_sl.to_vec()),
+            Arc::new(ys_sl.to_vec()),
+        ))
     }
 
     /// Construct from two-level polygon ring arrays (supports holes and MultiPolygons).
@@ -645,7 +651,7 @@ impl Engine {
         }
         // part_poly maps parts to logical polygons.
         // None means each part is its own logical polygon (no MultiPolygons).
-        let (part_poly_arc, n_polygons): (Option<Arc<[u32]>>, usize) = match part_poly {
+        let (part_poly_arc, n_polygons): (Option<Shared<u32>>, usize) = match part_poly {
             Some(pp) => {
                 let pp_sl = pp.as_slice().map_err(|_| {
                     PyValueError::new_err("part_poly must be a contiguous int64 array")
@@ -657,15 +663,18 @@ impl Engine {
                 }
                 let n_logical = pp_sl.iter().copied().max().map_or(0, |m| m as usize + 1);
                 ensure_u32_indexable(n_logical, "logical polygon dataset")?;
-                (Some(pp_sl.iter().map(|&v| v as u32).collect()), n_logical)
+                (
+                    Some(Arc::new(pp_sl.iter().map(|&v| v as u32).collect())),
+                    n_logical,
+                )
             }
             None => (None, n_polys),
         };
         Ok(Engine::new_polygons(
-            xs_sl.into(),
-            ys_sl.into(),
-            ring_sl.into(),
-            poly_sl.into(),
+            Arc::new(xs_sl.to_vec()),
+            Arc::new(ys_sl.to_vec()),
+            Arc::new(ring_sl.to_vec()),
+            Arc::new(poly_sl.to_vec()),
             part_poly_arc,
             n_polygons,
         ))
@@ -1621,7 +1630,7 @@ impl Engine {
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
         let prepared = self.prepared_polys.as_ref();
-        let part_poly = self.part_poly.as_deref();
+        let part_poly = self.part_poly.as_deref().map(Vec::as_slice);
         let flat = match kind {
             IndexKind::BruteForce => par_contains(
                 self.brute.as_ref().unwrap(),
@@ -1727,7 +1736,7 @@ impl Engine {
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
         let prepared = self.prepared_polys.as_ref();
-        let part_poly = self.part_poly.as_deref();
+        let part_poly = self.part_poly.as_deref().map(Vec::as_slice);
         let state = match kind {
             IndexKind::BruteForce => par_contains_aggregate(
                 self.brute.as_ref().unwrap(),
@@ -1817,7 +1826,7 @@ impl Engine {
         let build_ns = self.build_index_if_needed(kind);
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
-        let part_poly = self.part_poly.as_deref();
+        let part_poly = self.part_poly.as_deref().map(Vec::as_slice);
         let flat = match kind {
             IndexKind::BruteForce => par_within_distance_to_polygons(
                 self.brute.as_ref().unwrap(),
@@ -1919,7 +1928,7 @@ impl Engine {
         let build_ns = self.build_index_if_needed(kind);
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
-        let part_poly = self.part_poly.as_deref();
+        let part_poly = self.part_poly.as_deref().map(Vec::as_slice);
         let state = match kind {
             IndexKind::BruteForce => par_within_distance_to_polygons_aggregate(
                 self.brute.as_ref().unwrap(),
@@ -2011,7 +2020,7 @@ impl Engine {
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
         let n_parts = poly_off.len().saturating_sub(1);
-        let part_poly = self.part_poly.as_deref();
+        let part_poly = self.part_poly.as_deref().map(Vec::as_slice);
         let (idx, dist) = match kind {
             IndexKind::BruteForce => par_knn_to_polygons(
                 self.brute.as_ref().unwrap(),
@@ -2098,7 +2107,7 @@ impl Engine {
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
         let n_parts = poly_off.len().saturating_sub(1);
-        let part_poly = self.part_poly.as_deref();
+        let part_poly = self.part_poly.as_deref().map(Vec::as_slice);
         let (q_idx, t_idx, dist) = match kind {
             IndexKind::BruteForce => par_knn_to_polygons_sorted(
                 self.brute.as_ref().unwrap(),

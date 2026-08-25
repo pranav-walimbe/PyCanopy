@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use crate::index::{point_box_dist2, SpatialIndex};
+use crate::Shared;
 
 /// Linear scan index, used for small datasets or high-selectivity queries.
 ///
@@ -14,14 +15,14 @@ pub struct BruteForce {
     /// Per-geometry bounding boxes.
     /// For point datasets all four are Arc::clone of the Engine's xs/ys (shared, zero cost).
     /// For polygon datasets these are new allocations derived from ring coords.
-    bbox_min_x: Arc<[f64]>,
-    bbox_min_y: Arc<[f64]>,
-    bbox_max_x: Arc<[f64]>,
-    bbox_max_y: Arc<[f64]>,
+    bbox_min_x: Shared<f64>,
+    bbox_min_y: Shared<f64>,
+    bbox_max_x: Shared<f64>,
+    bbox_max_y: Shared<f64>,
 }
 
 impl SpatialIndex for BruteForce {
-    fn build(xs: Arc<[f64]>, ys: Arc<[f64]>) -> Self {
+    fn build(xs: Shared<f64>, ys: Shared<f64>) -> Self {
         BruteForce {
             bbox_min_x: Arc::clone(&xs),
             bbox_min_y: Arc::clone(&ys),
