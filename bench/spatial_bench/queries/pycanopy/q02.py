@@ -17,13 +17,24 @@ ZONE_NAME = "Coconino County"
 
 
 def pycanopy(data_paths: dict[str, str]) -> pl.DataFrame:
-    # The zone filter belongs in the scan so Polars decodes one boundary instead of every one
+    # Zone row group statistics span the whole name range so the predicate prunes no bytes
+    names = (
+        pl.scan_parquet(
+            data_paths["zone"], storage_options=STORAGE_OPTIONS, include_file_paths="_file"
+        )
+        .select(["z_name", "_file"])
+        .collect()
+    )
+    hit = names.with_row_index("_row").filter(pl.col("z_name") == ZONE_NAME).head(1)
+    zone_file = hit["_file"][0]
+    # Row offset inside its own file lets the slice skip every other row group
+    local_row = hit["_row"][0] - int((names["_file"] == zone_file).arg_max())
+
     zone, trip = pl.collect_all(
         [
-            pl.scan_parquet(data_paths["zone"], storage_options=STORAGE_OPTIONS)
-            .filter(pl.col("z_name") == ZONE_NAME)
-            .select(["z_name", "z_boundary"])
-            .head(1),
+            pl.scan_parquet(zone_file, storage_options=STORAGE_OPTIONS)
+            .select(["z_boundary"])
+            .slice(local_row, 1),
             pl.scan_parquet(data_paths["trip"], storage_options=STORAGE_OPTIONS).select(
                 ["t_pickuploc"]
             ),
