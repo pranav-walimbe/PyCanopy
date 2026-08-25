@@ -954,7 +954,7 @@ impl Engine {
             ));
         }
         let started = Instant::now();
-        // Geographic distances are meters over degrees, so the box has to be widened, not dilated
+        // Geographic distances are meters over degrees and need the box widened not dilated
         let (min_x, min_y, max_x, max_y) = match self.metric {
             DistanceMetric::Planar => (cx - distance, cy - distance, cx + distance, cy + distance),
             DistanceMetric::Haversine => conservative_degree_box(cx, cy, distance),
@@ -2241,8 +2241,8 @@ impl Engine {
         }
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
-        // For MultiPolygons the pair area is the sum over their part pairs: parts within
-        // one polygon are disjoint, so the part intersections partition the overlap.
+        // For MultiPolygons the pair area sums over their part pairs
+        // Parts within one polygon are disjoint and their intersections partition the overlap
         let areas: Vec<f64> = match &self.part_poly {
             Some(pp) => {
                 let (offsets, parts) = polygon_parts_csr(pp, self.n_polygons);

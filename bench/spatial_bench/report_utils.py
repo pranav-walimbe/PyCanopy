@@ -417,7 +417,7 @@ def _profile_head() -> str:
 
 
 def _metadata_block(metadata: dict[str, str]) -> str:
-    # Run metadata, so a later reader can tell a code change from a machine change
+    # Run metadata lets a later reader tell a code change from a machine change
     lines = [_SEP, "Run metadata", _SUBSEP]
     lines.extend(f"{key:<22}{value}" for key, value in metadata.items())
     return "\n".join(lines)
@@ -467,7 +467,7 @@ def _reports_metrics(results: dict) -> bool:
 
 
 def _stage_order(stages: list[dict[str, float]]) -> list[str]:
-    # Union both builds' stages, keeping pipeline order and appending whatever only one has
+    # Union both builds' stages in pipeline order and append whatever only one has
     ordered: list[str] = []
     for stage in stages:
         for name in stage:

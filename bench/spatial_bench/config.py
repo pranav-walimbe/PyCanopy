@@ -31,8 +31,8 @@ ENGINE_IDS = tuple(ENGINES)
 
 STORAGE_OPTIONS = {"skip_signature": "true"}
 
-# Mirror of the upstream Hugging Face dataset, which is what the committed answers were
-# generated from. Public read, so queries stay anonymous.
+# Mirror of the upstream Hugging Face dataset the committed answers were generated from
+# Public read keeps queries anonymous
 PUBLIC_DATA_ROOT = "s3://pycanopy-bench-data/spatialbench"
 PUBLIC_DATA_TEMPLATE = f"{PUBLIC_DATA_ROOT}/{DATASET_VERSION}/sf{{scale_factor}}"
 

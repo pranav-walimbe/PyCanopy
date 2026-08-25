@@ -376,7 +376,7 @@ fn parse_polygons_chunked(
     };
 
     // SAFETY: every chunk decoded exactly its coordinate count (asserted in fill_chunk) into a
-    // SAFETY: disjoint slice partitioning [0, total_coords), so all elements are initialised.
+    // SAFETY: disjoint slice partitioning of [0, total_coords) initialises every element
     unsafe {
         xs.set_len(total_coords);
         ys.set_len(total_coords);
@@ -608,7 +608,7 @@ mod tests {
 
     #[test]
     fn unsupported_geometry_type_is_error() {
-        // Byte order then WKB type 1 (Point), which the polygon decoder rejects
+        // Byte order then WKB type 1 (Point) which the polygon decoder rejects
         let mut geom = vec![1u8];
         geom.extend_from_slice(&1u32.to_le_bytes());
         geom.extend_from_slice(&0.0f64.to_le_bytes());

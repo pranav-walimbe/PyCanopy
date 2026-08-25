@@ -257,9 +257,9 @@ def test_streamed_within_join_polygons_matches_single_shot(sf_polygons):
     assert streamed.select(cols).sort(cols).equals(single.select(cols).sort(cols))
 
 
-# index_mode "none" forces brute force; results must match the indexed ("eager")
-# path. The fixtures have n >= 500 so the default path builds a real index. They are
-# module-scoped, so each test restores the mode it changed via _index_mode.
+# index_mode "none" forces brute force and results must match the indexed "eager" path
+# The fixtures have n >= 500 so the default path builds a real index
+# They are module-scoped and each test restores the mode it changed via _index_mode
 
 
 @contextmanager
@@ -479,7 +479,7 @@ def _jfk_probe():
 
 
 def test_geographic_within_distance_join_measures_meters(sf_airports):
-    # 4000 km reaches LAX (3974) but not SFO (4152), so the threshold lands between them
+    # 4000 km reaches LAX (3974) but not SFO (4152) and the threshold lands between them
     out = (
         sf_airports.lazy()
         .within_distance_join(_jfk_probe(), x_col="lon", y_col="lat", distance=4_000_000)
@@ -489,7 +489,7 @@ def test_geographic_within_distance_join_measures_meters(sf_airports):
 
 
 def test_geographic_within_distance_join_flipped_path(sf_airports):
-    # Q=3 > N//2 on the 5-airport frame, so the optimizer indexes the query side instead
+    # Q=3 > N//2 on the 5-airport frame and the optimizer indexes the query side instead
     probe = pl.DataFrame(
         {
             "probe": ["from_jfk", "from_lhr", "from_sfo"],
@@ -515,7 +515,7 @@ def test_geographic_within_distance_join_flipped_path(sf_airports):
 
 
 def test_geographic_within_distance_join_streams_in_morsels(sf_airports):
-    # Batched collection re-plans per morsel, so the metric has to survive the slicing
+    # Batched collection re-plans per morsel and the metric must survive the slicing
     probe = pl.concat([_jfk_probe()] * 4)
     out = pl.concat(
         list(

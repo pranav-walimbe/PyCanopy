@@ -291,7 +291,7 @@ mod tests {
 
     #[test]
     fn auto_builds_index_for_many_probes() {
-        // Many probes amortise the build, so the index wins
+        // Many probes amortise the build and the index wins
         let s = stats(1_000_000, GeometryKind::Point, Distribution::Clustered);
         let f = CostFactors::default();
         assert_eq!(
@@ -312,7 +312,7 @@ mod tests {
 
     #[test]
     fn best_available_reuses_built_index_for_few_probes() {
-        // Build cost already paid, so even 1 probe uses the built index
+        // Build cost already paid so even 1 probe uses the built index
         let s = stats(1_000_000, GeometryKind::Point, Distribution::Clustered);
         let f = CostFactors::default();
         assert_eq!(

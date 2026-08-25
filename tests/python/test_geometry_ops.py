@@ -386,7 +386,7 @@ def test_knn_to_polygons_pads_when_k_exceeds_polygon_count():
 
 
 def test_knn_to_polygons_matches_brute_force_on_mixed_geometry():
-    # Concave shapes, holes, and multi-part geometries together, so the seed's MBR bound is wrong
+    # Concave shapes holes and multi-part geometries together make the seed's MBR bound wrong
     # often enough to force the sweep, and k is wide enough to keep it running.
     rng = np.random.default_rng(11)
     polys: list = []

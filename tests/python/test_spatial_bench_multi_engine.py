@@ -46,8 +46,8 @@ def test_config_matches_spatialbench_single_node_protocol():
     assert REGION == "us-west-2"
     assert INSTANCE_TYPE == "m7i.2xlarge"
     assert PUBLIC_DATA_TEMPLATE.startswith("s3://")
-    # The dataset build has to be identifiable from the path, since the committed answers only
-    # match one of them.
+    # The dataset build has to be identifiable from the path
+    # The committed answers match only one of them
     assert DATASET_VERSION in PUBLIC_DATA_TEMPLATE
 
 

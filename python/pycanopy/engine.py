@@ -307,8 +307,8 @@ def _wkb_points_fast(arr: pa.Array) -> tuple[np.ndarray, np.ndarray] | None:
     if offsets_buf is None or data_buf is None:
         return None
 
-    # Offsets are int32 for binary, int64 for large_binary (what polars emits). A
-    # sliced array shares its parent's buffers, so index past the slice's offset.
+    # Offsets are int32 for binary and int64 for large_binary (what polars emits)
+    # A sliced array shares its parent's buffers so index past the slice's offset
     offset_dtype = "<i8" if pa.types.is_large_binary(arr.type) else "<i4"
     offsets = np.frombuffer(offsets_buf, dtype=offset_dtype)[arr.offset : arr.offset + n + 1]
 

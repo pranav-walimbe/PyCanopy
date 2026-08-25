@@ -46,7 +46,7 @@ def pycanopy(data_paths: dict[str, str]) -> pl.DataFrame:
         .collect_batched()
     )
 
-    # Aligned morsels carry the same trips on each side, so per-morsel counts sum to the global count
+    # Aligned morsels carry the same trips on each side and per-morsel counts sum to the global count
     count = 0
     for pickup, dropoff in zip(pickup_batches, dropoff_batches, strict=True):
         count += (

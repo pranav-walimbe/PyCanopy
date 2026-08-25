@@ -75,9 +75,9 @@ def test_size_cap_flushes_delta(engine):
 
 def test_cost_flush_fires():
     # Fresh uniform grid so select_index reliably picks Grid (cost threshold = N).
-    # The shared module engine has accumulated flushed points from prior tests,
-    # shifting its distribution to Clustered (KD-tree, cost = N*log2 N), which
-    # would require ~140 queries to trigger — too expensive for a unit test.
+    # The shared module engine has accumulated flushed points from prior tests
+    # That shifts its distribution to Clustered on a KD-tree costing N*log2 N
+    # Triggering it would need ~140 queries which is too expensive for a unit test
     _n = 529  # 23x23 uniform grid, above the 500 brute-force threshold
     eng = Engine.from_coords(
         np.array([float(i % 23) for i in range(_n)], dtype=np.float64),

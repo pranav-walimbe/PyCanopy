@@ -333,7 +333,7 @@ def test_range_empty_returns_empty(engine):
 
 
 def test_radius_refines_to_circle(engine):
-    # (0,0),(1,0),(0,1) are within 1.0; (1,1) is in the bbox but sqrt(2) away, so dropped
+    # Three corners are within 1.0 while (1,1) sits in the bbox at sqrt(2) and drops
     assert sorted(engine.radius_query(0.0, 0.0, 1.0).tolist()) == [0, 1, 3]
 
 
@@ -391,8 +391,8 @@ def test_from_polygons_stats_contains_n(poly_engine):
 
 
 def test_from_polygons_accepts_multipolygon():
-    # SQUARES[1] and SQUARES[2] are disjoint; as one MultiPolygon they are one logical
-    # polygon, so a point in either part returns the same index, counted once.
+    # SQUARES[1] and SQUARES[2] are disjoint but form one logical polygon as a MultiPolygon
+    # A point in either part returns the same index counted once
     mp = MultiPolygon([SQUARES[1], SQUARES[2]])
     eng = Engine.from_polygons([SQUARES[0], mp])
     assert eng.contains(0.5, 0.5) == [0]  # in the plain polygon

@@ -239,7 +239,7 @@ def run_profile_suite(query_ids: list[str], data_dir: str, variant: str = "branc
         for query_id, result in results.items()
         if result["status"] != "ok" or result.get("verify") != "match"
     ]
-    # The released build is a baseline, so only the branch build has to verify clean
+    # The released build is a baseline and only the branch build has to verify clean
     if invalid and variant == "branch":
         raise RuntimeError(f"profile verification failed for: {', '.join(invalid)}")
     if invalid:

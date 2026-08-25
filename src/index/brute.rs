@@ -31,7 +31,7 @@ impl SpatialIndex for BruteForce {
     }
 
     fn nearest(&self, qx: f64, qy: f64, k: usize) -> Vec<usize> {
-        // Rank by point-to-MBR distance, which is exact for the degenerate boxes of a point
+        // Rank by point-to-MBR distance which is exact for the degenerate boxes of a point
         // dataset and the lower bound the polygon refinement pass needs.
         let n = self.bbox_min_x.len();
         let k = k.min(n);
@@ -181,9 +181,9 @@ mod tests {
 
     #[test]
     fn polygon_nearest_ranks_by_mbr_not_centroid() {
-        // A wide sliver spanning x 0..10 at y 0, and a small square at x 4..5, y 3..4. From
-        // (5, 0.5) the sliver's edge is 0.5 away but its centroid is 5 away, which centroid
-        // ranking put second. Ranking by MBR is the lower bound polygon refinement relies on.
+        // A wide sliver spans x 0..10 at y 0 and a small square sits at x 4..5 y 3..4
+        // From (5, 0.5) the sliver's edge is 0.5 away while its centroid is 5 away
+        // Centroid ranking put it second and MBR is the lower bound refinement relies on
         let xs = vec![
             0.0, 10.0, 10.0, 0.0, 0.0, // sliver ring
             4.0, 5.0, 5.0, 4.0, 4.0, // square ring
