@@ -181,8 +181,7 @@ mod tests {
     #[test]
     fn histogram_selectivity_quarter_bbox() {
         // 1024 points uniform, bbox covering bottom-left quarter should return ~0.25.
-        // Tolerance is 0.05 because exact cell-boundary alignment causes floor() to
-        // include the boundary cell, giving a small over-count (17x17 vs 16x16 cells).
+        // Tolerance is 0.05 for the boundary cell that floor() includes (17x17 vs 16x16)
         let hist = uniform_histogram(HISTOGRAM_RESOLUTION, 1);
         let bbox = rect(0.0, 0.0, 0.5, 0.5);
         let sel = hist.selectivity(&bbox, 1024);

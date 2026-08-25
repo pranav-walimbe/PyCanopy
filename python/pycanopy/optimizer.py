@@ -133,7 +133,7 @@ class SpatialOptimizer:
         """
         if not plan:
             return plan
-        # A trailing SelectNode is a terminal projection, not a predicate, so the cost passes skip it
+        # A trailing SelectNode is a terminal projection rather than a predicate and cost passes skip it
         select_tail = None
         if isinstance(plan[-1], SelectNode):
             select_tail = plan[-1]
@@ -200,7 +200,7 @@ class SpatialOptimizer:
         return min(1.0, self._disk_area(node, coordinate_system) / total_area)
 
     def _disk_area(self, node: WithinDistanceOfPointNode, coordinate_system: str) -> float:
-        # A geographic radius is meters against a degree extent, so it becomes a degree ellipse
+        # A geographic radius is meters against a degree extent and becomes a degree ellipse
         if coordinate_system != "geographic":
             return math.pi * node.distance * node.distance
         cos_lat = math.cos(math.radians(min(abs(node.cy), _POLE_GUARD_LAT)))

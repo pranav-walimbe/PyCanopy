@@ -217,7 +217,7 @@ def test_stage_table_drops_the_released_column_when_it_has_no_metrics(tmp_path):
     _results.write_profile_comparison({"branch": branch, "release": release}, out)
     text = out.read_text()
 
-    # Wall and peak still compare, so the released build stays in the top table
+    # Wall and peak still compare and the released build stays in the top table
     assert "-20.0%" in text and "-50.0%" in text
     assert "reports no engine metrics" in text
     assert "build prepared_polygons" in text

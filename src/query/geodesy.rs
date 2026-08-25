@@ -53,13 +53,13 @@ pub fn conservative_degree_box(cx: f64, cy: f64, distance_m: f64) -> (f64, f64, 
     let max_y = (cy + lat_delta).min(90.0);
     let all_longitudes = (-180.0, min_y, 180.0, max_y);
 
-    // Longitude degrees shrink with cos(lat), so widen at the highest latitude reached, not at cy
+    // Widen at the highest latitude reached where longitude degrees are shortest
     let extreme_lat = min_y.abs().max(max_y.abs());
     if extreme_lat >= POLE_GUARD_LAT {
         return all_longitudes;
     }
     let lon_delta = distance_m / (METERS_PER_DEGREE_LON_EQUATOR * extreme_lat.to_radians().cos());
-    // Running past either edge wraps the antimeridian, which no degree interval can express
+    // Running past either edge wraps the antimeridian beyond any degree interval
     if cx - lon_delta < -180.0 || cx + lon_delta > 180.0 {
         return all_longitudes;
     }
@@ -101,7 +101,7 @@ mod tests {
 
     #[test]
     fn matches_geo_crate_across_latitude_bands() {
-        // Latitude scales the longitude term by its cosine, so sweep a spread of bands
+        // Sweep a spread of bands to cover the cosine scaling of the longitude term
         for lat in [-85.0, -45.0, -1.0, 0.0, 1.0, 45.0, 85.0] {
             for dlon in [0.001, 0.5, 10.0] {
                 let got = hoisted(0.0, lat, dlon, lat + 0.25);
@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn degree_box_spans_all_longitudes_across_the_antimeridian() {
-        // A box at 179.9E reaching past 180 wraps, which a degree interval cannot express
+        // A box at 179.9E reaching past 180 wraps beyond what a degree interval expresses
         let (min_x, _, max_x, _) = conservative_degree_box(179.9, 0.0, 100_000.0);
         assert_eq!((min_x, max_x), (-180.0, 180.0));
     }

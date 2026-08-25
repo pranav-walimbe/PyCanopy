@@ -343,7 +343,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             produced = []
 
-    # A failing released baseline is a result, so only the branch build is required
+    # A failing released baseline is a result and only the branch build is required
     required = ["branch"] if args.profile else list(statuses)
     if not all(statuses.get(node, False) for node in required) or not produced:
         logs = [p for p in paths if p.suffix == ".log"]

@@ -354,7 +354,7 @@ def test_coordinate_system_rejects_unknown_value():
 
 
 def test_geographic_radius_query_measures_meters(sf_airports):
-    # 4000 km reaches LAX (3974) but not SFO (4152), so the threshold lands between them
+    # 4000 km reaches LAX (3974) but not SFO (4152) and the threshold lands between them
     result = sf_airports.radius_query(*_JFK, 4_000_000)
     assert sorted(result["name"].to_list()) == ["JFK", "LAX"]
 
@@ -370,7 +370,7 @@ def test_geographic_within_distance_of_point_lazy_matches_eager(sf_airports):
 
 
 def test_planar_frame_reads_the_same_distance_as_degrees(sf_airports):
-    # The identical call on a planar frame measures degrees, so 4e6 degrees spans the globe
+    # The identical call on a planar frame measures degrees where 4e6 spans the globe
     df = sf_airports.df
     planar = SpatialFrame(df, "lon", "lat")
     result = planar.radius_query(*_JFK, 4_000_000)
@@ -378,7 +378,7 @@ def test_planar_frame_reads_the_same_distance_as_degrees(sf_airports):
 
 
 def test_geographic_survives_range_filter(sf_airports):
-    # A derived frame keeps the setting, since it is a fact about the coordinates
+    # A derived frame keeps the setting as a fact about the coordinates
     derived = sf_airports.range_filter(-180.0, -90.0, 180.0, 90.0)
     assert derived.coordinate_system == "geographic"
 
@@ -412,7 +412,7 @@ def test_geographic_does_not_warn_on_lon_lat(sf_airports):
 
 
 def test_planar_never_warns_whatever_the_coordinates_look_like(sf_airports):
-    # A small planar grid sits inside lon/lat's range, so guessing from the data would misfire
+    # A small planar grid sits inside lon/lat's range where guessing from the data misfires
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         SpatialFrame(sf_airports.df, "lon", "lat")

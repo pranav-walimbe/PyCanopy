@@ -38,8 +38,9 @@ impl Ord for NeighborNode {
 }
 
 thread_local! {
-    // Reused across every query on this worker. geo-index's own `neighbors` and `search` allocate
-    // a fresh queue and result vector per call, which dominates a kernel invoked once per query.
+    // Reused across every query on this worker
+    // geo-index's own `neighbors` and `search` allocate a fresh queue and vector per call
+    // That allocation dominates a kernel invoked once per query
     static NEIGHBOR_QUEUE: RefCell<BinaryHeap<Reverse<NeighborNode>>> =
         const { RefCell::new(BinaryHeap::new()) };
     static SEARCH_QUEUE: RefCell<VecDeque<usize>> = const { RefCell::new(VecDeque::new()) };
@@ -258,7 +259,7 @@ mod tests {
         assert_eq!(sorted(build(xs, ys).range(0.5, 0.5, 1.5, 1.5)), vec![4]);
     }
 
-    // Deterministic pseudo-random points, so a failure reproduces without a rand dependency
+    // Deterministic pseudo-random points reproduce a failure without a rand dependency
     fn scattered(n: usize) -> (Vec<f64>, Vec<f64>) {
         let mut state = 0x2545_F491_4F6C_DD1Du64;
         let mut next = || {
@@ -315,7 +316,7 @@ mod tests {
 
     #[test]
     fn nearest_into_handles_exact_distance_ties() {
-        // Four coincident points: every candidate ties, so only the set is well defined
+        // Four coincident points tie on every candidate and only the set is well defined
         let tree = build(vec![1.0, 1.0, 1.0, 1.0, 9.0], vec![1.0, 1.0, 1.0, 1.0, 9.0]);
         let mut got = Vec::new();
         tree.nearest_into(1.0, 1.0, 3, &mut got);

@@ -28,7 +28,7 @@ def pycanopy(data_paths: dict[str, str]) -> pl.DataFrame:
             ),
         ]
     )
-    # Only the top trips need their geometry, so this second scan runs after the first result
+    # Only the top trips need geometry and this second scan runs after the first result
     trip = (
         trip_scan.select(["t_tripkey", "t_pickuploc"])
         .filter(pl.col("t_tripkey").is_in(top["t_tripkey"].implode()))

@@ -76,8 +76,8 @@ log "installing uv"
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source "$HOME/.local/bin/env"
 
-# Amazon Linux 2023 ships Python 3.9, below the project floor, so pin uv to a managed
-# 3.10 for every sync and run. It is the supported floor, so the box exercises it.
+# Amazon Linux 2023 ships Python 3.9 below the project floor
+# Pin uv to a managed 3.10 for every sync and run which is the supported floor
 export UV_PYTHON=3.10
 
 log "cloning ${REPO_URL} @ ${REPO_BRANCH}"
@@ -125,7 +125,7 @@ fi
 
 mkdir -p /data/scratch /opt/pycanopy/assets
 
-# /tmp is tmpfs (RAM) on Amazon Linux 2023, so spill out-of-core scratch and Polars sort to the EBS data volume.
+# /tmp is tmpfs on Amazon Linux 2023 so scratch and Polars sort spill to the EBS data volume
 export PYCANOPY_SCRATCH=/data/scratch
 export POLARS_TEMP_DIR=/data/scratch
 export TMPDIR=/data/scratch

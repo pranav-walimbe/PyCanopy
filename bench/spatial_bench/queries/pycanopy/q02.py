@@ -33,7 +33,6 @@ def pycanopy(data_paths: dict[str, str]) -> pl.DataFrame:
     poly = shapely.from_wkb(zone["z_boundary"][0])
 
     sf = SpatialFrame.from_wkb_points(trip, "t_pickuploc")
-    # Only the count is needed, so take the engine's matching indices directly and skip
-    # gathering the in-zone rows into a DataFrame.
+    # Only the count is needed so take the engine's matching indices without gathering rows
     idx = sf.engine.points_within_distance_of_polygon(poly, 0.0)
     return pl.DataFrame({"trip_count_in_coconino_county": [len(idx)]})

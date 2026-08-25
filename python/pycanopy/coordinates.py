@@ -41,7 +41,7 @@ def resolve_coordinate_system(
         raise ValueError(
             f"coordinate_system must be 'planar' or 'geographic', got {coordinate_system!r}"
         )
-    # Only geographic constrains its coordinates, so a planar frame skips the scan entirely
+    # Only geographic constrains its coordinates and a planar frame skips the scan entirely
     if coordinate_system == "geographic" and len(xs) > 0 and not _looks_geographic(xs, ys):
         warnings.warn(
             "coordinate_system='geographic' reads x/y as WGS84 lon/lat degrees, but these "
@@ -55,5 +55,5 @@ def resolve_coordinate_system(
 
 
 def _looks_geographic(xs: np.ndarray, ys: np.ndarray) -> bool:
-    # Lon/lat degrees are bounded, so anything outside those bounds cannot be WGS84
+    # Lon/lat degrees are bounded and anything outside them cannot be WGS84
     return bool(np.all(np.abs(xs) <= _MAX_ABS_LON) and np.all(np.abs(ys) <= _MAX_ABS_LAT))

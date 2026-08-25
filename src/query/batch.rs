@@ -279,7 +279,7 @@ pub fn par_radius<I: SpatialIndex + Sync>(
     distance: f64,
     metric: DistanceMetric,
 ) -> Vec<u64> {
-    // Dispatch once per call, never per candidate, so the planar path compiles as it always did
+    // Dispatch once per call rather than per candidate and the planar path compiles unchanged
     match metric {
         DistanceMetric::Planar => {
             let d2 = distance * distance;
@@ -320,7 +320,7 @@ pub fn par_within_distance<I: SpatialIndex + Sync>(
     distance: f64,
     metric: DistanceMetric,
 ) -> Vec<u32> {
-    // Dispatch once per call, never per candidate, so the planar path compiles as it always did
+    // Dispatch once per call rather than per candidate and the planar path compiles unchanged
     match metric {
         DistanceMetric::Planar => within_distance_planar(index, qxs, qys, xs, ys, distance),
         DistanceMetric::Haversine => within_distance_haversine(index, qxs, qys, xs, ys, distance),
@@ -421,7 +421,7 @@ pub fn par_within_distance_flipped(
 ) -> Vec<u32> {
     // Build a KD-tree on the (smaller) query side
     let q_index = PackedKdTree::build(Arc::from(qxs.to_vec()), Arc::from(qys.to_vec()));
-    // Dispatch once per call, never per candidate, so the planar path compiles as it always did
+    // Dispatch once per call rather than per candidate and the planar path compiles unchanged
     match metric {
         DistanceMetric::Planar => {
             let d2 = distance * distance;
@@ -651,7 +651,7 @@ fn knn_polys_exact<I: SpatialIndex>(
     scratch: &mut KnnScratch,
 ) {
     let kept = &mut scratch.kept;
-    // Seed pass. Parts can share a logical polygon, so grow the fetch until k distinct polygons
+    // Seed pass grows the fetch until k distinct polygons because parts can share one polygon
     // are held or every part has been seen.
     let mut fetch = (k + SEED_MARGIN).min(n_parts.max(1));
     loop {
@@ -667,7 +667,7 @@ fn knn_polys_exact<I: SpatialIndex>(
         fetch = fetch.saturating_mul(2).min(n_parts);
     }
     if kept.len() < k {
-        // The seed swept every part, so the dataset holds fewer than k polygons
+        // The seed swept every part and the dataset holds fewer than k polygons
         kept.resize(k, (u32::MAX, f64::INFINITY));
         return;
     }
@@ -683,15 +683,15 @@ fn knn_polys_exact<I: SpatialIndex>(
         return;
     }
 
-    // Sweep pass over every part the seed's radius admits, nearest MBR first. The seed's k stay
-    // in `kept` as the working bound, so the sweep can only tighten the answer, never lose it to
-    // a rounding edge where a polygon's exact distance and its MBR bound differ by an ulp.
+    // Sweep pass over every part the seed's radius admits nearest MBR first
+    // The seed's k stay in `kept` as the working bound and the sweep only tightens the answer
+    // It cannot lose to a rounding edge where exact distance and MBR bound differ by an ulp
     index.range_into(qx - kth, qy - kth, qx + kth, qy + kth, &mut scratch.sweep);
     let seeds = &scratch.seeds;
     let cands = &mut scratch.cands;
     cands.clear();
-    // The seed already refined its own parts, so re-measuring them would repeat k exact
-    // distances per query. Seeds are the MBR-nearest handful, so a scan beats a set.
+    // The seed already refined its own parts and re-measuring repeats k exact distances
+    // Seeds are the MBR-nearest handful where a scan beats a set
     cands.extend(
         scratch
             .sweep
@@ -702,8 +702,8 @@ fn knn_polys_exact<I: SpatialIndex>(
     cands.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
 
     for &(ei, lb_sq) in cands.iter() {
-        // Candidates arrive nearest-MBR-first, so once a lower bound cannot beat the kth exact
-        // distance held, nothing after it can either.
+        // Candidates arrive nearest-MBR-first
+        // Once a lower bound cannot beat the kth exact distance held nothing after it can
         if lb_sq >= kth_sq {
             break;
         }
@@ -791,7 +791,7 @@ pub fn par_knn_to_polygons<I: SpatialIndex + Sync>(
     let tiles = build_query_tiles(qxs, qys, &order, TILE_GRID);
 
     // Parallelise over tiles so each tile's polygon vertices stay warm in L3 across its queries.
-    // Each tile writes its answers into three flat buffers rather than one Vec per query, so the
+    // Each tile writes its answers into three flat buffers rather than one Vec per query and the
     // kernel allocates per tile instead of per query.
     let tile_results: TileResults = tiles
         .par_iter()
@@ -1211,7 +1211,7 @@ mod tests {
 
     #[test]
     fn single_probe_haversine_matches_the_multi_probe_path() {
-        // The one-query fast path parallelises differently, so it needs its own check
+        // The one-query fast path parallelises differently and needs its own check
         let (xs, ys) = lonlat_cloud();
         let index = PackedRTree::build(Arc::from(xs.clone()), Arc::from(ys.clone()));
         let (qx, qy, distance) = (-73.9, 40.7, 300_000.0);
@@ -1395,8 +1395,8 @@ mod tests {
 
     #[test]
     fn donut_mbrs_do_not_hide_the_nearest_polygon() {
-        // Four annuli whose MBRs all contain the query, so MBR rank puts them first, and one
-        // small square that is genuinely nearest. Fixed 4*k oversampling returned an annulus.
+        // Four annuli whose MBRs all contain the query and one small square genuinely nearest
+        // MBR rank puts the annuli first and fixed 4*k oversampling returned one
         let mut parts: Vec<Vec<Vec<(f64, f64)>>> = (0..4)
             .map(|i| donut(i as f64 * 0.1, 0.0, 100.0, 50.0))
             .collect();
@@ -1499,8 +1499,8 @@ mod tests {
 
     #[test]
     fn multipolygon_parts_collapse_to_one_neighbour() {
-        // Polygon 0 has a far part and a near one, polygons 1 and 2 sit between them. k counts
-        // distinct polygons, so polygon 0 must appear once, at its nearer part's distance.
+        // Polygon 0 has a far part and a near one with polygons 1 and 2 between them
+        // k counts distinct polygons so polygon 0 appears once at its nearer part's distance
         let parts = vec![
             vec![square_ring(40.0, 0.0, 1.0)],
             vec![square_ring(5.0, 0.0, 1.0)],
@@ -1595,12 +1595,12 @@ mod tests {
         );
 
         assert_eq!(q_idx.len(), n * k);
-        // The sorted path emits globally ordered pairs, so regroup by query to compare
+        // The sorted path emits globally ordered pairs and needs regrouping by query to compare
         let mut grouped: Vec<Vec<(u32, f64)>> = vec![Vec::new(); n];
         for i in 0..q_idx.len() {
             grouped[q_idx[i] as usize].push((t_idx[i], dists[i]));
         }
-        // Only the sorted path promises a tie-break, so normalise both sides to (dist, idx)
+        // Only the sorted path promises a tie-break and both sides normalise to (dist, idx)
         let by_dist_then_idx = |v: &mut Vec<(u32, f64)>| {
             v.sort_unstable_by(|a, b| {
                 a.1.partial_cmp(&b.1)

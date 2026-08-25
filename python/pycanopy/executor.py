@@ -52,8 +52,8 @@ def _range_plugin_expr(
     max_y: float,
     engine,
 ) -> pl.Expr:
-    # Bounding-box filter via map_batches. is_elementwise=False is a barrier, so the closure
-    # sees only post-scalar-filter rows, masked against the global index in Rust.
+    # Bounding-box filter via map_batches with is_elementwise=False as a barrier
+    # The closure sees only post-scalar-filter rows masked against the global index in Rust
     def _apply(s: pl.Series) -> pl.Series:
         orig_idx = s.to_numpy()
         if len(orig_idx) == 0:
@@ -200,8 +200,8 @@ class SpatialExecutor:
 
         has_joins = any(isinstance(n, _JOIN_TYPES) for n in plan)
 
-        # Large-probe joins stream the probe in morsels and concatenate, so the join
-        # intermediate is bounded by one morsel rather than the full result.
+        # Large-probe joins stream the probe in morsels and concatenate
+        # The join intermediate is bounded by one morsel rather than the full result
         if has_joins:
             morsel = batch_size if batch_size is not None else MORSEL_ROWS
             join_node = next(n for n in plan if isinstance(n, _JOIN_TYPES))
@@ -415,8 +415,8 @@ class SpatialExecutor:
     def _emit_points_within_distance_of_polygon(
         self, node: PointsWithinDistanceOfPolygonNode, sf, lf: pl.LazyFrame
     ) -> pl.LazyFrame:
-        # Keep points within node.distance of the query polygon. The polygon is queried
-        # against all points, so indices resolve once and the lf filters by original row.
+        # Keep points within node.distance of the query polygon
+        # It is queried against all points so indices resolve once and lf filters by original row
         indices = sf.engine.points_within_distance_of_polygon(node.polygon, node.distance)
         return self._filter_by_indices(lf, indices)
 

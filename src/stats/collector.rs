@@ -116,7 +116,7 @@ pub fn collect_polygons(
 }
 
 fn compute_extent(xs: &[f64], ys: &[f64]) -> Option<Rect<f64>> {
-    // min/max reduce in parallel: order-independent, so the extent matches a serial fold
+    // Order-independent min/max reduce in parallel matches a serial fold
     let init = || {
         (
             f64::INFINITY,
@@ -230,8 +230,8 @@ fn build_polygon_centroid_histogram(
     let cell_h = h / HISTOGRAM_RESOLUTION as f64;
     let n_polys = poly_offsets.len().saturating_sub(1);
     let cells = HISTOGRAM_RESOLUTION * HISTOGRAM_RESOLUTION;
-    // Bin each polygon's exterior-ring centroid in parallel, accumulating into per-thread
-    // histograms then summing them. Integer sums are order-independent, so counts are exact.
+    // Bin each polygon's exterior-ring centroid in parallel into per-thread histograms
+    // Integer sums are order-independent and keep the summed counts exact
     let counts = (0..n_polys)
         .into_par_iter()
         .fold(

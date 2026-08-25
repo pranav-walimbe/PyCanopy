@@ -251,7 +251,7 @@ mod tests {
 
     #[test]
     fn only_probed_parts_are_built() {
-        // Two ring polygons side by side, so a probe of the first never reaches the second
+        // Two ring polygons side by side where a probe of the first never reaches the second
         let (mut xs, mut ys, _, _) = ring_polygon(200);
         let (right_xs, right_ys, _, _) = ring_polygon(200);
         xs.extend(right_xs.iter().map(|x| x + 10.0));
