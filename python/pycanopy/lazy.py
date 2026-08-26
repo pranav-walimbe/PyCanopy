@@ -6,13 +6,16 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import polars as pl
 import pyarrow.parquet as pq
 from polars.io.plugins import register_io_source
 
 from pycanopy.agg import AggSpec, _partial_agg, _reduce_partials, _try_fused_join_agg
+from pycanopy.engine import distance_to_point, wkb_points_to_xy
 from pycanopy.executor import _ROW_IDX, SpatialExecutor
 from pycanopy.nodes import (
     ContainsNode,
@@ -255,6 +258,99 @@ def _source_columns_for_plan(plan: Plan, schema: pl.Schema) -> set[str] | None:
     return required
 
 
+@dataclass(frozen=True)
+class _StreamingPointFilter:
+    filters: tuple[pl.Expr, ...]
+    spatial: RangeNode | WithinDistanceOfPointNode
+    scan_columns: tuple[str, ...]
+    output_columns: tuple[str, ...]
+    schema: pl.Schema
+
+
+def _streaming_point_filter_plan(sf, plan: Plan, schema: pl.Schema) -> _StreamingPointFilter | None:
+    # Recognize one-shot point filters that are independent across source batches
+    source = sf._lazy_source
+    if (
+        source is None
+        or source.geometry_kind != "point"
+        or source.index_mode not in ("auto", "none")
+        or source.geometry_col not in schema
+        or schema[source.geometry_col] != pl.Binary
+    ):
+        return None
+    projection = plan[-1] if plan and isinstance(plan[-1], SelectNode) else None
+    body = plan[:-1] if projection is not None else plan
+    spatials = [node for node in body if isinstance(node, (RangeNode, WithinDistanceOfPointNode))]
+    if len(spatials) != 1 or any(
+        not isinstance(node, (ScalarNode, RangeNode, WithinDistanceOfPointNode)) for node in body
+    ):
+        return None
+    if isinstance(spatials[0], WithinDistanceOfPointNode) and spatials[0].distance < 0:
+        return None
+    source_columns = set(schema.names())
+    scalars = [node for node in body if isinstance(node, ScalarNode)]
+    if not all(
+        _is_pushdown_expr(node.expr, source_columns, source.geometry_col) for node in scalars
+    ):
+        return None
+
+    if projection is None:
+        output_columns = tuple(schema.names())
+    else:
+        output_columns = projection.columns
+        if any(column not in source_columns for column in output_columns):
+            return None
+    required = _source_columns_for_plan(plan, schema)
+    retained = source_columns if required is None else required
+    scan_columns = tuple(
+        name for name in schema.names() if name in retained or name == source.geometry_col
+    )
+    return _StreamingPointFilter(
+        tuple(node.expr for node in scalars),
+        spatials[0],
+        scan_columns,
+        output_columns,
+        schema,
+    )
+
+
+def _streaming_point_mask(
+    node: RangeNode | WithinDistanceOfPointNode,
+    xs: np.ndarray,
+    ys: np.ndarray,
+    coordinate_system: str,
+) -> np.ndarray:
+    # Evaluate one supported point predicate while preserving inclusive engine boundaries
+    if isinstance(node, RangeNode):
+        return (xs >= node.min_x) & (xs <= node.max_x) & (ys >= node.min_y) & (ys <= node.max_y)
+    if coordinate_system == "geographic":
+        return distance_to_point(xs, ys, node.cx, node.cy, "geographic") <= node.distance
+    dx = xs - node.cx
+    dy = ys - node.cy
+    return dx * dx + dy * dy <= node.distance * node.distance
+
+
+def _stream_deferred_point_filter(sf, strategy: _StreamingPointFilter) -> Iterator[pl.DataFrame]:
+    # Decode and filter one source batch at a time without retaining reusable engine state
+    source = sf._lazy_source
+    source_frame = source.frame
+    for expr in strategy.filters:
+        source_frame = source_frame.filter(expr)
+    yielded = False
+    for batch in source_frame.select(strategy.scan_columns).collect_batches(
+        chunk_size=source.ingest_batch_size,
+        maintain_order=True,
+    ):
+        xs, ys = wkb_points_to_xy(batch[source.geometry_col])
+        mask = _streaming_point_mask(strategy.spatial, xs, ys, source.coordinate_system)
+        matched = batch.filter(pl.Series(mask)).select(strategy.output_columns)
+        if matched.height:
+            yielded = True
+            yield matched
+    if not yielded:
+        yield pl.DataFrame(schema=strategy.schema).select(strategy.output_columns)
+
+
 class SpatialLazyFrame:
     """Builds a spatial query plan declaratively. Declaration order is not execution order.
 
@@ -283,6 +379,13 @@ class SpatialLazyFrame:
     def _prepare(self) -> SpatialFrame:  # noqa: F821
         # Compatibility helper for callers that need only the prepared frame
         return self._prepare_plan()[0]
+
+    def _streaming_filter_plan(self) -> _StreamingPointFilter | None:
+        # Resolve a deferred streaming strategy without materializing its geometry
+        if not self._sf._is_deferred:
+            return None
+        schema = self._sf._lazy_schema()
+        return _streaming_point_filter_plan(self._sf, self._plan, schema)
 
     def filter(self, expr: pl.Expr) -> SpatialLazyFrame:
         """Add a scalar Polars expression filter.
@@ -589,6 +692,9 @@ class SpatialLazyFrame:
         Returns:
             The executed result as a Polars DataFrame.
         """
+        if strategy := self._streaming_filter_plan():
+            frames = list(_stream_deferred_point_filter(self._sf, strategy))
+            return pl.concat(frames, how="vertical", rechunk=False)
         sf, plan = self._prepare_plan()
         optimizer = SpatialOptimizer()
         executor = SpatialExecutor()
@@ -599,8 +705,8 @@ class SpatialLazyFrame:
     def collect_batched(self, batch_size: int | None = None) -> Iterator[pl.DataFrame]:
         """Execute the plan and yield the result one morsel-frame at a time.
 
-        A join plan yields the result one joined morsel at a time so the full result never
-        materialises. Plans without a join yield one frame.
+        Join plans yield probe morsels. Supported deferred point filters yield source-aligned
+        batches without materializing the full spatial frame. Other plans yield one frame.
 
         Args:
             batch_size: Probe rows per morsel. Defaults to MORSEL_ROWS.
@@ -608,6 +714,8 @@ class SpatialLazyFrame:
         Returns:
             An iterator of DataFrames, one per probe morsel.
         """
+        if strategy := self._streaming_filter_plan():
+            return _stream_deferred_point_filter(self._sf, strategy)
         sf, plan = self._prepare_plan()
         optimizer = SpatialOptimizer()
         executor = SpatialExecutor()
@@ -621,13 +729,9 @@ class SpatialLazyFrame:
             path: Destination Parquet file path.
             batch_size: Probe rows per morsel. Defaults to MORSEL_ROWS.
         """
-        sf, plan = self._prepare_plan()
-        optimizer = SpatialOptimizer()
-        executor = SpatialExecutor()
-        optimized = optimizer.optimize(plan, sf.engine)
         writer: pq.ParquetWriter | None = None
         try:
-            for morsel in executor.stream(optimized, sf, batch_size):
+            for morsel in self.collect_batched(batch_size):
                 table = morsel.to_arrow()
                 if writer is None:
                     writer = pq.ParquetWriter(str(path), table.schema)
@@ -648,18 +752,13 @@ class SpatialLazyFrame:
         Returns:
             A Polars LazyFrame that streams this plan's output.
         """
-        sf, plan = self._prepare_plan()
-        optimizer = SpatialOptimizer()
-        executor = SpatialExecutor()
-        optimized = optimizer.optimize(plan, sf.engine)
-
-        sample = next(executor.stream(optimized, sf, batch_size=1), None)
+        sample = next(self.collect_batched(batch_size=1), None)
         schema = sample.schema if sample is not None else pl.Schema({})
 
         def source(with_columns, predicate, n_rows, batch_size_hint):
             # Stream plan morsels, applying Polars predicate, projection, and row-count pushdown
             produced = 0
-            for morsel in executor.stream(optimized, sf, batch_size):
+            for morsel in self.collect_batched(batch_size):
                 if predicate is not None:
                     morsel = morsel.filter(predicate)
                 if with_columns is not None:
