@@ -15,7 +15,12 @@ import pyarrow.parquet as pq
 from polars.io.plugins import register_io_source
 
 from pycanopy.agg import AggSpec, _partial_agg, _reduce_partials, _try_fused_join_agg
-from pycanopy.engine import distance_to_point, wkb_points_to_xy
+from pycanopy.engine import (
+    _extract_query_polygon_rings,
+    _points_within_distance_of_polygon_scan,
+    distance_to_point,
+    wkb_points_to_xy,
+)
 from pycanopy.executor import _ROW_IDX, SpatialExecutor
 from pycanopy.nodes import (
     ContainsNode,
@@ -261,7 +266,7 @@ def _source_columns_for_plan(plan: Plan, schema: pl.Schema) -> set[str] | None:
 @dataclass(frozen=True)
 class _StreamingPointFilter:
     filters: tuple[pl.Expr, ...]
-    spatial: RangeNode | WithinDistanceOfPointNode
+    spatial: RangeNode | WithinDistanceOfPointNode | PointsWithinDistanceOfPolygonNode
     scan_columns: tuple[str, ...]
     output_columns: tuple[str, ...]
     schema: pl.Schema
@@ -280,12 +285,16 @@ def _streaming_point_filter_plan(sf, plan: Plan, schema: pl.Schema) -> _Streamin
         return None
     projection = plan[-1] if plan and isinstance(plan[-1], SelectNode) else None
     body = plan[:-1] if projection is not None else plan
-    spatials = [node for node in body if isinstance(node, (RangeNode, WithinDistanceOfPointNode))]
+    spatial_types = (RangeNode, WithinDistanceOfPointNode, PointsWithinDistanceOfPolygonNode)
+    spatials = [node for node in body if isinstance(node, spatial_types)]
     if len(spatials) != 1 or any(
-        not isinstance(node, (ScalarNode, RangeNode, WithinDistanceOfPointNode)) for node in body
+        not isinstance(node, (ScalarNode, *spatial_types)) for node in body
     ):
         return None
-    if isinstance(spatials[0], WithinDistanceOfPointNode) and spatials[0].distance < 0:
+    if (
+        isinstance(spatials[0], (WithinDistanceOfPointNode, PointsWithinDistanceOfPolygonNode))
+        and spatials[0].distance < 0
+    ):
         return None
     source_columns = set(schema.names())
     scalars = [node for node in body if isinstance(node, ScalarNode)]
@@ -334,6 +343,11 @@ def _stream_deferred_point_filter(sf, strategy: _StreamingPointFilter) -> Iterat
     # Decode and filter one source batch at a time without retaining reusable engine state
     source = sf._lazy_source
     source_frame = source.frame
+    polygon_rings = (
+        _extract_query_polygon_rings(strategy.spatial.polygon)
+        if isinstance(strategy.spatial, PointsWithinDistanceOfPolygonNode)
+        else None
+    )
     for expr in strategy.filters:
         source_frame = source_frame.filter(expr)
     yielded = False
@@ -342,8 +356,17 @@ def _stream_deferred_point_filter(sf, strategy: _StreamingPointFilter) -> Iterat
         maintain_order=True,
     ):
         xs, ys = wkb_points_to_xy(batch[source.geometry_col])
-        mask = _streaming_point_mask(strategy.spatial, xs, ys, source.coordinate_system)
-        matched = batch.filter(pl.Series(mask)).select(strategy.output_columns)
+        if polygon_rings is not None:
+            indices = _points_within_distance_of_polygon_scan(
+                xs,
+                ys,
+                polygon_rings,
+                strategy.spatial.distance,
+            )
+            matched = batch[indices].select(strategy.output_columns)
+        else:
+            mask = _streaming_point_mask(strategy.spatial, xs, ys, source.coordinate_system)
+            matched = batch.filter(pl.Series(mask)).select(strategy.output_columns)
         if matched.height:
             yielded = True
             yield matched

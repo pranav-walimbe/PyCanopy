@@ -229,6 +229,21 @@ def wkb_points_to_xy(points) -> tuple[np.ndarray, np.ndarray]:
     )
 
 
+def _points_within_distance_of_polygon_scan(
+    xs: np.ndarray,
+    ys: np.ndarray,
+    polygon_rings: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    distance: float,
+) -> np.ndarray:
+    # Scan one point morsel through the native exact polygon-distance kernel
+    return _CoreEngine._points_within_distance_of_polygon(
+        xs,
+        ys,
+        *polygon_rings,
+        distance,
+    )
+
+
 def wkb_point_distance(series_a, series_b) -> np.ndarray:
     """Compute the Euclidean distance between two WKB point columns in one parallel pass.
 
