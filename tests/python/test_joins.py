@@ -13,7 +13,7 @@ from shapely.geometry import Polygon, box
 
 from pycanopy import SpatialFrame
 from pycanopy.nodes import WithinDistanceJoinNode
-from pycanopy.optimizer import SpatialOptimizer
+from pycanopy.optimizer import SpatialOptimizer, _choose_execution_strategy
 
 _N = 1000  # 10x100 grid, above the 500 brute-force threshold
 
@@ -118,6 +118,59 @@ def test_within_join_accepts_empty_lazy_probe(sf_polygons):
     streamed = sf_polygons.lazy().within_join(query_df.lazy(), "qx", "qy").collect()
     assert streamed.schema == eager.schema
     assert streamed.is_empty()
+
+
+def test_within_join_explain_distinguishes_probe_strategies(sf_polygons):
+    query_df = pl.DataFrame({"qx": [0.5, 1.5], "qy": [0.5, 0.5]})
+
+    eager = sf_polygons.lazy().within_join(query_df, "qx", "qy").explain()
+    deferred = sf_polygons.lazy().within_join(query_df.lazy(), "qx", "qy").explain()
+
+    assert eager.startswith("EXECUTION [materialized-engine; reason=probe fits one morsel]")
+    assert deferred.startswith(
+        "EXECUTION [streaming-probe; batch_rows=262,144; reason=deferred probe source]"
+    )
+
+
+def test_execution_strategy_uses_measured_probe_boundary():
+    common = {
+        "streaming_filter_supported": False,
+        "has_join": True,
+        "streaming_probe_supported": True,
+        "probe_is_deferred": False,
+        "filter_batch_rows": 32_768,
+        "probe_batch_rows": 262_144,
+    }
+
+    small = _choose_execution_strategy(probe_rows=262_144, **common)
+    large = _choose_execution_strategy(probe_rows=262_145, **common)
+
+    assert small.strategy == "materialized_engine"
+    assert large.strategy == "streaming_probe"
+
+
+def test_execution_strategy_respects_operation_constraints():
+    filter_choice = _choose_execution_strategy(
+        streaming_filter_supported=True,
+        has_join=False,
+        streaming_probe_supported=False,
+        probe_is_deferred=False,
+        probe_rows=None,
+        filter_batch_rows=32_768,
+        probe_batch_rows=262_144,
+    )
+    global_choice = _choose_execution_strategy(
+        streaming_filter_supported=False,
+        has_join=True,
+        streaming_probe_supported=False,
+        probe_is_deferred=True,
+        probe_rows=None,
+        filter_batch_rows=32_768,
+        probe_batch_rows=262_144,
+    )
+
+    assert filter_choice.strategy == "streaming_filter"
+    assert global_choice.strategy == "materialized_engine"
 
 
 def test_within_join_flip_matches_standard(sf_polygons):

@@ -70,6 +70,9 @@ def test_from_lazy_defers_source_execution_and_explain_io():
     explanation = sf.lazy().range_query(0, 0, 2, 2).select("id").explain()
 
     assert projections == []
+    assert explanation.startswith(
+        "EXECUTION [materialized-engine; reason=operation requires complete geometry]"
+    )
     assert "LAZY SOURCE [N=?]" in explanation
     assert sf.lazy().range_query(0, 0, 2, 2).select("id").collect()["id"].to_list() == [1]
     assert len(projections) == 1
@@ -509,6 +512,25 @@ def test_lazy_point_range_streams_without_materializing_engine(monkeypatch):
 
     assert result["id"].to_list() == [3, 4]
     assert set(projections[0]) == {"id", "value", "geometry"}
+
+
+def test_lazy_point_filter_explain_reports_streaming_strategy():
+    explanation = (
+        SpatialFrame.from_lazy(
+            _point_data().lazy(),
+            "geometry",
+            "point",
+            ingest_batch_size=2,
+        )
+        .lazy()
+        .range_query(0.5, -1, 3.5, 1)
+        .select("id")
+        .explain()
+    )
+
+    assert explanation.startswith(
+        "EXECUTION [streaming-filter; batch_rows=2; reason=one-shot deferred point filter]"
+    )
 
 
 def test_lazy_point_radius_streams_requested_wkb_in_source_order():
