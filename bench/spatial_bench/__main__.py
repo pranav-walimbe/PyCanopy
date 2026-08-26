@@ -324,6 +324,10 @@ def main(argv: list[str] | None = None) -> int:
         if transports:
             profile_path = ASSETS_DIR / "profile.txt"
             write_profile_comparison(transports, profile_path)
+            # Transports are the wire format between the boxes and the merged report
+            for transport in paths:
+                if transport.name.startswith("profile-") and transport.suffix == ".json":
+                    transport.unlink(missing_ok=True)
             produced = [profile_path]
             missing = [v for v in PROFILE_VARIANTS if v not in transports]
             note = f", no profile from the {', '.join(missing)} build" if missing else ""
