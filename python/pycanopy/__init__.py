@@ -8,6 +8,7 @@ from .engine import (
     wkb_points_to_xy,
 )
 from .frame import SpatialFrame
+from .geoparquet import infer_geoparquet_geometry
 from .lazy import SpatialGroupBy, SpatialLazyFrame
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "SpatialLazyFrame",
     "agg",
     "distance_to_point",
+    "infer_geoparquet_geometry",
     "point_distance",
     "wkb_point_distance",
     "wkb_points_to_xy",

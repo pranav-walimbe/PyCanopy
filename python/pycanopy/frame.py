@@ -13,6 +13,7 @@ import polars as pl
 
 from pycanopy.coordinates import resolve_coordinate_system
 from pycanopy.engine import Engine, wkb_points_to_xy
+from pycanopy.geoparquet import infer_geoparquet_geometry
 from pycanopy.lazy import SpatialLazyFrame
 
 _DEFAULT_INGEST_BATCH_SIZE = 32_768
@@ -142,8 +143,8 @@ class SpatialFrame:
     def scan_parquet(
         cls,
         source: str | Path | list[str] | list[Path],
-        geometry_col: str,
-        geometry_kind: Literal["point", "polygon"],
+        geometry_col: str | None = None,
+        geometry_kind: Literal["point", "polygon"] | None = None,
         index_mode: str = "auto",
         storage_options: dict[str, str] | None = None,
         coordinate_system: Literal["planar", "geographic"] | None = None,
@@ -154,8 +155,10 @@ class SpatialFrame:
 
         Args:
             source: Parquet path, glob, cloud URI, or list of paths.
-            geometry_col: Name of the Binary WKB geometry column.
-            geometry_kind: WKB geometry kind, ``"point"`` or ``"polygon"``.
+            geometry_col: Name of the Binary WKB geometry column. Inferred from
+                GeoParquet metadata when omitted.
+            geometry_kind: WKB geometry kind, ``"point"`` or ``"polygon"``. Inferred
+                from GeoParquet metadata when omitted.
             index_mode: Index build policy ("eager" / "none" / "auto").
             storage_options: Cloud connection options for Polars.
             coordinate_system: Point distance system ("planar" / "geographic").
@@ -165,6 +168,15 @@ class SpatialFrame:
         Returns:
             A SpatialFrame materialized when its query is collected.
         """
+        if geometry_col is None or geometry_kind is None:
+            geometry_col, geometry_kind = infer_geoparquet_geometry(
+                source,
+                geometry_col,
+                geometry_kind,
+                storage_options,
+                scan_options.get("credential_provider", "auto"),
+                scan_options.get("retries"),
+            )
         frame = pl.scan_parquet(source, storage_options=storage_options, **scan_options)
         return cls.from_lazy(
             frame,
