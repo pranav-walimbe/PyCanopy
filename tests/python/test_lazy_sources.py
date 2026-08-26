@@ -647,6 +647,89 @@ def test_lazy_point_streaming_sink_and_lazy_source(tmp_path):
     assert lazy_result["id"].to_list() == [2, 3, 4]
 
 
+def test_deferred_point_lazy_source_decodes_projected_coordinates(monkeypatch):
+    lazy_frame, projections = _tracked_source(_point_data())
+    decoded = []
+    original = pycanopy_lazy.wkb_points_to_xy
+
+    def tracked(column):
+        # Record decoded morsels before forwarding to the point decoder
+        decoded.append(len(column))
+        return original(column)
+
+    monkeypatch.setattr(pycanopy_lazy, "wkb_points_to_xy", tracked)
+    source = (
+        SpatialFrame.from_lazy(lazy_frame, "geometry", "point", ingest_batch_size=2)
+        .lazy()
+        .lazy_source()
+    )
+
+    result = source.filter(pl.col("_x") >= 2).select("id", "_x", "_y").collect()
+
+    assert result.to_dict(as_series=False) == {
+        "id": [3, 4, 5],
+        "_x": [2.0, 3.0, 4.0],
+        "_y": [0.0, 0.0, 0.0],
+    }
+    assert decoded == [2, 2, 1]
+    assert len(projections) == 1
+    assert set(projections[0]) == {"id", "geometry"}
+    assert "unused" not in projections[0]
+
+
+def test_within_join_streams_deferred_wkb_probe_without_engine(monkeypatch):
+    lazy_frame, projections = _tracked_source(_point_data())
+
+    def unexpected(cls, columns):
+        raise AssertionError("deferred join probe materialized an Engine")
+
+    monkeypatch.setattr(Engine, "_from_wkb_point_batches", classmethod(unexpected))
+    query = (
+        SpatialFrame.from_lazy(lazy_frame, "geometry", "point", ingest_batch_size=2)
+        .lazy()
+        .lazy_source()
+    )
+    target = SpatialFrame.from_polygons(
+        pl.DataFrame(
+            {
+                "target_id": [10, 20],
+                "geometry": [shapely.box(-0.1, -0.1, 0.1, 0.1), shapely.box(1.9, -0.1, 3.1, 0.1)],
+            }
+        ),
+        "geometry",
+    )
+
+    result = (
+        target.lazy()
+        .within_join(query, "_x", "_y")
+        .select("id", "value", "target_id")
+        .collect(batch_size=2)
+        .sort(["id", "target_id"])
+    )
+
+    assert result.to_dict(as_series=False) == {
+        "id": [1, 3, 4],
+        "value": [10, 30, 40],
+        "target_id": [10, 20, 20],
+    }
+    assert len(projections) == 1
+    assert set(projections[0]) == {"id", "value", "geometry"}
+    assert "unused" not in projections[0]
+
+
+def test_deferred_point_lazy_source_preserves_empty_schema():
+    source = _point_data().clear()
+    result = (
+        SpatialFrame.from_lazy(source.lazy(), "geometry", "point", ingest_batch_size=2)
+        .lazy()
+        .lazy_source()
+        .select("id", "_x", "_y")
+        .collect()
+    )
+    assert result.schema == pl.Schema({"id": pl.Int64, "_x": pl.Float64, "_y": pl.Float64})
+    assert result.is_empty()
+
+
 def test_lazy_point_ingestion_preserves_requested_wkb_and_order():
     source = _point_data()
 
