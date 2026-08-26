@@ -21,7 +21,7 @@ from pycanopy.engine import (
     distance_to_point,
     wkb_points_to_xy,
 )
-from pycanopy.executor import _ROW_IDX, SpatialExecutor
+from pycanopy.executor import _ROW_IDX, MORSEL_ROWS, SpatialExecutor
 from pycanopy.nodes import (
     ContainsNode,
     FusedSpatialNode,
@@ -40,7 +40,7 @@ from pycanopy.nodes import (
     WithinDistanceOfPointNode,
     WithinJoinNode,
 )
-from pycanopy.optimizer import SpatialOptimizer
+from pycanopy.optimizer import SpatialOptimizer, _choose_execution_strategy, _ExecutionChoice
 
 
 def _fmt_expr(expr: pl.Expr) -> str:
@@ -132,6 +132,13 @@ def _fmt_plan(
         lines.append(f"{indent}FROM")
     lines.append(f"{'  ' * len(reversed_plan)}{df_line}")
     return "\n".join(lines)
+
+
+def _fmt_execution(choice: _ExecutionChoice) -> str:
+    # Format the physical source strategy shared by explain and execution
+    label = choice.strategy.replace("_", "-")
+    batch = "" if choice.batch_rows is None else f"; batch_rows={choice.batch_rows:,}"
+    return f"EXECUTION [{label}{batch}; reason={choice.reason}]"
 
 
 _SOURCE_JOIN_TYPES = (
@@ -469,6 +476,34 @@ class SpatialLazyFrame:
         schema = self._sf._lazy_schema()
         return _streaming_point_filter_plan(self._sf, self._plan, schema)
 
+    def _execution_choice(
+        self, batch_size: int | None = None
+    ) -> tuple[_ExecutionChoice, _StreamingPointFilter | None]:
+        # Resolve the physical source strategy once for explain and execution
+        streaming_filter = self._streaming_filter_plan()
+        join_node = next(
+            (node for node in self._plan if isinstance(node, _SOURCE_JOIN_TYPES)),
+            None,
+        )
+        query = None if join_node is None else join_node.query_df
+        probe_is_deferred = isinstance(query, pl.LazyFrame)
+        probe_rows = None if query is None or probe_is_deferred else query.height
+        streaming_probe_supported = not (
+            isinstance(join_node, PolygonKnnJoinNode) and join_node.sorted_output
+        )
+        source = self._sf._lazy_source
+        filter_batch_rows = None if source is None else source.ingest_batch_size
+        choice = _choose_execution_strategy(
+            streaming_filter_supported=streaming_filter is not None,
+            has_join=join_node is not None,
+            streaming_probe_supported=streaming_probe_supported,
+            probe_is_deferred=probe_is_deferred,
+            probe_rows=probe_rows,
+            filter_batch_rows=filter_batch_rows,
+            probe_batch_rows=MORSEL_ROWS if batch_size is None else batch_size,
+        )
+        return choice, streaming_filter
+
     def filter(self, expr: pl.Expr) -> SpatialLazyFrame:
         """Add a scalar Polars expression filter.
 
@@ -771,13 +806,15 @@ class SpatialLazyFrame:
         Returns:
             A human-readable plan description.
         """
+        choice, _ = self._execution_choice()
         if self._sf._is_deferred:
-            return _fmt_plan(self._plan, None, None, "LAZY SOURCE")
+            plan = _fmt_plan(self._plan, None, None, "LAZY SOURCE")
+            return f"{_fmt_execution(choice)}\n{plan}"
         engine = self._sf.engine
         opt = SpatialOptimizer()
         plan = opt.optimize(self._plan, engine)
         path = opt._select_plugin_path(plan, engine)
-        return _fmt_plan(plan, path, engine.n)
+        return f"{_fmt_execution(choice)}\n{_fmt_plan(plan, path, engine.n)}"
 
     def collect(self, batch_size: int | None = None) -> pl.DataFrame:
         """Optimise (SpatialOptimizer) and execute (SpatialExecutor) the plan.
@@ -792,7 +829,8 @@ class SpatialLazyFrame:
         Returns:
             The executed result as a Polars DataFrame.
         """
-        if strategy := self._streaming_filter_plan():
+        choice, strategy = self._execution_choice(batch_size)
+        if choice.strategy == "streaming_filter":
             frames = list(_stream_deferred_point_filter(self._sf, strategy))
             return pl.concat(frames, how="vertical", rechunk=False)
         sf, plan = self._prepare_plan()
@@ -814,7 +852,8 @@ class SpatialLazyFrame:
         Returns:
             An iterator of DataFrames, one per probe morsel.
         """
-        if strategy := self._streaming_filter_plan():
+        choice, strategy = self._execution_choice(batch_size)
+        if choice.strategy == "streaming_filter":
             return _stream_deferred_point_filter(self._sf, strategy)
         sf, plan = self._prepare_plan()
         optimizer = SpatialOptimizer()
