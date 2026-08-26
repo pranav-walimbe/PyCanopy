@@ -38,8 +38,9 @@ use query::{
     batch::{
         par_bbox_filter, par_contains, par_contains_aggregate, par_knn_join, par_knn_to_polygons,
         par_knn_to_polygons_sorted, par_knn_with_delta, par_points_within_distance_of_polygon,
-        par_polygon_intersects_join, par_radius, par_within_distance, par_within_distance_flipped,
-        par_within_distance_to_polygons, par_within_distance_to_polygons_aggregate,
+        par_points_within_distance_of_polygon_scan, par_polygon_intersects_join, par_radius,
+        par_within_distance, par_within_distance_flipped, par_within_distance_to_polygons,
+        par_within_distance_to_polygons_aggregate,
     },
     geodesy::{conservative_degree_box, haversine_distance_m, DistanceMetric},
     geometry::{convex_hull_area, polygon_area, polygon_intersection_area},
@@ -2381,6 +2382,58 @@ impl Engine {
             output_rows,
         );
         Ok(output)
+    }
+
+    #[staticmethod]
+    #[allow(clippy::too_many_arguments)]
+    fn _points_within_distance_of_polygon<'py>(
+        py: Python<'py>,
+        xs: PyReadonlyArray1<f64>,
+        ys: PyReadonlyArray1<f64>,
+        poly_xs: PyReadonlyArray1<f64>,
+        poly_ys: PyReadonlyArray1<f64>,
+        poly_ring_offsets: PyReadonlyArray1<i64>,
+        poly_offsets: PyReadonlyArray1<i64>,
+        distance: f64,
+    ) -> PyResult<Bound<'py, PyArray1<u64>>> {
+        let xs = xs
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("xs must be a contiguous float64 array"))?;
+        let ys = ys
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("ys must be a contiguous float64 array"))?;
+        let poly_xs = poly_xs
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("poly_xs must be a contiguous float64 array"))?;
+        let poly_ys = poly_ys
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("poly_ys must be a contiguous float64 array"))?;
+        let poly_ring_offsets = poly_ring_offsets
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("poly_ring_offsets must be contiguous int64"))?;
+        let poly_offsets = poly_offsets
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("poly_offsets must be contiguous int64"))?;
+        if xs.len() != ys.len() {
+            return Err(PyValueError::new_err("xs and ys must have the same length"));
+        }
+        if poly_xs.len() != poly_ys.len() {
+            return Err(PyValueError::new_err(
+                "poly_xs and poly_ys must have the same length",
+            ));
+        }
+        Ok(PyArray1::from_vec(
+            py,
+            par_points_within_distance_of_polygon_scan(
+                xs,
+                ys,
+                poly_xs,
+                poly_ys,
+                poly_ring_offsets,
+                poly_offsets,
+                distance,
+            ),
+        ))
     }
 
     /// Area of the convex hull of a standalone set of points. Used for grouped
