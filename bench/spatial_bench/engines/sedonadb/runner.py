@@ -14,7 +14,8 @@ class Runner:
 
         self._connection = sedonadb.connect()
         for table in TABLES:
-            path = f"{data_dir.rstrip('/')}/{table}/*.parquet"
+            # SedonaDB 0.4 matches zero objects for a glob and needs the directory prefix
+            path = f"{data_dir.rstrip('/')}/{table}/"
             self._connection.read_parquet(
                 path,
                 options={"aws.skip_signature": True, "aws.region": "us-west-2"},
