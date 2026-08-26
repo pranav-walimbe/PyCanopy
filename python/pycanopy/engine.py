@@ -711,6 +711,10 @@ class Engine:
         """Build an explicit index kind for the internal ops calibration harness."""
         self._core._build_index_for_calibration(kind)
 
+    def _set_cost_factors_for_calibration(self, factors: dict[str, float]) -> None:
+        # Apply a complete fitted profile for internal planner validation
+        self._core.set_cost_factors([factors[name] for name in _COST_FACTOR_FIELDS])
+
     def set_index_mode(self, mode: str) -> str:
         """Set the index build policy, returning the previous mode.
 

@@ -30,8 +30,8 @@ use planner::{
     calibration::CostFactors,
     cost::{IndexKind, IndexMode},
     selector::{
-        plan_access, plan_access_with_kind, plan_best_available, point_distance_candidate,
-        rtree_candidate, select_index,
+        plan_access, plan_access_with_kind, plan_best_available, plan_point_polygon_orientation,
+        point_distance_candidate, rtree_candidate, select_index, PointPolygonOrientation,
     },
 };
 use query::{
@@ -41,6 +41,7 @@ use query::{
         par_points_within_distance_of_polygon_scan, par_polygon_intersects_join, par_radius,
         par_within_distance, par_within_distance_flipped, par_within_distance_to_polygons,
         par_within_distance_to_polygons_aggregate,
+        par_within_distance_to_polygons_aggregate_flipped, par_within_distance_to_polygons_flipped,
     },
     geodesy::{conservative_degree_box, haversine_distance_m, DistanceMetric},
     geometry::{convex_hull_area, polygon_area, polygon_intersection_area},
@@ -518,6 +519,33 @@ impl Engine {
             self.index_mode,
             &self.cost_factors,
             candidate,
+        )
+    }
+
+    fn point_polygon_orientation(
+        &self,
+        query: &Query,
+        point_count: usize,
+        forward_kind: IndexKind,
+        distance: f64,
+    ) -> PointPolygonOrientation {
+        if !distance.is_finite() || distance < 0.0 {
+            return PointPolygonOrientation::Forward;
+        }
+        let forward_built = match forward_kind {
+            IndexKind::BruteForce => self.brute.is_some(),
+            IndexKind::RTree => self.rtree.is_some(),
+            IndexKind::KdTree => self.kdtree.is_some(),
+            IndexKind::Grid => self.grid.is_some(),
+        };
+        plan_point_polygon_orientation(
+            &self.stats,
+            query,
+            point_count,
+            self.index_mode,
+            &self.cost_factors,
+            forward_kind,
+            forward_built,
         )
     }
 
@@ -1838,18 +1866,21 @@ impl Engine {
             coord! { x: 0.0, y: 0.0 },
             coord! { x: 2.0 * distance, y: 2.0 * distance },
         );
-        let kind = self.plan_index_kind(
-            &Query::Range { bbox },
-            total_q_count.unwrap_or(qxs.len()),
-            IndexKind::RTree,
-        );
-        let build_ns = self.build_index_if_needed(kind);
+        let query = Query::Range { bbox };
+        let forward_kind =
+            self.plan_index_kind(&query, total_q_count.unwrap_or(qxs.len()), IndexKind::RTree);
+        let orientation = self.point_polygon_orientation(&query, qxs.len(), forward_kind, distance);
+        let (kind, build_ns) = match orientation {
+            PointPolygonOrientation::Forward => {
+                (forward_kind, self.build_index_if_needed(forward_kind))
+            }
+            PointPolygonOrientation::FlippedGrid => (IndexKind::Grid, 0),
+        };
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
         let part_poly = self.part_poly.as_deref();
-        let flat = match kind {
-            IndexKind::BruteForce => par_within_distance_to_polygons(
-                self.brute.as_ref().unwrap(),
+        let flat = match orientation {
+            PointPolygonOrientation::FlippedGrid => par_within_distance_to_polygons_flipped(
                 qxs,
                 qys,
                 &self.xs,
@@ -1858,18 +1889,32 @@ impl Engine {
                 poly_off,
                 distance,
                 part_poly,
+                self.n_polygons,
             ),
-            _ => par_within_distance_to_polygons(
-                self.rtree.as_ref().unwrap(),
-                qxs,
-                qys,
-                &self.xs,
-                &self.ys,
-                ring_off,
-                poly_off,
-                distance,
-                part_poly,
-            ),
+            PointPolygonOrientation::Forward => match forward_kind {
+                IndexKind::BruteForce => par_within_distance_to_polygons(
+                    self.brute.as_ref().unwrap(),
+                    qxs,
+                    qys,
+                    &self.xs,
+                    &self.ys,
+                    ring_off,
+                    poly_off,
+                    distance,
+                    part_poly,
+                ),
+                _ => par_within_distance_to_polygons(
+                    self.rtree.as_ref().unwrap(),
+                    qxs,
+                    qys,
+                    &self.xs,
+                    &self.ys,
+                    ring_off,
+                    poly_off,
+                    distance,
+                    part_poly,
+                ),
+            },
         };
         let output_rows = flat.len() / 2;
         let output = PyArray1::from_vec(py, flat);
@@ -1944,27 +1989,51 @@ impl Engine {
             coord! { x: 0.0, y: 0.0 },
             coord! { x: 2.0 * distance, y: 2.0 * distance },
         );
-        let kind = self.plan_index_kind(&Query::Range { bbox }, qxs.len(), IndexKind::RTree);
-        let build_ns = self.build_index_if_needed(kind);
+        let query = Query::Range { bbox };
+        let forward_kind = self.plan_index_kind(&query, qxs.len(), IndexKind::RTree);
+        let orientation = self.point_polygon_orientation(&query, qxs.len(), forward_kind, distance);
+        let (kind, build_ns) = match orientation {
+            PointPolygonOrientation::Forward => {
+                (forward_kind, self.build_index_if_needed(forward_kind))
+            }
+            PointPolygonOrientation::FlippedGrid => (IndexKind::Grid, 0),
+        };
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
         let part_poly = self.part_poly.as_deref();
-        let state = match kind {
-            IndexKind::BruteForce => par_within_distance_to_polygons_aggregate(
-                self.brute.as_ref().unwrap(),
-                qxs,
-                qys,
-                &self.xs,
-                &self.ys,
-                ring_off,
-                poly_off,
-                distance,
-                part_poly,
-                self.n_polygons,
-                &values,
-                &validities,
-            ),
-            _ => par_within_distance_to_polygons_aggregate(
+        let state = match orientation {
+            PointPolygonOrientation::FlippedGrid => {
+                par_within_distance_to_polygons_aggregate_flipped(
+                    qxs,
+                    qys,
+                    &self.xs,
+                    &self.ys,
+                    ring_off,
+                    poly_off,
+                    distance,
+                    part_poly,
+                    self.n_polygons,
+                    &values,
+                    &validities,
+                )
+            }
+            PointPolygonOrientation::Forward if forward_kind == IndexKind::BruteForce => {
+                par_within_distance_to_polygons_aggregate(
+                    self.brute.as_ref().unwrap(),
+                    qxs,
+                    qys,
+                    &self.xs,
+                    &self.ys,
+                    ring_off,
+                    poly_off,
+                    distance,
+                    part_poly,
+                    self.n_polygons,
+                    &values,
+                    &validities,
+                )
+            }
+            PointPolygonOrientation::Forward => par_within_distance_to_polygons_aggregate(
                 self.rtree.as_ref().unwrap(),
                 qxs,
                 qys,
