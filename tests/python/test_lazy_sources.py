@@ -717,6 +717,46 @@ def test_within_join_streams_deferred_wkb_probe_without_engine(monkeypatch):
     assert "unused" not in projections[0]
 
 
+def test_polygon_distance_join_streams_deferred_wkb_probe(monkeypatch):
+    lazy_frame, projections = _tracked_source(_point_data())
+
+    def unexpected(cls, columns):
+        raise AssertionError("deferred join probe materialized an Engine")
+
+    monkeypatch.setattr(Engine, "_from_wkb_point_batches", classmethod(unexpected))
+    query = (
+        SpatialFrame.from_lazy(lazy_frame, "geometry", "point", ingest_batch_size=2)
+        .lazy()
+        .lazy_source()
+    )
+    target = SpatialFrame.from_polygons(
+        pl.DataFrame(
+            {
+                "target_id": [10, 20],
+                "geometry": [shapely.box(-0.1, -0.1, 0.1, 0.1), shapely.box(1.9, -0.1, 3.1, 0.1)],
+            }
+        ),
+        "geometry",
+    )
+
+    result = (
+        target.lazy()
+        .polygon_within_distance_join(query, "_x", "_y", distance=0.2)
+        .select("id", "value", "target_id")
+        .collect(batch_size=2)
+        .sort(["id", "target_id"])
+    )
+
+    assert result.to_dict(as_series=False) == {
+        "id": [1, 3, 4],
+        "value": [10, 30, 40],
+        "target_id": [10, 20, 20],
+    }
+    assert len(projections) == 1
+    assert set(projections[0]) == {"id", "value", "geometry"}
+    assert "unused" not in projections[0]
+
+
 def test_deferred_point_lazy_source_preserves_empty_schema():
     source = _point_data().clear()
     result = (

@@ -4,11 +4,12 @@ Aggregation specs for the fused aggregate-join (SpatialGroupBy.agg).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import polars as pl
 
+from pycanopy.executor import MORSEL_ROWS
 from pycanopy.nodes import PolygonWithinDistanceJoinNode, WithinJoinNode
 
 # Prefix for intermediate (partial) columns
@@ -182,38 +183,11 @@ def _reduce_partials(
     return combined.select([*keys, *final_exprs])
 
 
-def _try_fused_join_agg(
-    sf, plan, keys: list[str], specs: dict[str, AggSpec]
-) -> pl.DataFrame | None:
-    # Run a supported polygon join aggregation without materializing match pairs
-    if not keys:
-        return None
-    if len(plan) != 1 or not isinstance(plan[0], (WithinJoinNode, PolygonWithinDistanceJoinNode)):
-        return None
-    if any(spec.kind not in {"count", "sum", "mean"} for spec in specs.values()):
-        return None
-
-    node = plan[0]
-    if isinstance(node.query_df, pl.LazyFrame):
-        return None
-    query_columns = set(node.query_df.columns)
-    target_columns = set(sf.df.columns)
-    if any(key not in target_columns or key in query_columns for key in keys):
-        return None
-
+def _fused_join_partial(sf, node, keys: list[str], specs: dict[str, AggSpec]) -> pl.DataFrame:
+    # Accumulate one eager probe morsel without materializing match pairs
     value_names = list(
         dict.fromkeys(spec.column for spec in specs.values() if spec.column is not None)
     )
-    for name in value_names:
-        if name not in query_columns or name in target_columns:
-            return None
-        dtype = node.query_df.schema[name]
-        if not dtype.is_numeric():
-            return None
-        if any(spec.kind == "sum" and spec.column == name for spec in specs.values()):
-            if dtype != pl.Float64:
-                return None
-
     values: list[np.ndarray] = []
     validities: list[np.ndarray] = []
     for name in value_names:
@@ -255,5 +229,57 @@ def _try_fused_join_agg(
                     pl.Series(f"{_P}{output}__count", value_counts[position]).cast(pl.UInt32),
                 ]
             )
-    partial = partial.with_columns(columns)
+    return partial.with_columns(columns)
+
+
+def _try_fused_join_agg(
+    sf, plan, keys: list[str], specs: dict[str, AggSpec]
+) -> pl.DataFrame | None:
+    # Run a supported polygon join aggregation without materializing match pairs
+    if not keys:
+        return None
+    if len(plan) != 1 or not isinstance(plan[0], (WithinJoinNode, PolygonWithinDistanceJoinNode)):
+        return None
+    if any(spec.kind not in {"count", "sum", "mean"} for spec in specs.values()):
+        return None
+
+    node = plan[0]
+    if isinstance(node.query_df, pl.LazyFrame) and isinstance(node, WithinJoinNode):
+        return None
+    query_schema = (
+        node.query_df.collect_schema()
+        if isinstance(node.query_df, pl.LazyFrame)
+        else node.query_df.schema
+    )
+    query_columns = set(query_schema.names())
+    target_columns = set(sf.df.columns)
+    if any(key not in target_columns or key in query_columns for key in keys):
+        return None
+
+    value_names = list(
+        dict.fromkeys(spec.column for spec in specs.values() if spec.column is not None)
+    )
+    for name in value_names:
+        if name not in query_columns or name in target_columns:
+            return None
+        dtype = query_schema[name]
+        if not dtype.is_numeric():
+            return None
+        if any(spec.kind == "sum" and spec.column == name for spec in specs.values()):
+            if dtype != pl.Float64:
+                return None
+
+    if isinstance(node.query_df, pl.LazyFrame):
+        probe_columns = list(dict.fromkeys([node.x_col, node.y_col, *value_names]))
+        query = node.query_df.select(probe_columns)
+        partials = [
+            _fused_join_partial(sf, replace(node, query_df=batch), keys, specs)
+            for batch in query.collect_batches(chunk_size=MORSEL_ROWS, maintain_order=True)
+        ]
+        if not partials:
+            empty = pl.DataFrame(schema=query.collect_schema())
+            partials.append(_fused_join_partial(sf, replace(node, query_df=empty), keys, specs))
+        return _reduce_partials(partials, keys, specs)
+
+    partial = _fused_join_partial(sf, node, keys, specs)
     return _reduce_partials([partial], keys, specs)

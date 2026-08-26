@@ -13,6 +13,7 @@ import pytest
 from shapely.geometry import box
 
 import pycanopy as pc
+import pycanopy.agg as pycanopy_agg
 import pycanopy.executor as pycanopy_executor
 from pycanopy import SpatialFrame
 
@@ -284,6 +285,67 @@ def test_target_grouped_count_uses_fused_polygon_distance_kernel():
     operations = {metric["name"] for metric in sf.engine.take_metrics()["operations"]}
     assert "batch_within_distance_to_polygons_aggregate" in operations
     assert "batch_within_distance_to_polygons" not in operations
+
+
+def test_lazy_target_aggregate_streams_fused_polygon_distance_kernel(monkeypatch, tmp_path):
+    polygons = [box(0, 0, 1, 1), box(2, 0, 3, 1)]
+    sf = SpatialFrame.from_polygons(
+        pl.DataFrame({"poly_id": [0, 1], "geom": polygons}), geometry_col="geom"
+    )
+    query_df = pl.DataFrame(
+        {
+            "qx": [0.5, 1.1, 1.9, 2.5, 10.0],
+            "qy": [0.5, 0.5, 0.5, 0.5, 10.0],
+            "value": [1.0, None, 3.0, 5.0, 7.0],
+            "unused": [10, 20, 30, 40, 50],
+        }
+    )
+    eager_pairs = (
+        sf.lazy().polygon_within_distance_join(query_df, "qx", "qy", distance=0.2).collect()
+    )
+    expected = eager_pairs.group_by("poly_id").agg(
+        n=pl.len(), total=pl.col("value").sum(), avg=pl.col("value").mean()
+    )
+    query_path = tmp_path / "polygon-distance-probes.parquet"
+    query_df.write_parquet(query_path, row_group_size=2)
+    monkeypatch.setattr(pycanopy_agg, "MORSEL_ROWS", 2)
+    sf.engine.take_metrics()
+
+    result = (
+        sf.lazy()
+        .polygon_within_distance_join(pl.scan_parquet(query_path), "qx", "qy", distance=0.2)
+        .group_by("poly_id")
+        .agg(n=pc.agg.count(), total=pc.agg.sum("value"), avg=pc.agg.mean("value"))
+    )
+
+    _assert_frames_equal(result, expected, ["poly_id"])
+    operations = sf.engine.take_metrics()["operations"]
+    fused = next(
+        metric
+        for metric in operations
+        if metric["name"] == "batch_within_distance_to_polygons_aggregate"
+    )
+    assert fused["calls"] == 3
+    assert "batch_within_distance_to_polygons" not in {metric["name"] for metric in operations}
+
+
+def test_lazy_target_aggregate_handles_empty_polygon_distance_probe():
+    sf = SpatialFrame.from_polygons(
+        pl.DataFrame({"poly_id": [0], "geom": [box(0, 0, 1, 1)]}), geometry_col="geom"
+    )
+    query_df = pl.DataFrame(schema={"qx": pl.Float64, "qy": pl.Float64, "value": pl.Float64}).lazy()
+
+    result = (
+        sf.lazy()
+        .polygon_within_distance_join(query_df, "qx", "qy", distance=0.2)
+        .group_by("poly_id")
+        .agg(n=pc.agg.count(), total=pc.agg.sum("value"), avg=pc.agg.mean("value"))
+    )
+
+    assert result.is_empty()
+    assert result.schema == pl.Schema(
+        {"poly_id": pl.Int64, "n": pl.UInt32, "total": pl.Float64, "avg": pl.Float64}
+    )
 
 
 def test_unsupported_target_aggregate_falls_back_to_pair_join():
