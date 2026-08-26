@@ -207,8 +207,8 @@ class SpatialExecutor:
             join_node = next(n for n in plan if isinstance(n, _JOIN_TYPES))
             if isinstance(join_node, PolygonKnnJoinNode) and join_node.sorted_output:
                 return self._execute_polygon_knn_sorted(plan, sf)
-            if join_node.query_df.height > morsel:
-                frames = self._stream_join_frames(plan, sf, morsel)
+            if isinstance(join_node.query_df, pl.LazyFrame) or join_node.query_df.height > morsel:
+                frames = list(self._stream_join_frames(plan, sf, morsel))
                 return pl.concat(frames, how="vertical", rechunk=False)
 
         # Polygon filters use the direct IO path while point filters can mask native row indices
@@ -262,9 +262,42 @@ class SpatialExecutor:
 
         # Join emitters ignore the incoming lf (they gather from sf.df directly)
         placeholder = sf.df.lazy()
-        total_probe_rows = join_node.query_df.height
-        for chunk in join_node.query_df.iter_slices(morsel_rows):
+        query = join_node.query_df
+        if isinstance(query, pl.LazyFrame):
+            query_columns = query.collect_schema().names()
+            if join_node.keep_columns is not None:
+                overlap = set(query_columns) & set(sf.df.columns)
+                keep = set(join_node.keep_columns)
+                scan_columns = [
+                    column
+                    for column in query_columns
+                    if column in keep
+                    or column in overlap
+                    or column in (join_node.x_col, join_node.y_col)
+                ]
+                query = query.select(scan_columns)
+            chunks = query.collect_batches(chunk_size=morsel_rows, maintain_order=True)
+            total_probe_rows = 0
+        else:
+            chunks = query.iter_slices(morsel_rows)
+            total_probe_rows = query.height
+        yielded = False
+        for chunk in chunks:
+            yielded = True
+            if isinstance(query, pl.LazyFrame):
+                total_probe_rows += chunk.height
             sub = dataclasses.replace(join_node, query_df=chunk, total_probe_rows=total_probe_rows)
+            lf = self._emit_node(sub, sf, placeholder, PluginPath.EXPR)
+            for node in post_nodes:
+                lf = self._emit_node(node, sf, lf, PluginPath.EXPR)
+            out = lf.collect()
+            if projection is not None:
+                out = out.select(list(projection))
+            yield out
+        if not yielded:
+            schema = query.collect_schema() if isinstance(query, pl.LazyFrame) else query.schema
+            empty = pl.DataFrame(schema=schema)
+            sub = dataclasses.replace(join_node, query_df=empty, total_probe_rows=0)
             lf = self._emit_node(sub, sf, placeholder, PluginPath.EXPR)
             for node in post_nodes:
                 lf = self._emit_node(node, sf, lf, PluginPath.EXPR)

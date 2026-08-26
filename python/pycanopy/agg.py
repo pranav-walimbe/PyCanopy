@@ -194,6 +194,8 @@ def _try_fused_join_agg(
         return None
 
     node = plan[0]
+    if isinstance(node.query_df, pl.LazyFrame):
+        return None
     query_columns = set(node.query_df.columns)
     target_columns = set(sf.df.columns)
     if any(key not in target_columns or key in query_columns for key in keys):

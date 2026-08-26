@@ -105,7 +105,7 @@ class WithinJoinNode:
     columns (conflicting right-side names prefixed 'right_').
     """
 
-    query_df: pl.DataFrame
+    query_df: pl.DataFrame | pl.LazyFrame
     x_col: str
     y_col: str
     flip: bool = False

@@ -73,6 +73,53 @@ def test_within_join_no_match_returns_empty(sf_polygons):
     assert result.is_empty()
 
 
+def test_within_join_streams_lazy_probe_with_projection(sf_polygons, monkeypatch):
+    query_df = pl.DataFrame(
+        {
+            "probe_id": [0, 1, 2, 3, 4],
+            "qx": [0.5, 1.5, 999.0, 2.5, 3.5],
+            "qy": [0.5, 0.5, 999.0, 0.5, 0.5],
+            "poly_id": [10, 11, 12, 13, 14],
+            "unused": ["a", "b", "c", "d", "e"],
+        }
+    )
+    batches = []
+    original = pl.LazyFrame.collect_batches
+
+    def tracked(frame, **kwargs):
+        # Record the source projection and morsel sizes without changing execution
+        for batch in original(frame, **kwargs):
+            batches.append((batch.columns, batch.height))
+            yield batch
+
+    monkeypatch.setattr(pl.LazyFrame, "collect_batches", tracked)
+    eager = (
+        sf_polygons.lazy()
+        .within_join(query_df, "qx", "qy")
+        .select("probe_id", "poly_id", "right_poly_id")
+        .collect()
+    )
+    streamed = (
+        sf_polygons.lazy()
+        .within_join(query_df.lazy(), "qx", "qy")
+        .select("probe_id", "poly_id", "right_poly_id")
+        .collect(batch_size=2)
+    )
+
+    columns = ["probe_id", "poly_id", "right_poly_id"]
+    assert streamed.sort(columns).equals(eager.sort(columns))
+    assert [height for _, height in batches] == [2, 2, 1]
+    assert all("unused" not in names for names, _ in batches)
+
+
+def test_within_join_accepts_empty_lazy_probe(sf_polygons):
+    query_df = pl.DataFrame(schema={"probe_id": pl.Int64, "qx": pl.Float64, "qy": pl.Float64})
+    eager = sf_polygons.lazy().within_join(query_df, "qx", "qy").collect()
+    streamed = sf_polygons.lazy().within_join(query_df.lazy(), "qx", "qy").collect()
+    assert streamed.schema == eager.schema
+    assert streamed.is_empty()
+
+
 def test_within_join_flip_matches_standard(sf_polygons):
     # 3 query points << engine.n=500 / 2 = 250 so optimizer sets flip=True.
     # Result must be identical to the non-flipped path.
