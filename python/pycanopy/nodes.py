@@ -138,7 +138,7 @@ class PolygonWithinDistanceJoinNode:
     inside). Output is query_df columns then Engine df columns (conflicts prefixed 'right_').
     """
 
-    query_df: pl.DataFrame
+    query_df: pl.DataFrame | pl.LazyFrame
     x_col: str
     y_col: str
     distance: float
