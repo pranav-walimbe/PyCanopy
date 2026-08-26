@@ -213,6 +213,7 @@ Plan = list[
     | PolygonWithinDistanceJoinNode
     | PolygonKnnJoinNode
     | PointsWithinDistanceOfPolygonNode
+    | WithinDistanceOfPointNode
     | IntersectsSelfJoinNode
     | SelectNode
 ]
