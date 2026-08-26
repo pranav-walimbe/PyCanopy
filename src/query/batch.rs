@@ -17,10 +17,12 @@ const AGG_WORKER_STATE_BUDGET: usize = 64 * 1024 * 1024;
 /// Per-tile kNN results
 type TileResults = Vec<(Vec<u32>, Vec<(u32, f64)>)>;
 
+use crate::index::grid::UniformGrid;
 use crate::index::kdtree::PackedKdTree;
 use crate::index::{point_box_dist2, SpatialIndex};
 use crate::query::geodesy::{conservative_degree_box, haversine_distance_m, DistanceMetric};
 use crate::query::geometry::point_to_polygon_distance;
+use crate::query::multipoly::polygon_parts_csr;
 use crate::query::prepared::PreparedPolygons;
 use crate::query::range::pip_raw;
 
@@ -538,6 +540,200 @@ pub fn par_within_distance_to_polygons_aggregate<I: SpatialIndex + Sync>(
             }
         }
     })
+}
+
+/// Point-to-polygon distance pairs after indexing the query points
+#[allow(clippy::too_many_arguments)]
+pub fn par_within_distance_to_polygons_flipped(
+    qxs: &[f64],
+    qys: &[f64],
+    xs: &[f64],
+    ys: &[f64],
+    ring_offsets: &[i64],
+    poly_offsets: &[i64],
+    distance: f64,
+    part_poly: Option<&[u32]>,
+    n_groups: usize,
+) -> Vec<u32> {
+    let query = FlippedPolygonQuery::new(
+        qxs,
+        qys,
+        xs,
+        ys,
+        ring_offsets,
+        poly_offsets,
+        distance,
+        part_poly,
+        n_groups,
+    );
+    (0..n_groups)
+        .into_par_iter()
+        .flat_map_iter(|group| {
+            query
+                .matching_queries(group)
+                .into_iter()
+                .flat_map(move |point| [point as u32, group as u32])
+        })
+        .collect()
+}
+
+/// Fused point-to-polygon aggregation after indexing the query points
+#[allow(clippy::too_many_arguments)]
+pub fn par_within_distance_to_polygons_aggregate_flipped(
+    qxs: &[f64],
+    qys: &[f64],
+    xs: &[f64],
+    ys: &[f64],
+    ring_offsets: &[i64],
+    poly_offsets: &[i64],
+    distance: f64,
+    part_poly: Option<&[u32]>,
+    n_groups: usize,
+    values: &[&[f64]],
+    validities: &[&[u8]],
+) -> GroupedAgg {
+    let query = FlippedPolygonQuery::new(
+        qxs,
+        qys,
+        xs,
+        ys,
+        ring_offsets,
+        poly_offsets,
+        distance,
+        part_poly,
+        n_groups,
+    );
+    let groups: Vec<LocalAgg> = (0..n_groups)
+        .into_par_iter()
+        .map(|group| {
+            let mut state = LocalAgg::new(values.len());
+            for point in query.matching_queries(group) {
+                state.add(point, values, validities);
+            }
+            state
+        })
+        .collect();
+    let mut state = GroupedAgg::new(n_groups, values.len());
+    for (group, local) in groups.into_iter().enumerate() {
+        state.counts[group] = local.count;
+        for column in 0..values.len() {
+            let offset = column * n_groups + group;
+            state.sums[offset] = local.sums[column];
+            state.valid_counts[offset] = local.valid_counts[column];
+        }
+    }
+    state
+}
+
+struct LocalAgg {
+    count: u64,
+    sums: Vec<f64>,
+    valid_counts: Vec<u64>,
+}
+
+impl LocalAgg {
+    fn new(n_values: usize) -> Self {
+        Self {
+            count: 0,
+            sums: vec![0.0; n_values],
+            valid_counts: vec![0; n_values],
+        }
+    }
+
+    fn add(&mut self, query: usize, values: &[&[f64]], validities: &[&[u8]]) {
+        self.count += 1;
+        for column in 0..values.len() {
+            if validities[column][query] != 0 {
+                self.sums[column] += values[column][query];
+                self.valid_counts[column] += 1;
+            }
+        }
+    }
+}
+
+struct FlippedPolygonQuery<'a> {
+    index: UniformGrid,
+    qxs: &'a [f64],
+    qys: &'a [f64],
+    xs: &'a [f64],
+    ys: &'a [f64],
+    ring_offsets: &'a [i64],
+    poly_offsets: &'a [i64],
+    distance: f64,
+    mbrs: Vec<[f64; 4]>,
+    group_offsets: Vec<u32>,
+    parts: Vec<u32>,
+}
+
+impl<'a> FlippedPolygonQuery<'a> {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        qxs: &'a [f64],
+        qys: &'a [f64],
+        xs: &'a [f64],
+        ys: &'a [f64],
+        ring_offsets: &'a [i64],
+        poly_offsets: &'a [i64],
+        distance: f64,
+        part_poly: Option<&[u32]>,
+        n_groups: usize,
+    ) -> Self {
+        let n_parts = poly_offsets.len().saturating_sub(1);
+        let (group_offsets, parts) = match part_poly {
+            Some(mapping) => polygon_parts_csr(mapping, n_groups),
+            None => (
+                (0..=n_groups as u32).collect(),
+                (0..n_parts as u32).collect(),
+            ),
+        };
+        Self {
+            index: UniformGrid::build(Arc::from(qxs), Arc::from(qys)),
+            qxs,
+            qys,
+            xs,
+            ys,
+            ring_offsets,
+            poly_offsets,
+            distance,
+            mbrs: part_mbrs(xs, ys, ring_offsets, poly_offsets),
+            group_offsets,
+            parts,
+        }
+    }
+
+    fn matching_queries(&self, group: usize) -> Vec<usize> {
+        let start = self.group_offsets[group] as usize;
+        let end = self.group_offsets[group + 1] as usize;
+        let mut matches = Vec::new();
+        for &part in &self.parts[start..end] {
+            let part = part as usize;
+            let [min_x, min_y, max_x, max_y] = self.mbrs[part];
+            matches.extend(
+                self.index
+                    .range(
+                        min_x - self.distance,
+                        min_y - self.distance,
+                        max_x + self.distance,
+                        max_y + self.distance,
+                    )
+                    .into_iter()
+                    .filter(|&query| {
+                        point_to_polygon_distance(
+                            self.qxs[query],
+                            self.qys[query],
+                            self.xs,
+                            self.ys,
+                            self.ring_offsets,
+                            self.poly_offsets,
+                            part,
+                        ) <= self.distance
+                    }),
+            );
+        }
+        matches.sort_unstable();
+        matches.dedup();
+        matches
+    }
 }
 
 /// Per-part exterior-ring MBR as `[min_x, min_y, max_x, max_y]`, one entry per part.
@@ -1141,6 +1337,81 @@ mod tests {
     use crate::index::brute::BruteForce;
     use crate::index::rtree::PackedRTree;
     use crate::query::geodesy::haversine_distance_m;
+
+    #[test]
+    fn flipped_polygon_distance_matches_forward_aggregate_and_pairs() {
+        let qxs = [1.5, 2.5, 10.5, 20.0];
+        let qys = [0.5, 0.5, 10.5, 20.0];
+        let xs = [
+            0.0, 2.0, 2.0, 0.0, 0.0, 1.0, 3.0, 3.0, 1.0, 1.0, 10.0, 11.0, 11.0, 10.0, 10.0,
+        ];
+        let ys = [
+            0.0, 0.0, 2.0, 2.0, 0.0, 0.0, 0.0, 2.0, 2.0, 0.0, 10.0, 10.0, 11.0, 11.0, 10.0,
+        ];
+        let ring_offsets = [0, 5, 10, 15];
+        let poly_offsets = [0, 1, 2, 3];
+        let part_poly = [0, 0, 1];
+        let index = BruteForce::build_polygons(&xs, &ys, &ring_offsets, &poly_offsets);
+
+        let mut forward_pairs = par_within_distance_to_polygons(
+            &index,
+            &qxs,
+            &qys,
+            &xs,
+            &ys,
+            &ring_offsets,
+            &poly_offsets,
+            0.0,
+            Some(&part_poly),
+        );
+        let mut flipped_pairs = par_within_distance_to_polygons_flipped(
+            &qxs,
+            &qys,
+            &xs,
+            &ys,
+            &ring_offsets,
+            &poly_offsets,
+            0.0,
+            Some(&part_poly),
+            2,
+        );
+        forward_pairs.as_chunks_mut::<2>().0.sort_unstable();
+        flipped_pairs.as_chunks_mut::<2>().0.sort_unstable();
+        assert_eq!(flipped_pairs, forward_pairs);
+
+        let values = [2.0, 4.0, 8.0, 16.0];
+        let validities = [1, 0, 1, 1];
+        let forward = par_within_distance_to_polygons_aggregate(
+            &index,
+            &qxs,
+            &qys,
+            &xs,
+            &ys,
+            &ring_offsets,
+            &poly_offsets,
+            0.0,
+            Some(&part_poly),
+            2,
+            &[&values],
+            &[&validities],
+        )
+        .compact();
+        let flipped = par_within_distance_to_polygons_aggregate_flipped(
+            &qxs,
+            &qys,
+            &xs,
+            &ys,
+            &ring_offsets,
+            &poly_offsets,
+            0.0,
+            Some(&part_poly),
+            2,
+            &[&values],
+            &[&validities],
+        )
+        .compact();
+        assert_eq!(flipped, forward);
+    }
 
     #[test]
     fn point_polygon_scan_matches_brute_force_index() {

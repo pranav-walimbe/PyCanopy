@@ -1,13 +1,77 @@
 //! Selects the cheapest index kind for a dataset and query using the cost model.
 
 use crate::planner::calibration::CostFactors;
-use crate::planner::cost::{probe_cost, selectivity, total_cost, IndexKind, IndexMode};
+use crate::planner::cost::{
+    index_build_cost, probe_cost, selectivity, total_cost, IndexKind, IndexMode,
+};
 use crate::query::types::Query;
 use crate::stats::types::{DatasetStats, Distribution, GeometryKind};
 
 const FULL_SCAN_SELECTIVITY: f64 = 0.5;
 const BRUTE_FORCE_N: usize = 500;
 const KNN_FRACTION_THRESHOLD: f64 = 0.1;
+
+/// Execution direction for a point-to-polygon distance join
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PointPolygonOrientation {
+    Forward,
+    FlippedGrid,
+}
+
+/// Choose whether point-to-polygon distance probes should index the point side
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn plan_point_polygon_orientation(
+    polygon_stats: &DatasetStats,
+    query: &Query,
+    point_count: usize,
+    mode: IndexMode,
+    factors: &CostFactors,
+    forward_kind: IndexKind,
+    forward_built: bool,
+) -> PointPolygonOrientation {
+    if mode != IndexMode::Auto || point_count == 0 || polygon_stats.n == 0 {
+        return PointPolygonOrientation::Forward;
+    }
+    let selectivity = point_polygon_orientation_selectivity(polygon_stats, query);
+    let forward_build = if forward_built {
+        0.0
+    } else {
+        index_build_cost(forward_kind, polygon_stats.n, factors)
+    };
+    let forward = forward_build
+        + probe_cost(
+            forward_kind,
+            polygon_stats,
+            query,
+            selectivity,
+            point_count,
+            factors,
+        );
+    let flipped = index_build_cost(IndexKind::Grid, point_count, factors)
+        + polygon_stats.n as f64
+            * (selectivity * point_count as f64).max(1.0)
+            * factors.grid_range_ns;
+    if flipped < forward {
+        PointPolygonOrientation::FlippedGrid
+    } else {
+        PointPolygonOrientation::Forward
+    }
+}
+
+fn point_polygon_orientation_selectivity(stats: &DatasetStats, query: &Query) -> f64 {
+    match query {
+        Query::Range { bbox } => {
+            let total_area = stats.extent_area();
+            if total_area <= 0.0 {
+                return 1.0;
+            }
+            let width = (bbox.max().x - bbox.min().x).abs();
+            let height = (bbox.max().y - bbox.min().y).abs();
+            (width * height / total_area).min(1.0)
+        }
+        _ => selectivity(stats, query),
+    }
+}
 
 /// Choose the best index kind for the given dataset statistics and query
 pub fn select_index(stats: &DatasetStats, query: &Query) -> IndexKind {
@@ -188,6 +252,12 @@ mod tests {
         }
     }
 
+    fn tiny_bbox() -> Query {
+        Query::Range {
+            bbox: Rect::new(coord! { x: 0.0, y: 0.0 }, coord! { x: 0.01, y: 0.01 }),
+        }
+    }
+
     #[test]
     fn small_n_always_brute_force() {
         let s = stats(100, GeometryKind::Point, Distribution::Uniform);
@@ -230,6 +300,60 @@ mod tests {
     fn polygon_range_routes_to_rtree() {
         let s = stats(1000, GeometryKind::Polygon, Distribution::Unknown);
         assert_eq!(select_index(&s, &small_bbox()), IndexKind::RTree);
+    }
+
+    #[test]
+    fn sparse_point_polygon_join_flips_for_many_points() {
+        let polygons = stats(20_000, GeometryKind::Polygon, Distribution::Unknown);
+        let factors = CostFactors::default();
+        assert_eq!(
+            plan_point_polygon_orientation(
+                &polygons,
+                &tiny_bbox(),
+                6_000_000,
+                IndexMode::Auto,
+                &factors,
+                IndexKind::RTree,
+                true,
+            ),
+            PointPolygonOrientation::FlippedGrid,
+        );
+    }
+
+    #[test]
+    fn built_polygon_index_stays_forward_for_few_points() {
+        let polygons = stats(20_000, GeometryKind::Polygon, Distribution::Unknown);
+        let factors = CostFactors::default();
+        assert_eq!(
+            plan_point_polygon_orientation(
+                &polygons,
+                &tiny_bbox(),
+                100,
+                IndexMode::Auto,
+                &factors,
+                IndexKind::RTree,
+                true,
+            ),
+            PointPolygonOrientation::Forward,
+        );
+    }
+
+    #[test]
+    fn explicit_index_mode_disables_join_flipping() {
+        let polygons = stats(20_000, GeometryKind::Polygon, Distribution::Unknown);
+        let factors = CostFactors::default();
+        assert_eq!(
+            plan_point_polygon_orientation(
+                &polygons,
+                &tiny_bbox(),
+                6_000_000,
+                IndexMode::Explicit(IndexKind::RTree),
+                &factors,
+                IndexKind::RTree,
+                true,
+            ),
+            PointPolygonOrientation::Forward,
+        );
     }
 
     #[test]

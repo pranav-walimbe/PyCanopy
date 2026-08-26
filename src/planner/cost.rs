@@ -22,7 +22,8 @@ pub enum IndexMode {
     Explicit(IndexKind),
 }
 
-fn build_cost(kind: IndexKind, n: usize, factors: &CostFactors) -> f64 {
+/// Estimated cost to build `kind` over `n` geometries
+pub(crate) fn index_build_cost(kind: IndexKind, n: usize, factors: &CostFactors) -> f64 {
     let n = n as f64;
     match kind {
         IndexKind::BruteForce => 0.0,
@@ -82,7 +83,7 @@ pub fn total_cost(
     q_count: usize,
     factors: &CostFactors,
 ) -> f64 {
-    build_cost(kind, stats.n, factors) + probe_cost(kind, stats, query, sel, q_count, factors)
+    index_build_cost(kind, stats.n, factors) + probe_cost(kind, stats, query, sel, q_count, factors)
 }
 
 /// Fraction of the dataset expected to match the query (0..=1)

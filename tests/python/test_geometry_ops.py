@@ -329,6 +329,50 @@ def test_lazy_polygon_within_distance_join():
     assert out["qid"].to_list() == [99]
 
 
+def test_point_polygon_distance_planner_flips_pairs_and_aggregates():
+    polygons = [shapely_box(i * 10, 0, i * 10 + 1, 1) for i in range(600)]
+    hit_xs = np.arange(600, dtype=np.float64) * 10 + 0.5
+    query_xs = np.concatenate([hit_xs, np.linspace(0, 5991, 4400)])
+    query_ys = np.concatenate([np.full(600, 0.5), np.full(4400, 100.0)])
+    values = np.arange(5000, dtype=np.float64)
+    validities = np.ones(5000, dtype=np.uint8)
+    auto = Engine.from_polygons(polygons)
+    auto.set_index_mode("auto")
+    forward = Engine.from_polygons(polygons)
+    forward.set_index_mode("explicit:r_tree")
+
+    auto_pairs = auto.batch_within_distance_to_polygons(query_xs, query_ys, 0.1).reshape(-1, 2)
+    forward_pairs = forward.batch_within_distance_to_polygons(query_xs, query_ys, 0.1).reshape(
+        -1, 2
+    )
+    auto_pairs = auto_pairs[np.lexsort((auto_pairs[:, 1], auto_pairs[:, 0]))]
+    forward_pairs = forward_pairs[np.lexsort((forward_pairs[:, 1], forward_pairs[:, 0]))]
+    assert np.array_equal(auto_pairs, forward_pairs)
+
+    auto_agg = auto.batch_within_distance_to_polygons_aggregate(
+        query_xs, query_ys, 0.1, [values], [validities]
+    )
+    forward_agg = forward.batch_within_distance_to_polygons_aggregate(
+        query_xs, query_ys, 0.1, [values], [validities]
+    )
+    assert all(np.array_equal(actual, expected) for actual, expected in zip(auto_agg, forward_agg))
+
+    operations = auto.take_metrics()["operations"]
+    selected = {
+        operation["name"]: operation["index"]
+        for operation in operations
+        if operation["name"]
+        in {
+            "batch_within_distance_to_polygons",
+            "batch_within_distance_to_polygons_aggregate",
+        }
+    }
+    assert selected == {
+        "batch_within_distance_to_polygons": "grid",
+        "batch_within_distance_to_polygons_aggregate": "grid",
+    }
+
+
 def test_lazy_polygon_knn_join():
     sf = _poly_frame([(0, 0, 1, 1), (10, 0, 11, 1), (20, 0, 21, 1)])
     query = pl.DataFrame({"qx": [10.5], "qy": [0.5]})

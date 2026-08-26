@@ -33,6 +33,9 @@ _BASE_K = 5
 _EXTRA_K = [1, 50]
 _BASE_SELECTIVITY = 0.01
 _EXTRA_SELECTIVITY = [0.001, 0.1]
+_ORIENTATION_RATIOS = [0.0001, 0.001, 0.01, 0.5, 8.0, 64.0]
+_ORIENTATION_DENSITIES = [0.00001, 0.0001]
+_ORIENTATION_DENSE_CASES = [(1_000, 10_000, 0.01), (1_000, 10_000, 0.2)]
 _PROBE_RUNS = 5
 _BUILD_RUNS = 3
 _MIN_NS = 0.1
@@ -63,6 +66,16 @@ class _Observation:
 
     term: float
     elapsed_ns: float
+
+
+@dataclass(frozen=True)
+class _OrientationResult:
+    polygons: int
+    points: int
+    polygon_size: float
+    selected: str
+    auto_ns: float
+    forward_ns: float
 
 
 def _query_pts(q: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
@@ -344,6 +357,107 @@ def _knn_observations(
     return observations
 
 
+def _orientation_operation(engine: Engine, qxs: np.ndarray, qys: np.ndarray) -> tuple:
+    # Run the count-only point-to-polygon distance aggregate
+    return engine.batch_within_distance_to_polygons_aggregate(qxs, qys, 0.0, [], [])
+
+
+def _measure_orientation(
+    polygons: list,
+    qxs: np.ndarray,
+    qys: np.ndarray,
+    factors: dict[str, float],
+    runs: int,
+    mode: str,
+) -> tuple[float, str, tuple[np.ndarray, ...]]:
+    # Measure cold orientation with fresh engine state and discard one warmup capture
+    samples = []
+    selected = None
+    expected = None
+    for repetition in range(runs + 1):
+        engine = _poly_frame(polygons, mode).engine
+        engine._set_cost_factors_for_calibration(factors)
+        engine.take_metrics()
+        actual = _orientation_operation(engine, qxs, qys)
+        if expected is None:
+            expected = actual
+        elif any(not np.array_equal(left, right) for left, right in zip(actual, expected)):
+            raise RuntimeError("point-polygon orientation output changed between runs")
+        metrics = engine.take_metrics()
+        operations = [
+            operation
+            for operation in metrics["operations"]
+            if operation["name"] == "batch_within_distance_to_polygons_aggregate"
+        ]
+        if len(operations) != 1:
+            raise RuntimeError(f"expected one orientation operation, got {operations}")
+        elapsed = int(operations[0]["elapsed_compute_ns"]) + sum(
+            int(build["elapsed_compute_ns"]) for build in metrics["index_builds"]
+        )
+        if repetition:
+            samples.append(elapsed)
+        if selected is None:
+            selected = str(operations[0]["index"])
+        elif selected != operations[0]["index"]:
+            raise RuntimeError("point-polygon orientation changed between runs")
+        del engine
+    return float(np.median(samples)), selected, expected
+
+
+def _orientation_matrix(
+    probe_runs: int, seed: int, factors: dict[str, float]
+) -> list[_OrientationResult]:
+    # Compare automatic orientation with a forced polygon R-tree across shapes
+    cases = [
+        (polygons_n, max(1, round(polygons_n * ratio)), polygon_size)
+        for polygons_n in _POLY_SIZES[:2]
+        for ratio in _ORIENTATION_RATIOS
+        for polygon_size in _ORIENTATION_DENSITIES
+    ]
+    cases.extend(_ORIENTATION_DENSE_CASES)
+    return [
+        _orientation_case(polygons_n, points_n, polygon_size, probe_runs, seed, factors)
+        for polygons_n, points_n, polygon_size in cases
+    ]
+
+
+def _orientation_case(
+    polygons_n: int,
+    points_n: int,
+    polygon_size: float,
+    probe_runs: int,
+    seed: int,
+    factors: dict[str, float],
+) -> _OrientationResult:
+    # Measure one orientation shape against a forced-forward exact oracle
+    points = generate_points(points_n, seed + points_n)
+    qxs = np.ascontiguousarray(points[:, 0])
+    qys = np.ascontiguousarray(points[:, 1])
+    polygons = generate_polygons(
+        polygons_n,
+        seed + int(polygon_size * 1e9),
+        polygon_size=polygon_size,
+    ).tolist()
+    auto_ns, selected, expected = _measure_orientation(
+        polygons, qxs, qys, factors, probe_runs, "auto"
+    )
+    forward_ns, forward_index, actual = _measure_orientation(
+        polygons, qxs, qys, factors, probe_runs, "explicit:r_tree"
+    )
+    if forward_index != "r_tree":
+        raise RuntimeError(f"forced orientation used {forward_index}")
+    if any(not np.array_equal(left, right) for left, right in zip(actual, expected)):
+        raise RuntimeError("automatic orientation differs from forced-forward oracle")
+    return _OrientationResult(
+        polygons_n,
+        points_n,
+        polygon_size,
+        selected,
+        auto_ns,
+        forward_ns,
+    )
+
+
 def _fit_factor(observations: list[_Observation]) -> float:
     """Fit elapsed_ns = factor * workload_term through the origin."""
     numerator = sum(observation.term * observation.elapsed_ns for observation in observations)
@@ -379,6 +493,23 @@ def _report_section(title: str, fields: list[str], fits: dict[str, float]) -> li
     return lines
 
 
+def _orientation_report(results: list[_OrientationResult]) -> list[str]:
+    # Format the point-to-polygon orientation validation matrix
+    lines = ["Point-to-polygon orientation", ""]
+    lines.append(
+        f"    {'polygons':>9} {'points':>9} {'size':>9} {'selected':>9} "
+        f"{'auto ms':>10} {'forward ms':>10}"
+    )
+    for result in results:
+        lines.append(
+            f"    {result.polygons:>9,} {result.points:>9,} {result.polygon_size:>9.1e} "
+            f"{result.selected:>9} {result.auto_ns / 1e6:>10.3f} "
+            f"{result.forward_ns / 1e6:>10.3f}"
+        )
+    lines.append("")
+    return lines
+
+
 def run(probe_runs: int, build_runs: int, seed: int, *, dry_run: bool) -> dict[str, float]:
     """Run the balanced calibration matrix and optionally update the bundled profile."""
     start = time.perf_counter()
@@ -401,6 +532,7 @@ def run(probe_runs: int, build_runs: int, seed: int, *, dry_run: bool) -> dict[s
     )
 
     fits = {name: _fit_factor(observations[name]) for name in _ALL_FIELDS}
+    orientation = _orientation_matrix(probe_runs, seed, fits)
     if not dry_run:
         _write_profile(_PROFILE_PATH, fits)
 
@@ -411,6 +543,7 @@ def run(probe_runs: int, build_runs: int, seed: int, *, dry_run: bool) -> dict[s
         *_report_section("Brute Force", _SCAN_FIELDS, fits),
         *_report_section("Points", _POINT_FIELDS, fits),
         *_report_section("Polygons", _POLY_FIELDS, fits),
+        *_orientation_report(orientation),
         f"profile: {destination}",
         f"elapsed: {time.perf_counter() - start:.1f} s   peak RSS: {peak_rss_mb() - baseline_mb:.1f} MiB",
     ]
