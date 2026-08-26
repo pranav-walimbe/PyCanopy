@@ -13,6 +13,7 @@ import pytest
 from shapely.geometry import box
 
 import pycanopy as pc
+import pycanopy.executor as pycanopy_executor
 from pycanopy import SpatialFrame
 
 _N = 1000  # 10x100 grid, above the 500 brute-force threshold
@@ -224,6 +225,34 @@ def test_target_grouped_sum_and_mean_use_fused_contains_kernel():
         .agg(n=pl.len(), total=pl.col("value").sum(), avg=pl.col("value").mean())
     )
     _assert_frames_equal(result, reference, ["poly_id"])
+
+
+def test_lazy_probe_grouped_aggregate_matches_eager_morsels(monkeypatch):
+    polygons = [box(0, 0, 1, 1), box(1, 0, 2, 1)]
+    sf = SpatialFrame.from_polygons(
+        pl.DataFrame({"poly_id": [0, 1], "geom": polygons}), geometry_col="geom"
+    )
+    query_df = pl.DataFrame(
+        {
+            "qx": [0.5, 0.6, 1.5, 1.6, 10.0],
+            "qy": [0.5, 0.5, 0.5, 0.5, 10.0],
+            "value": [2.0, None, 4.0, 8.0, 16.0],
+        }
+    )
+    monkeypatch.setattr(pycanopy_executor, "MORSEL_ROWS", 2)
+    eager = (
+        sf.lazy()
+        .within_join(query_df, "qx", "qy")
+        .group_by("poly_id")
+        .agg(n=pc.agg.count(), total=pc.agg.sum("value"), avg=pc.agg.mean("value"))
+    )
+    streamed = (
+        sf.lazy()
+        .within_join(query_df.lazy(), "qx", "qy")
+        .group_by("poly_id")
+        .agg(n=pc.agg.count(), total=pc.agg.sum("value"), avg=pc.agg.mean("value"))
+    )
+    _assert_frames_equal(streamed, eager, ["poly_id"])
 
 
 def test_fused_target_rows_with_duplicate_keys_are_combined():

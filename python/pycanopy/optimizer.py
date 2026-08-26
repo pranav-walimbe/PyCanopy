@@ -15,6 +15,8 @@ import dataclasses
 import json
 import math
 
+import polars as pl
+
 from pycanopy.nodes import (
     ContainsNode,
     FusedSpatialNode,
@@ -279,7 +281,7 @@ class SpatialOptimizer:
         result = []
         for node in plan:
             if isinstance(node, (WithinJoinNode, WithinDistanceJoinNode)):
-                if len(node.query_df) > engine.n // 2:
+                if isinstance(node.query_df, pl.DataFrame) and len(node.query_df) > engine.n // 2:
                     node = dataclasses.replace(node, flip=True)
             result.append(node)
         return result
