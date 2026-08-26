@@ -73,7 +73,7 @@ def test_profile_suite_writes_artifacts_then_rejects_oracle_mismatch(tmp_path, m
     with pytest.raises(RuntimeError, match="q1"):
         driver.run_profile_suite(["q1"], "s3://example")
 
-    assert (tmp_path / "profile-branch.txt").is_file()
+    assert not (tmp_path / "profile-branch.txt").exists()
     assert (tmp_path / "profile-branch.json").is_file()
 
 

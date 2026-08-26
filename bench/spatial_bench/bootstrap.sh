@@ -41,7 +41,6 @@ upload_artifacts() {
     return
   fi
   for artifact in \
-    "profile-${PROFILE_VARIANT}.txt" \
     "profile-${PROFILE_VARIANT}.json" \
     "${ENGINE}-results.tsv"; do
     if [ -f "/opt/pycanopy/assets/$artifact" ]; then
@@ -133,7 +132,7 @@ export TMPDIR=/data/scratch
 # object_store picks up IMDS credentials automatically once the region is set
 export AWS_DEFAULT_REGION="$REGION"
 log "measuring sf${SCALE_FACTOR}"
-rm -f "/opt/pycanopy/assets/profile-${PROFILE_VARIANT}."{txt,json} \
+rm -f "/opt/pycanopy/assets/profile-${PROFILE_VARIANT}.json" \
   "/opt/pycanopy/assets/${ENGINE}-results.tsv"
 "${BENCH_PYTHON[@]}" -m bench.spatial_bench.driver_utils \
   --engine "$ENGINE" \

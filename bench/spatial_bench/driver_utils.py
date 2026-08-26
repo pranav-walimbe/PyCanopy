@@ -29,7 +29,6 @@ from bench.spatial_bench.config import (
     WORKLOAD_REVISION,
 )
 from bench.spatial_bench.report_utils import (
-    write_profile,
     write_profile_transport,
     write_transport,
 )
@@ -230,7 +229,6 @@ def run_profile_suite(query_ids: list[str], data_dir: str, variant: str = "branc
     }
     metadata = collect_metadata("pycanopy", data_dir, 1, 1)
     metadata["pycanopy build"] = _build_description(variant)
-    write_profile(results, ASSETS_DIR / f"profile-{variant}.txt", metadata)
     transport_path = ASSETS_DIR / f"profile-{variant}.json"
     write_profile_transport(transport_path, variant, metadata, results)
 

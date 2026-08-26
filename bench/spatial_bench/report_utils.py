@@ -361,23 +361,6 @@ def _section(query_id: str, result: dict) -> str:
     return "\n".join(lines)
 
 
-def write_profile(results: dict, out_path: Path, metadata: dict[str, str] | None = None) -> None:
-    """Write the human-readable SF1 profile report for a single build.
-
-    Args:
-        results: Per-query profile result dicts keyed by query id.
-        out_path: Destination text path.
-        metadata: Run metadata to record above the per-query sections, if collected.
-    """
-    parts = [_profile_head()]
-    if metadata:
-        parts.append(_metadata_block(metadata))
-    parts.extend(_section(query_id, result) for query_id, result in results.items())
-    parts.append(_SEP)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text("\n".join(parts) + "\n")
-
-
 def write_profile_transport(
     path: Path, variant: str, metadata: dict[str, str], results: dict
 ) -> None:
