@@ -14,6 +14,7 @@ def _not_found():
         "DescribeInstances",
     )
 
+
 @pytest.mark.parametrize(("scale_factor", "minutes"), [(1, 60), (10, 180)])
 def test_user_data_sets_scale_factor_runtime(scale_factor, minutes):
     script = _spatial_bench._user_data("ami-test", "run-test", scale_factor, False, 3, "pycanopy")
