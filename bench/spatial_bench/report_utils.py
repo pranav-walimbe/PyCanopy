@@ -106,7 +106,27 @@ def combine_transports(paths: list[Path], engines: list[str], scale_factor: int)
     Returns:
         One combined results dict covering every requested engine.
     """
-    parsed = {item["id"]: item for item in (read_transport(path) for path in paths)}
+    parsed = {}
+    for path in paths:
+        item = read_transport(path)
+        engine = item["id"]
+        if engine not in parsed:
+            parsed[engine] = item
+            continue
+        current = parsed[engine]
+        if current["version"] != item["version"]:
+            raise ValueError(f"{engine} version changed across replacement instances")
+        duplicates = set(current["queries"]) & set(item["queries"])
+        if duplicates:
+            names = ", ".join(sorted(duplicates, key=lambda query: int(query[1:])))
+            raise ValueError(f"duplicate {engine} query results across attempts: {names}")
+        current["queries"].update(item["queries"])
+        run_ids = [value for value in current["metadata"].get("run ID", "").split(", ") if value]
+        next_run_id = item["metadata"].get("run ID")
+        if next_run_id:
+            run_ids.append(next_run_id)
+        if run_ids:
+            current["metadata"]["run ID"] = ", ".join(run_ids)
     combined = {
         "scale_factor": scale_factor,
         "engine_order": engines,

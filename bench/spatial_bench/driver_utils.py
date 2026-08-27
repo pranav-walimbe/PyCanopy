@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import platform
+import signal
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -32,6 +33,8 @@ from bench.spatial_bench.report_utils import (
     write_profile_transport,
     write_transport,
 )
+
+_CONTINUATION_SUFFIX = "-continuation.json"
 
 
 def _spawn(engine: str, query_id: str, data_dir: str, *flags: str) -> dict:
@@ -61,7 +64,19 @@ def _spawn(engine: str, query_id: str, data_dir: str, *flags: str) -> dict:
     if error := values.get("ERROR"):
         return {"status": "error", "error": error}
     if "TIME" not in values:
-        detail = process.stderr[:400] or "runner produced no timing output"
+        returncode = getattr(process, "returncode", 0)
+        if returncode == -signal.SIGKILL:
+            return {"status": "oom", "error": "OOM: subprocess killed by SIGKILL"}
+        if returncode < 0:
+            try:
+                signal_name = signal.Signals(-returncode).name
+            except ValueError:
+                signal_name = f"signal {-returncode}"
+            detail = process.stderr[:400] or f"runner killed by {signal_name}"
+        elif returncode > 0:
+            detail = process.stderr[:400] or f"runner exited with code {returncode}"
+        else:
+            detail = process.stderr[:400] or "runner produced no timing output"
         return {"status": "error", "error": detail}
     return {"status": "ok", "time": float(values["TIME"]), "values": values}
 
@@ -260,7 +275,14 @@ def run_timing_suite(
     Returns:
         The path of the transport file written under assets.
     """
-    results = {query_id: _measure(engine, query_id, data_dir, runs) for query_id in query_ids}
+    results = {}
+    remaining = []
+    for position, query_id in enumerate(query_ids):
+        result = _measure(engine, query_id, data_dir, runs)
+        results[query_id] = result
+        if result["status"] == "oom":
+            remaining = query_ids[position + 1 :]
+            break
     transport_path = ASSETS_DIR / f"{engine}-results.tsv"
     write_transport(
         transport_path,
@@ -270,6 +292,16 @@ def run_timing_suite(
         results,
     )
     print(f"[testcase] wrote {ENGINES[engine]['display_name']} results", flush=True)
+    continuation_path = ASSETS_DIR / f"{engine}{_CONTINUATION_SUFFIX}"
+    if remaining:
+        continuation_path.write_text(json.dumps({"engine": engine, "query_ids": remaining}))
+        print(
+            f"[testcase] OOM stopped this instance; {len(remaining)} remaining queries "
+            "require a replacement",
+            flush=True,
+        )
+    else:
+        continuation_path.unlink(missing_ok=True)
     return transport_path
 
 

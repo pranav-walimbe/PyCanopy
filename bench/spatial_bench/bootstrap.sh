@@ -42,6 +42,7 @@ upload_artifacts() {
   fi
   for artifact in \
     "profile-${PROFILE_VARIANT}.json" \
+    "${ENGINE}-continuation.json" \
     "${ENGINE}-results.tsv"; do
     if [ -f "/opt/pycanopy/assets/$artifact" ]; then
       aws s3 cp "/opt/pycanopy/assets/$artifact" "${S3_BASE}/$artifact" --region "$REGION" || return 1
@@ -133,6 +134,7 @@ export TMPDIR=/data/scratch
 export AWS_DEFAULT_REGION="$REGION"
 log "measuring sf${SCALE_FACTOR}"
 rm -f "/opt/pycanopy/assets/profile-${PROFILE_VARIANT}.json" \
+  "/opt/pycanopy/assets/${ENGINE}-continuation.json" \
   "/opt/pycanopy/assets/${ENGINE}-results.tsv"
 "${BENCH_PYTHON[@]}" -m bench.spatial_bench.driver_utils \
   --engine "$ENGINE" \

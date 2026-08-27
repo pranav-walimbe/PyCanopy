@@ -58,6 +58,7 @@ to the harness or queries must be pushed before launching a run.
 - Each engine runs on an ephemeral 8-vCPU, 32-GB `m7i.2xlarge` with no cross-query cache reuse
 - Ordinary runs install current PyPI releases and record exact versions; profile mode builds the configured branch and installs the latest PyCanopy release beside it
 - Every repetition runs in a fresh subprocess with a 1,200-second limit; incomplete repetition sets are invalid
+- An OOM fails that engine-query and resumes any remaining queries for the engine on a fresh instance
 - Results must match the committed upstream answers, including row order and schema-controlled numeric tolerances
 - PyCanopy queries are handwritten against its public API, while DuckDB and SedonaDB run pinned upstream SQL; q11 and q12 intentionally use PyCanopy's public morsel APIs
 
