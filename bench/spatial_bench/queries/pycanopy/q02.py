@@ -18,9 +18,16 @@ ZONE_NAME = "Coconino County"
 
 def pycanopy(data_paths: dict[str, str]) -> pl.DataFrame:
     zone = (
-        pl.scan_parquet(data_paths["zone"], storage_options=STORAGE_OPTIONS)
+        SpatialFrame.scan_parquet(
+            data_paths["zone"],
+            geometry_col="z_boundary",
+            geometry_kind="polygon",
+            storage_options=STORAGE_OPTIONS,
+        )
+        .lazy()
         .filter(pl.col("z_name") == ZONE_NAME)
-        .select(["z_boundary"])
+        .limit(1)
+        .select("z_boundary")
         .collect()
     )
     # from_wkb keeps a MultiPolygon whole rather than exploding it into parts

@@ -22,6 +22,7 @@ from pycanopy.nodes import (
     IntersectsSelfJoinNode,
     KnnJoinNode,
     KnnNode,
+    LimitNode,
     Plan,
     PluginPath,
     PolygonKnnJoinNode,
@@ -222,6 +223,7 @@ class SpatialOptimizer:
             PolygonWithinDistanceJoinNode,
             PolygonKnnJoinNode,
             IntersectsSelfJoinNode,
+            LimitNode,
         )
         for node in plan:
             if isinstance(node, _barrier_types):

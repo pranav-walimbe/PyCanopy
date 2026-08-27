@@ -175,6 +175,17 @@ def test_collect_batched_yields_multiple_morsels_and_concats_to_full(sf):
     assert full.sort(full.columns).equals(single.sort(single.columns))
 
 
+def test_collect_batched_applies_limit_across_morsels(sf):
+    query_df = _grid_query(250)
+
+    batches = list(
+        sf.lazy().knn_join(query_df, "qx", "qy", k=2).limit(125).collect_batched(batch_size=100)
+    )
+
+    assert sum(batch.height for batch in batches) == 125
+    assert [batch.height for batch in batches] == [125]
+
+
 def test_collect_batched_partial_reduction_combines_additively(sf):
     # Per-morsel count reduced then summed must equal the single-shot row count.
     query_df = _grid_query(300)
