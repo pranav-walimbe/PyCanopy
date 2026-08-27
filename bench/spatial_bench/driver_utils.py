@@ -95,12 +95,10 @@ def _measure(engine: str, query_id: str, data_dir: str, runs: int) -> dict:
             )
             return {**{k: v for k, v in result.items() if k != "values"}, "run_times": samples}
         samples.append(result["time"])
-        if materialize := result["values"].get("MATERIALIZE"):
-            print(
-                f"[timing] {query_id} run {attempt}: total={result['time']:.2f}s,"
-                f"materialize={float(materialize):.2f}s",
-                flush=True,
-            )
+        print(
+            f"[timing] {query_id} run {attempt}: total={result['time']:.2f}s",
+            flush=True,
+        )
 
     average = sum(samples) / len(samples)
     print(f"[testcase] completed {query_id} using {engine} in {average:.2f}s", flush=True)
