@@ -45,6 +45,5 @@ def pycanopy(data_paths: dict[str, str]) -> pl.DataFrame:
         geometry_kind="point",
         storage_options=STORAGE_OPTIONS,
     )
-    # Selecting a coordinate column keeps the scan on geometry alone and skips every attribute
-    count = sf.lazy().points_within_distance_of_polygon(poly, 0.0).select("_x").collect().height
+    count = sf.lazy().points_within_distance_of_polygon(poly, 0.0).count()
     return pl.DataFrame({"trip_count_in_coconino_county": [count]})

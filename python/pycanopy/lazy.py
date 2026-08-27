@@ -16,6 +16,7 @@ from pycanopy.agg import AggSpec, _partial_agg, _reduce_partials, _try_fused_joi
 from pycanopy.executor import _ROW_IDX, SpatialExecutor
 from pycanopy.nodes import (
     ContainsNode,
+    CountNode,
     FusedSpatialNode,
     IntersectsSelfJoinNode,
     KnnJoinNode,
@@ -215,7 +216,7 @@ def _source_filter_prefix(
 
 def _source_columns_for_plan(plan: Plan, schema: pl.Schema) -> set[str] | None:
     # Return source columns needed during execution, or None when all columns are output
-    if not plan or not isinstance(plan[-1], SelectNode):
+    if not plan or not isinstance(plan[-1], (SelectNode, CountNode)):
         if plan and isinstance(plan[-1], IntersectsSelfJoinNode):
             return set()
         return None
@@ -595,6 +596,22 @@ class SpatialLazyFrame:
         optimized = optimizer.optimize(plan, sf.engine)
         plugin_path = optimizer._select_plugin_path(optimized, sf.engine)
         return executor.execute(optimized, sf, plugin_path, batch_size)
+
+    def count(self) -> int:
+        """Execute the plan and report only how many rows match.
+
+        No attribute column is retained, so a deferred source reads its geometry column
+        alone. Filters preceding the count still read the columns they reference.
+
+        Returns:
+            The number of matching rows.
+        """
+        sf, plan = SpatialLazyFrame(self._sf, [*self._plan, CountNode()])._prepare_plan()
+        optimizer = SpatialOptimizer()
+        executor = SpatialExecutor()
+        optimized = optimizer.optimize(plan, sf.engine)
+        plugin_path = optimizer._select_plugin_path(optimized, sf.engine)
+        return executor.execute(optimized, sf, plugin_path, None).height
 
     def collect_batched(self, batch_size: int | None = None) -> Iterator[pl.DataFrame]:
         """Execute the plan and yield the result one morsel-frame at a time.

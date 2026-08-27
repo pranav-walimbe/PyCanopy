@@ -17,6 +17,7 @@ import math
 
 from pycanopy.nodes import (
     ContainsNode,
+    CountNode,
     FusedSpatialNode,
     IntersectsSelfJoinNode,
     KnnJoinNode,
@@ -135,7 +136,7 @@ class SpatialOptimizer:
             return plan
         # A trailing SelectNode is a terminal projection rather than a predicate and cost passes skip it
         select_tail = None
-        if isinstance(plan[-1], SelectNode):
+        if isinstance(plan[-1], (SelectNode, CountNode)):
             select_tail = plan[-1]
             plan = plan[:-1]
         if plan:
