@@ -324,7 +324,7 @@ class SpatialExecutor:
     def _execute_intersects(self, plan: Plan, sf) -> pl.DataFrame:
         # Build the polygon intersects pair frame, then apply any trailing scalar filters.
         pos = next(i for i, n in enumerate(plan) if isinstance(n, IntersectsSelfJoinNode))
-        lf = sf.intersects_pairs().lazy()
+        lf = sf.intersects_pairs(plan[pos].key_col).lazy()
         for node in plan[pos + 1 :]:
             if isinstance(node, ScalarNode):
                 lf = lf.filter(node.expr)

@@ -14,13 +14,13 @@ title = "Building overlap detection via IoU"
 
 
 def pycanopy(data_paths: dict[str, str]) -> pl.DataFrame:
-    buildings = (
-        pl.scan_parquet(data_paths["building"], storage_options=STORAGE_OPTIONS)
-        .select(["b_buildingkey", "b_boundary"])
-        .collect()
+    sf = SpatialFrame.scan_parquet(
+        data_paths["building"],
+        geometry_col="b_boundary",
+        geometry_kind="polygon",
+        storage_options=STORAGE_OPTIONS,
     )
-    sf = SpatialFrame.from_wkb_polygons(buildings, "b_boundary")
-    pairs = sf.intersects_pairs(key_col="b_buildingkey")
+    pairs = sf.lazy().intersects_pairs("b_buildingkey").collect()
     return (
         pairs.select(
             pl.col("b_buildingkey_1").alias("building_1"),
