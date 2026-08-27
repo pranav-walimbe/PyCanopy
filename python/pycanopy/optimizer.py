@@ -14,7 +14,6 @@ from __future__ import annotations
 import dataclasses
 import json
 import math
-from typing import Literal
 
 import polars as pl
 
@@ -42,47 +41,6 @@ _IO_SELECTIVITY_THRESHOLD = 0.05  # selectivity where slicing sf.df directly (IO
 _METERS_PER_DEGREE_LAT = 110_574.0  # mirrors src/query/geodesy.rs
 _METERS_PER_DEGREE_LON_EQUATOR = 111_320.0  # a longitude degree at the equator
 _POLE_GUARD_LAT = 89.9  # past here cos(lat) nears zero
-
-
-@dataclasses.dataclass(frozen=True)
-class _ExecutionChoice:
-    strategy: Literal["streaming_filter", "streaming_probe", "materialized_engine"]
-    reason: str
-    batch_rows: int | None = None
-
-
-def _choose_execution_strategy(
-    *,
-    streaming_filter_supported: bool,
-    has_join: bool,
-    streaming_probe_supported: bool,
-    probe_is_deferred: bool,
-    probe_rows: int | None,
-    filter_batch_rows: int | None,
-    probe_batch_rows: int,
-) -> _ExecutionChoice:
-    # Choose one physical strategy from source facts and measured batching boundaries
-    if streaming_filter_supported:
-        return _ExecutionChoice(
-            "streaming_filter",
-            "one-shot deferred point filter",
-            filter_batch_rows,
-        )
-    if not has_join or not streaming_probe_supported:
-        return _ExecutionChoice("materialized_engine", "operation requires complete geometry")
-    if probe_is_deferred:
-        return _ExecutionChoice(
-            "streaming_probe",
-            "deferred probe source",
-            probe_batch_rows,
-        )
-    if probe_rows is not None and probe_rows > probe_batch_rows:
-        return _ExecutionChoice(
-            "streaming_probe",
-            "probe exceeds one morsel",
-            probe_batch_rows,
-        )
-    return _ExecutionChoice("materialized_engine", "probe fits one morsel")
 
 
 _BINARY_OP_COST: dict[str, int] = {

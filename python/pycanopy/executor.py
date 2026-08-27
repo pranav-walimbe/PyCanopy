@@ -28,7 +28,6 @@ from pycanopy.nodes import (
     WithinDistanceOfPointNode,
     WithinJoinNode,
 )
-from pycanopy.optimizer import _choose_execution_strategy
 
 # Internal column tracking original row positions through scalar filters. Engine results
 # are indices into the original dataset and must correlate with post-filter rows.
@@ -208,18 +207,7 @@ class SpatialExecutor:
             join_node = next(n for n in plan if isinstance(n, _JOIN_TYPES))
             if isinstance(join_node, PolygonKnnJoinNode) and join_node.sorted_output:
                 return self._execute_polygon_knn_sorted(plan, sf)
-            probe_is_deferred = isinstance(join_node.query_df, pl.LazyFrame)
-            probe_rows = None if probe_is_deferred else join_node.query_df.height
-            choice = _choose_execution_strategy(
-                streaming_filter_supported=False,
-                has_join=True,
-                streaming_probe_supported=True,
-                probe_is_deferred=probe_is_deferred,
-                probe_rows=probe_rows,
-                filter_batch_rows=None,
-                probe_batch_rows=morsel,
-            )
-            if choice.strategy == "streaming_probe":
+            if isinstance(join_node.query_df, pl.LazyFrame) or join_node.query_df.height > morsel:
                 frames = list(self._stream_join_frames(plan, sf, morsel))
                 return pl.concat(frames, how="vertical", rechunk=False)
 
