@@ -1446,60 +1446,64 @@ impl Engine {
         );
         let build_ns = self.build_index_if_needed(kind);
 
-        let results = if self.delta_xs.is_empty() {
-            match kind {
-                IndexKind::BruteForce => par_knn_join(self.brute.as_ref().unwrap(), qxs, qys, k),
-                IndexKind::RTree => par_knn_join(self.rtree.as_ref().unwrap(), qxs, qys, k),
-                IndexKind::KdTree => par_knn_join(self.kdtree.as_ref().unwrap(), qxs, qys, k),
-                IndexKind::Grid => par_knn_join(self.grid.as_ref().unwrap(), qxs, qys, k),
+        let results = py.allow_threads(|| {
+            if self.delta_xs.is_empty() {
+                match kind {
+                    IndexKind::BruteForce => {
+                        par_knn_join(self.brute.as_ref().unwrap(), qxs, qys, k)
+                    }
+                    IndexKind::RTree => par_knn_join(self.rtree.as_ref().unwrap(), qxs, qys, k),
+                    IndexKind::KdTree => par_knn_join(self.kdtree.as_ref().unwrap(), qxs, qys, k),
+                    IndexKind::Grid => par_knn_join(self.grid.as_ref().unwrap(), qxs, qys, k),
+                }
+            } else {
+                let out = match kind {
+                    IndexKind::BruteForce => par_knn_with_delta(
+                        self.brute.as_ref().unwrap(),
+                        qxs,
+                        qys,
+                        k,
+                        &self.xs,
+                        &self.ys,
+                        &self.delta_xs,
+                        &self.delta_ys,
+                    ),
+                    IndexKind::RTree => par_knn_with_delta(
+                        self.rtree.as_ref().unwrap(),
+                        qxs,
+                        qys,
+                        k,
+                        &self.xs,
+                        &self.ys,
+                        &self.delta_xs,
+                        &self.delta_ys,
+                    ),
+                    IndexKind::KdTree => par_knn_with_delta(
+                        self.kdtree.as_ref().unwrap(),
+                        qxs,
+                        qys,
+                        k,
+                        &self.xs,
+                        &self.ys,
+                        &self.delta_xs,
+                        &self.delta_ys,
+                    ),
+                    IndexKind::Grid => par_knn_with_delta(
+                        self.grid.as_ref().unwrap(),
+                        qxs,
+                        qys,
+                        k,
+                        &self.xs,
+                        &self.ys,
+                        &self.delta_xs,
+                        &self.delta_ys,
+                    ),
+                };
+                self.delta_query_cost += self.delta_xs.len() as u64 * qxs.len() as u64;
+                self.maybe_flush_on_cost(kind);
+                out
             }
-        } else {
-            let out = match kind {
-                IndexKind::BruteForce => par_knn_with_delta(
-                    self.brute.as_ref().unwrap(),
-                    qxs,
-                    qys,
-                    k,
-                    &self.xs,
-                    &self.ys,
-                    &self.delta_xs,
-                    &self.delta_ys,
-                ),
-                IndexKind::RTree => par_knn_with_delta(
-                    self.rtree.as_ref().unwrap(),
-                    qxs,
-                    qys,
-                    k,
-                    &self.xs,
-                    &self.ys,
-                    &self.delta_xs,
-                    &self.delta_ys,
-                ),
-                IndexKind::KdTree => par_knn_with_delta(
-                    self.kdtree.as_ref().unwrap(),
-                    qxs,
-                    qys,
-                    k,
-                    &self.xs,
-                    &self.ys,
-                    &self.delta_xs,
-                    &self.delta_ys,
-                ),
-                IndexKind::Grid => par_knn_with_delta(
-                    self.grid.as_ref().unwrap(),
-                    qxs,
-                    qys,
-                    k,
-                    &self.xs,
-                    &self.ys,
-                    &self.delta_xs,
-                    &self.delta_ys,
-                ),
-            };
-            self.delta_query_cost += self.delta_xs.len() as u64 * qxs.len() as u64;
-            self.maybe_flush_on_cost(kind);
-            out
-        };
+        });
         let output_rows = results.len();
         let output = PyArray1::from_vec(py, results);
         self.metrics.record_operation(
@@ -1545,8 +1549,9 @@ impl Engine {
         ensure_u32_indexable(qxs.len(), "join query")?;
         let started = Instant::now();
         if flipped {
-            let pairs =
-                par_within_distance_flipped(qxs, qys, &self.xs, &self.ys, distance, self.metric);
+            let pairs = py.allow_threads(|| {
+                par_within_distance_flipped(qxs, qys, &self.xs, &self.ys, distance, self.metric)
+            });
             let output_rows = pairs.len() / 2;
             let output = PyArray1::from_vec(py, pairs);
             self.metrics.record_operation(
@@ -1583,7 +1588,7 @@ impl Engine {
             candidate,
         );
         let build_ns = self.build_index_if_needed(kind);
-        let pairs = match kind {
+        let pairs = py.allow_threads(|| match kind {
             IndexKind::BruteForce => par_within_distance(
                 self.brute.as_ref().unwrap(),
                 qxs,
@@ -1620,7 +1625,7 @@ impl Engine {
                 distance,
                 self.metric,
             ),
-        };
+        });
         let output_rows = pairs.len() / 2;
         let output = PyArray1::from_vec(py, pairs);
         self.metrics.record_operation(
@@ -1655,7 +1660,7 @@ impl Engine {
                 "query_xs and query_ys must have the same length",
             ));
         }
-        let results = par_bbox_filter(qxs, qys, min_x, min_y, max_x, max_y);
+        let results = py.allow_threads(|| par_bbox_filter(qxs, qys, min_x, min_y, max_x, max_y));
         Ok(PyArray1::from_vec(py, results))
     }
 
@@ -1700,7 +1705,7 @@ impl Engine {
         let poly_off = self.poly_offsets.as_deref().unwrap();
         let prepared = self.prepared_polys.as_ref();
         let part_poly = self.part_poly.as_deref();
-        let flat = match kind {
+        let flat = py.allow_threads(|| match kind {
             IndexKind::BruteForce => par_contains(
                 self.brute.as_ref().unwrap(),
                 qxs,
@@ -1723,7 +1728,7 @@ impl Engine {
                 prepared,
                 part_poly,
             ),
-        };
+        });
         let output_rows = flat.len() / 2;
         let output = PyArray1::from_vec(py, flat);
         self.metrics.record_operation(
@@ -1806,7 +1811,7 @@ impl Engine {
         let poly_off = self.poly_offsets.as_deref().unwrap();
         let prepared = self.prepared_polys.as_ref();
         let part_poly = self.part_poly.as_deref();
-        let state = match kind {
+        let state = py.allow_threads(|| match kind {
             IndexKind::BruteForce => par_contains_aggregate(
                 self.brute.as_ref().unwrap(),
                 qxs,
@@ -1835,8 +1840,8 @@ impl Engine {
                 &values,
                 &validities,
             ),
-        };
-        let (groups, counts, sums, value_counts) = state.compact();
+        });
+        let (groups, counts, sums, value_counts) = py.allow_threads(|| state.compact());
         let output_rows = groups.len();
         self.metrics.record_operation(
             Operation::BatchContainsAggregate,
@@ -1900,7 +1905,7 @@ impl Engine {
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
         let part_poly = self.part_poly.as_deref();
-        let flat = match orientation {
+        let flat = py.allow_threads(|| match orientation {
             PointPolygonOrientation::FlippedGrid => par_within_distance_to_polygons_flipped(
                 qxs,
                 qys,
@@ -1936,7 +1941,7 @@ impl Engine {
                     part_poly,
                 ),
             },
-        };
+        });
         let output_rows = flat.len() / 2;
         let output = PyArray1::from_vec(py, flat);
         self.metrics.record_operation(
@@ -2022,7 +2027,7 @@ impl Engine {
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
         let part_poly = self.part_poly.as_deref();
-        let state = match orientation {
+        let state = py.allow_threads(|| match orientation {
             PointPolygonOrientation::FlippedGrid => {
                 par_within_distance_to_polygons_aggregate_flipped(
                     qxs,
@@ -2068,7 +2073,7 @@ impl Engine {
                 &values,
                 &validities,
             ),
-        };
+        });
         let (groups, counts, sums, value_counts) = state.compact();
         let output_rows = groups.len();
         self.metrics.record_operation(
@@ -2131,7 +2136,7 @@ impl Engine {
         let poly_off = self.poly_offsets.as_deref().unwrap();
         let n_parts = poly_off.len().saturating_sub(1);
         let part_poly = self.part_poly.as_deref();
-        let (idx, dist) = match kind {
+        let (idx, dist) = py.allow_threads(|| match kind {
             IndexKind::BruteForce => par_knn_to_polygons(
                 self.brute.as_ref().unwrap(),
                 qxs,
@@ -2156,7 +2161,7 @@ impl Engine {
                 n_parts,
                 part_poly,
             ),
-        };
+        });
         let output_rows = qxs.len().saturating_mul(k.min(self.n_polygons));
         let idx = PyArray1::from_vec(py, idx);
         let dist = PyArray1::from_vec(py, dist);
@@ -2218,7 +2223,7 @@ impl Engine {
         let poly_off = self.poly_offsets.as_deref().unwrap();
         let n_parts = poly_off.len().saturating_sub(1);
         let part_poly = self.part_poly.as_deref();
-        let (q_idx, t_idx, dist) = match kind {
+        let (q_idx, t_idx, dist) = py.allow_threads(|| match kind {
             IndexKind::BruteForce => par_knn_to_polygons_sorted(
                 self.brute.as_ref().unwrap(),
                 qxs,
@@ -2243,7 +2248,7 @@ impl Engine {
                 n_parts,
                 part_poly,
             ),
-        };
+        });
         let output_rows = q_idx.len();
         let q_idx = PyArray1::from_vec(py, q_idx);
         let t_idx = PyArray1::from_vec(py, t_idx);
@@ -2281,7 +2286,7 @@ impl Engine {
         let build_ns = self.build_index_if_needed(kind);
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
-        let flat = match kind {
+        let flat = py.allow_threads(|| match kind {
             IndexKind::BruteForce => par_polygon_intersects_join(
                 self.brute.as_ref().unwrap(),
                 &self.xs,
@@ -2296,7 +2301,7 @@ impl Engine {
                 ring_off,
                 poly_off,
             ),
-        };
+        });
         let flat = match &self.part_poly {
             Some(pp) => dedup_self_pairs(flat, pp),
             None => flat,
@@ -2323,14 +2328,16 @@ impl Engine {
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
         let n_parts = poly_off.len().saturating_sub(1);
-        let part_areas: Vec<f64> = (0..n_parts)
-            .into_par_iter()
-            .map(|i| polygon_area(&self.xs, &self.ys, ring_off, poly_off, i))
-            .collect();
-        let areas = match &self.part_poly {
-            Some(pp) => sum_part_areas(&part_areas, pp, self.n_polygons),
-            None => part_areas,
-        };
+        let areas = py.allow_threads(|| {
+            let part_areas: Vec<f64> = (0..n_parts)
+                .into_par_iter()
+                .map(|i| polygon_area(&self.xs, &self.ys, ring_off, poly_off, i))
+                .collect();
+            match &self.part_poly {
+                Some(pp) => sum_part_areas(&part_areas, pp, self.n_polygons),
+                None => part_areas,
+            }
+        });
         Ok(PyArray1::from_vec(py, areas))
     }
 
@@ -2362,7 +2369,7 @@ impl Engine {
         let poly_off = self.poly_offsets.as_deref().unwrap();
         // For MultiPolygons the pair area sums over their part pairs
         // Parts within one polygon are disjoint and their intersections partition the overlap
-        let areas: Vec<f64> = match &self.part_poly {
+        let areas: Vec<f64> = py.allow_threads(|| match &self.part_poly {
             Some(pp) => {
                 let (offsets, parts) = polygon_parts_csr(pp, self.n_polygons);
                 let parts_of = |g: usize| &parts[offsets[g] as usize..offsets[g + 1] as usize];
@@ -2395,7 +2402,7 @@ impl Engine {
                     )
                 })
                 .collect(),
-        };
+        });
         Ok(PyArray1::from_vec(py, areas))
     }
 
@@ -2441,7 +2448,7 @@ impl Engine {
         );
         let kind = self.plan_index_kind(&Query::Range { bbox }, 1, candidate);
         let build_ns = self.build_index_if_needed(kind);
-        let pts = match kind {
+        let pts = py.allow_threads(|| match kind {
             IndexKind::BruteForce => par_points_within_distance_of_polygon(
                 self.brute.as_ref().unwrap(),
                 &self.xs,
@@ -2462,7 +2469,7 @@ impl Engine {
                 ppoly,
                 distance,
             ),
-        };
+        });
         let output_rows = pts.len();
         let output = PyArray1::from_vec(py, pts);
         self.metrics.record_operation(
@@ -2508,14 +2515,16 @@ impl Engine {
             .as_slice()
             .map_err(|_| PyValueError::new_err("offsets must be a contiguous int64 array"))?;
         let n = offs.len().saturating_sub(1);
-        let areas: Vec<f64> = (0..n)
-            .into_par_iter()
-            .map(|i| {
-                let s = offs[i] as usize;
-                let e = offs[i + 1] as usize;
-                convex_hull_area(&xs[s..e], &ys[s..e])
-            })
-            .collect();
+        let areas: Vec<f64> = py.allow_threads(|| {
+            (0..n)
+                .into_par_iter()
+                .map(|i| {
+                    let s = offs[i] as usize;
+                    let e = offs[i + 1] as usize;
+                    convex_hull_area(&xs[s..e], &ys[s..e])
+                })
+                .collect()
+        });
         Ok(PyArray1::from_vec(py, areas).into())
     }
 

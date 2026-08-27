@@ -2,6 +2,9 @@
 Tests for the Python Engine wrapper (pycanopy.Engine).
 """
 
+import threading
+import time
+
 import numpy as np
 import pyarrow as pa
 import pytest
@@ -554,3 +557,39 @@ def test_polygon_hole_contains_point_outside_hole(hole_engine):
 def test_polygon_hole_range_finds_polygon(hole_engine):
     # range overlapping the outer MBR returns the polygon regardless of hole
     assert hole_engine.range_query(0.0, 0.0, 2.0, 2.0) == [0]
+
+
+def test_batch_kernels_release_the_gil():
+    # Without py.allow_threads a competing Python thread retains under 1% of its throughput
+    squares = [Polygon([(i, 0), (i + 0.9, 0), (i + 0.9, 1), (i, 1)]) for i in range(500)]
+    engine = Engine.from_polygons(squares)
+    engine.build_index()
+
+    rng = np.random.default_rng(0)
+    qx = rng.uniform(0, 500, 400_000)
+    qy = rng.uniform(0, 1, 400_000)
+
+    def kernel():
+        engine.batch_contains(qx, qy)
+
+    def spin(budget, out, key):
+        end = time.perf_counter() + budget
+        count = 0
+        while time.perf_counter() < end:
+            count += 1
+        out[key] = count
+
+    kernel()
+    started = time.perf_counter()
+    kernel()
+    budget = max(time.perf_counter() - started, 0.05)
+
+    counts = {}
+    spin(budget, counts, "alone")
+
+    worker = threading.Thread(target=spin, args=(budget, counts, "shared"))
+    worker.start()
+    kernel()
+    worker.join()
+
+    assert counts["shared"] > counts["alone"] * 0.05
