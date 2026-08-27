@@ -21,6 +21,7 @@ from pycanopy.nodes import (
     IntersectsSelfJoinNode,
     KnnJoinNode,
     KnnNode,
+    LimitNode,
     Plan,
     PluginPath,
     PointsWithinDistanceOfPolygonNode,
@@ -57,6 +58,8 @@ def _fmt_node(node) -> str:
         return f"CONTAINS [({node.qx:.4g}, {node.qy:.4g})]"
     if isinstance(node, KnnNode):
         return f"KNN [k={node.k}, ({node.qx:.4g}, {node.qy:.4g})]"
+    if isinstance(node, LimitNode):
+        return f"LIMIT [{node.n:,}]"
     if isinstance(node, FusedSpatialNode):
         count = len(node.predicates)
         pred_strs = []
@@ -201,8 +204,8 @@ def _source_filter_prefix(
     plan: Plan,
     schema: pl.Schema,
     geometry_col: str,
-) -> tuple[list[pl.Expr], Plan]:
-    # Remove only the contiguous safe-filter prefix before any spatial or row-changing node
+) -> tuple[list[pl.Expr], int | None, Plan]:
+    # Remove a safe filter prefix and its optional terminal source limit
     source_columns = set(schema.names())
     count = 0
     filters = []
@@ -213,7 +216,11 @@ def _source_filter_prefix(
             break
         filters.append(node.expr)
         count += 1
-    return filters, plan[count:]
+    limit = None
+    if count < len(plan) and isinstance(plan[count], LimitNode):
+        limit = plan[count].n
+        count += 1
+    return filters, limit, plan[count:]
 
 
 def _source_columns_for_plan(plan: Plan, schema: pl.Schema) -> set[str] | None:
@@ -276,13 +283,21 @@ class SpatialLazyFrame:
 
     def _prepare_plan(self) -> tuple[SpatialFrame, Plan]:  # noqa: F821
         # Fold a safe leading filter prefix into a deferred source before materialization
+        limit_positions = [i for i, node in enumerate(self._plan) if isinstance(node, LimitNode)]
+        if len(limit_positions) > 1:
+            raise ValueError("a spatial plan supports only one limit")
+        if limit_positions and any(
+            not isinstance(node, (SelectNode, CountNode))
+            for node in self._plan[limit_positions[0] + 1 :]
+        ):
+            raise ValueError("limit must be terminal except for select or count")
         if not self._sf._is_deferred:
             return self._sf, self._plan
         schema = self._sf._lazy_schema()
         source = self._sf._lazy_source
-        filters, plan = _source_filter_prefix(self._plan, schema, source.geometry_col)
+        filters, limit, plan = _source_filter_prefix(self._plan, schema, source.geometry_col)
         required = _source_columns_for_plan(plan, schema)
-        return self._sf._materialize_lazy(required, schema, filters), plan
+        return self._sf._materialize_lazy(required, schema, filters, limit), plan
 
     def _prepare(self) -> SpatialFrame:  # noqa: F821
         # Compatibility helper for callers that need only the prepared frame
@@ -313,6 +328,30 @@ class SpatialLazyFrame:
         else:
             cols = tuple(columns)
         return SpatialLazyFrame(self._sf, [*self._plan, SelectNode(cols)])
+
+    def limit(self, n: int) -> SpatialLazyFrame:
+        """Keep at most the first ``n`` rows produced by the preceding plan.
+
+        The limit is terminal, though a final ``select`` or ``count`` may follow it.
+        A Parquet source can use a filtered limit of one to locate a row before
+        reading its geometry payload.
+
+        Args:
+            n: Maximum number of rows to keep.
+
+        Returns:
+            New SpatialLazyFrame with the terminal row bound appended.
+        """
+        if isinstance(n, bool) or not isinstance(n, int):
+            raise TypeError("n must be an integer")
+        if n < 0:
+            raise ValueError("n must be non-negative")
+        if self._plan and isinstance(self._plan[-1], SelectNode):
+            return SpatialLazyFrame(
+                self._sf,
+                [*self._plan[:-1], LimitNode(n), self._plan[-1]],
+            )
+        return SpatialLazyFrame(self._sf, [*self._plan, LimitNode(n)])
 
     def group_by(self, *keys: str | list[str] | tuple[str, ...]) -> SpatialGroupBy:
         """Begin a grouped aggregation, reduced over the streamed join.

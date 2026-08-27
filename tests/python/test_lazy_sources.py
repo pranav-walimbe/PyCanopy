@@ -228,6 +228,79 @@ def test_scan_parquet_wraps_polars_lazy_scan(tmp_path):
     assert result["geometry"].to_list() == [source["geometry"][0]]
 
 
+def test_scan_parquet_fetches_one_filtered_payload_by_source_position(tmp_path):
+    source = _polygon_data()
+    first = tmp_path / "first.parquet"
+    second = tmp_path / "second.parquet"
+    source.head(2).write_parquet(first)
+    source.tail(1).write_parquet(second)
+
+    result = (
+        SpatialFrame.scan_parquet([first, second], "geometry", "polygon", parallel="none")
+        .lazy()
+        .filter(pl.col("value") == 30)
+        .limit(1)
+        .select("id", "geometry")
+        .collect()
+    )
+
+    assert result.to_dict(as_series=False) == {
+        "id": [3],
+        "geometry": [source["geometry"][2]],
+    }
+
+
+def test_scan_parquet_bounded_payload_handles_no_match(tmp_path):
+    source = _polygon_data()
+    path = tmp_path / "polygons.parquet"
+    source.write_parquet(path)
+
+    result = (
+        SpatialFrame.scan_parquet(path, "geometry", "polygon", parallel="none")
+        .lazy()
+        .filter(pl.col("value") == -1)
+        .limit(1)
+        .select("id", "geometry")
+        .collect()
+    )
+
+    assert result.height == 0
+    assert result.columns == ["id", "geometry"]
+
+
+def test_scan_parquet_limit_above_one_uses_regular_filtered_source(tmp_path):
+    source = _polygon_data()
+    path = tmp_path / "polygons.parquet"
+    source.write_parquet(path)
+
+    result = (
+        SpatialFrame.scan_parquet(path, "geometry", "polygon", parallel="none")
+        .lazy()
+        .filter(pl.col("value") >= 10)
+        .limit(2)
+        .select("id")
+        .collect()
+    )
+
+    assert result["id"].to_list() == [1, 2]
+
+
+def test_lazy_limit_is_terminal_and_validates_its_bound():
+    plan = SpatialFrame.from_lazy(_polygon_data().lazy(), "geometry", "polygon").lazy()
+
+    assert plan.filter(pl.col("value") >= 20).limit(1).select("id").collect()["id"].to_list() == [2]
+    assert plan.select("id").limit(2).collect()["id"].to_list() == [1, 2]
+    assert "LIMIT [1]" in plan.limit(1).explain()
+    with pytest.raises(TypeError, match="n must be an integer"):
+        plan.limit(True)
+    with pytest.raises(ValueError, match="n must be non-negative"):
+        plan.limit(-1)
+    with pytest.raises(ValueError, match="limit must be terminal"):
+        plan.limit(1).filter(pl.col("value") > 0).collect()
+    with pytest.raises(ValueError, match="only one limit"):
+        plan.limit(2).limit(1).collect()
+
+
 def test_lazy_transformation_runs_before_spatial_ingestion():
     source = _polygon_data()
     transformed = source.lazy().filter(pl.col("id") != 1)
@@ -769,6 +842,20 @@ def test_lazy_intersects_pairs_without_a_key_stays_positional():
     )
 
     assert deferred.columns[:2] == ["left", "right"]
+
+
+def test_lazy_intersects_pairs_honors_terminal_limit():
+    source = _keyed_polygon_source([30, 10, 20], pl.Int64)
+
+    result = (
+        SpatialFrame.from_lazy(source.lazy(), "geometry", "polygon")
+        .lazy()
+        .intersects_pairs()
+        .limit(1)
+        .collect()
+    )
+
+    assert result.height == 1
 
 
 def test_lazy_intersects_pairs_reads_only_the_key_column(monkeypatch):

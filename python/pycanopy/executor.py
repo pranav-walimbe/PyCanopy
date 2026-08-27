@@ -17,6 +17,7 @@ from pycanopy.nodes import (
     IntersectsSelfJoinNode,
     KnnJoinNode,
     KnnNode,
+    LimitNode,
     Plan,
     PluginPath,
     PointsWithinDistanceOfPolygonNode,
@@ -191,10 +192,13 @@ class SpatialExecutor:
         # Run the optimised plan, dispatching scalar / IO / EXPR / streamed-join paths
 
         # Scalar-only fast path with no spatial ops
-        if all(isinstance(n, ScalarNode) for n in plan):
+        if all(isinstance(n, (ScalarNode, LimitNode)) for n in plan):
             lf = sf.df.lazy()
             for node in plan:
-                lf = lf.filter(node.expr)
+                if isinstance(node, ScalarNode):
+                    lf = lf.filter(node.expr)
+                else:
+                    lf = lf.head(node.n)
             return lf.collect()
 
         # Intersects self-join is terminal and produces a pair frame
@@ -262,6 +266,10 @@ class SpatialExecutor:
         join_pos = next(i for i, n in enumerate(plan) if isinstance(n, _JOIN_TYPES))
         join_node = plan[join_pos]
         post_nodes = plan[join_pos + 1 :]
+        limit = post_nodes[-1].n if post_nodes and isinstance(post_nodes[-1], LimitNode) else None
+        if limit is not None:
+            post_nodes = post_nodes[:-1]
+        remaining = limit
 
         # Join emitters ignore the incoming lf (they gather from sf.df directly)
         placeholder = sf.df.lazy()
@@ -272,15 +280,21 @@ class SpatialExecutor:
             for node in post_nodes:
                 lf = self._emit_node(node, sf, lf, PluginPath.EXPR)
             out = lf.collect()
+            if remaining is not None:
+                out = out.head(remaining)
+                remaining -= out.height
             if projection is not None:
                 out = out.select(list(projection))
             yield out
+            if remaining == 0:
+                break
 
     def _execute_io(self, plan: Plan, sf) -> pl.DataFrame:
         # IO path: resolve every spatial node against the global Engine (no index rebuild),
         # AND-intersect the hits, slice df to candidates, then run scalars on that small slice.
         hit_lists: list[list[int]] = []
         scalar_nodes: list[ScalarNode] = []
+        limit = None
 
         for node in plan:
             hits: list[int] | None = None
@@ -304,6 +318,9 @@ class SpatialExecutor:
             elif isinstance(node, ScalarNode):
                 scalar_nodes.append(node)
                 continue
+            elif isinstance(node, LimitNode):
+                limit = node.n
+                continue
 
             if hits is not None:
                 hit_lists.append(hits)
@@ -318,6 +335,8 @@ class SpatialExecutor:
 
         for node in scalar_nodes:
             lf = lf.filter(node.expr)
+        if limit is not None:
+            lf = lf.head(limit)
 
         return lf.collect()
 
@@ -328,6 +347,8 @@ class SpatialExecutor:
         for node in plan[pos + 1 :]:
             if isinstance(node, ScalarNode):
                 lf = lf.filter(node.expr)
+            elif isinstance(node, LimitNode):
+                lf = lf.head(node.n)
         return lf.collect()
 
     def _emit_chain(
@@ -354,6 +375,8 @@ class SpatialExecutor:
             return self._emit_contains(node, sf, lf, plugin_path)
         if isinstance(node, KnnNode):
             return self._emit_knn(node, sf, lf)
+        if isinstance(node, LimitNode):
+            return lf.head(node.n)
         if isinstance(node, FusedSpatialNode):
             return self._emit_fused(node, sf, lf, plugin_path)
         if isinstance(node, KnnJoinNode):

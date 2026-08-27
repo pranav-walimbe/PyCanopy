@@ -4,7 +4,7 @@ Define SpatialFrame which is the entry point for spatial query planning.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
@@ -27,6 +27,7 @@ class _LazySpatialSource:
     index_mode: str
     coordinate_system: Literal["planar", "geographic"]
     ingest_batch_size: int
+    parquet_scan: bool = False
 
 
 class SpatialFrame:
@@ -186,7 +187,7 @@ class SpatialFrame:
                 scan_options.get("retries"),
             )
         frame = pl.scan_parquet(source, storage_options=storage_options, **scan_options)
-        return cls.from_lazy(
+        sf = cls.from_lazy(
             frame,
             geometry_col,
             geometry_kind,
@@ -196,6 +197,10 @@ class SpatialFrame:
             x_col,
             y_col,
         )
+        if sf._lazy_source is None:
+            raise RuntimeError("deferred source was not created")
+        sf._lazy_source = replace(sf._lazy_source, parquet_scan=True)
+        return sf
 
     @property
     def _is_deferred(self) -> bool:
@@ -213,6 +218,7 @@ class SpatialFrame:
         required_columns: set[str] | None,
         schema: pl.Schema,
         filters: list[pl.Expr] | None = None,
+        limit: int | None = None,
     ) -> SpatialFrame:
         # Stream projected input into native geometry and retain only required columns
         source = self._lazy_source
@@ -240,9 +246,7 @@ class SpatialFrame:
             retained_columns = [name for name in schema_columns if name in required_columns]
         scan_columns = list(dict.fromkeys([*retained_columns, source.geometry_col]))
         retained_batches: list[pl.DataFrame] = []
-        source_frame = source.frame
-        for expr in filters or ():
-            source_frame = source_frame.filter(expr)
+        source_frame = self._selected_source_frame(source, schema, filters or [], limit)
 
         def geometry_batches():
             # Yield geometry for native decoding after saving the requested attributes
@@ -288,6 +292,31 @@ class SpatialFrame:
             self._y_col,
             source.geometry_kind,
         )
+
+    def _selected_source_frame(
+        self,
+        source: _LazySpatialSource,
+        schema: pl.Schema,
+        filters: list[pl.Expr],
+        limit: int | None,
+    ) -> pl.LazyFrame:
+        # Resolve one filtered Parquet row before reading its geometry payload
+        row_index = "__pycanopy_source_row__"
+        if source.parquet_scan and filters and limit == 1 and row_index not in schema:
+            selector = source.frame.with_row_index(row_index)
+            for expr in filters:
+                selector = selector.filter(expr)
+            positions = selector.select(row_index).head(1).collect()[row_index]
+            if positions.is_empty():
+                return source.frame.slice(0, 0)
+            return source.frame.slice(positions[0], 1)
+
+        selected = source.frame
+        for expr in filters:
+            selected = selected.filter(expr)
+        if limit is not None:
+            selected = selected.head(limit)
+        return selected
 
     @classmethod
     def from_wkb_points(

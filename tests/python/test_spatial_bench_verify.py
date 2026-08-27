@@ -5,7 +5,7 @@ import pytest
 import shapely
 
 from bench.spatial_bench import profiler_utils as _verify
-from bench.spatial_bench.queries.pycanopy import q04, q05, q12
+from bench.spatial_bench.queries.pycanopy import q02, q04, q05, q12
 from pycanopy import executor
 
 
@@ -149,6 +149,39 @@ def _data_paths(tmp_path, frames: dict[str, pl.DataFrame]) -> dict[str, str]:
         frame.write_parquet(directory / "0.parquet")
         paths[name] = f"{directory}/**/*.parquet"
     return paths
+
+
+def test_q2_resolves_its_polygon_through_the_bounded_source_plan(monkeypatch, tmp_path):
+    trips = pl.DataFrame(
+        {
+            "t_pickuploc": [
+                shapely.Point(0.5, 0.5).wkb,
+                shapely.Point(1.5, 1.5).wkb,
+                shapely.Point(3, 3).wkb,
+            ]
+        }
+    )
+    zones = pl.DataFrame(
+        {
+            "z_name": ["Elsewhere", q02.ZONE_NAME],
+            "z_boundary": [shapely.box(10, 10, 11, 11).wkb, shapely.box(0, 0, 2, 2).wkb],
+        }
+    )
+    paths = _data_paths(tmp_path, {"trip": trips, "zone": zones})
+    collected = []
+    base_collect = pl.LazyFrame.collect
+
+    def record(frame, *args, **kwargs):
+        result = base_collect(frame, *args, **kwargs)
+        collected.append(result.columns)
+        return result
+
+    monkeypatch.setattr(pl.LazyFrame, "collect", record)
+
+    result = q02.pycanopy(paths)
+
+    assert result["trip_count_in_coconino_county"].to_list() == [2]
+    assert ["__pycanopy_source_row__"] in collected
 
 
 def test_q4_fetches_geometry_after_selecting_top_trips(monkeypatch, tmp_path):

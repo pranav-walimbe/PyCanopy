@@ -90,6 +90,13 @@ class CountNode:
 
 
 @dataclass
+class LimitNode:
+    """Terminal row bound applied after every preceding plan operation."""
+
+    n: int
+
+
+@dataclass
 class KnnJoinNode:
     """Spatial join: for each row in query_df find k nearest in Engine's dataset.
 
@@ -230,4 +237,6 @@ Plan = list[
     | WithinDistanceOfPointNode
     | IntersectsSelfJoinNode
     | SelectNode
+    | CountNode
+    | LimitNode
 ]
