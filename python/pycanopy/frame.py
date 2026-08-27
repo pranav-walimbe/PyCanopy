@@ -94,6 +94,8 @@ class SpatialFrame:
         index_mode: str = "auto",
         coordinate_system: Literal["planar", "geographic"] | None = None,
         ingest_batch_size: int = _DEFAULT_INGEST_BATCH_SIZE,
+        x_col: str = "_x",
+        y_col: str = "_y",
     ) -> SpatialFrame:
         """Construct a deferred SpatialFrame from a Polars LazyFrame.
 
@@ -104,6 +106,8 @@ class SpatialFrame:
             index_mode: Index build policy ("eager" / "none" / "auto").
             coordinate_system: Point distance system ("planar" / "geographic").
             ingest_batch_size: Source rows decoded per batch.
+            x_col: Internal column name for the extracted x coordinates.
+            y_col: Internal column name for the extracted y coordinates.
 
         Returns:
             A SpatialFrame materialized when its query is collected.
@@ -125,8 +129,8 @@ class SpatialFrame:
         )
         sf = object.__new__(cls)
         sf._df = None
-        sf._x_col = "_x"
-        sf._y_col = "_y"
+        sf._x_col = x_col
+        sf._y_col = y_col
         sf._engine = None
         sf._geometry_kind = geometry_kind
         sf._lazy_source = _LazySpatialSource(
@@ -149,6 +153,8 @@ class SpatialFrame:
         storage_options: dict[str, str] | None = None,
         coordinate_system: Literal["planar", "geographic"] | None = None,
         ingest_batch_size: int = _DEFAULT_INGEST_BATCH_SIZE,
+        x_col: str = "_x",
+        y_col: str = "_y",
         **scan_options: object,
     ) -> SpatialFrame:
         """Construct a deferred SpatialFrame from Parquet.
@@ -163,6 +169,8 @@ class SpatialFrame:
             storage_options: Cloud connection options for Polars.
             coordinate_system: Point distance system ("planar" / "geographic").
             ingest_batch_size: Source rows decoded per batch.
+            x_col: Internal column name for the extracted x coordinates.
+            y_col: Internal column name for the extracted y coordinates.
             **scan_options: Options forwarded to ``polars.scan_parquet``.
 
         Returns:
@@ -185,6 +193,8 @@ class SpatialFrame:
             index_mode,
             coordinate_system,
             ingest_batch_size,
+            x_col,
+            y_col,
         )
 
     @property
@@ -215,6 +225,13 @@ class SpatialFrame:
                 f"geometry_col {source.geometry_col!r} must have Binary dtype, "
                 f"got {schema[source.geometry_col]}"
             )
+        if source.geometry_kind == "point":
+            for name in (self._x_col, self._y_col):
+                if name in schema:
+                    raise ValueError(
+                        f"coordinate column {name!r} collides with a source column; "
+                        f"pass x_col / y_col to rename it"
+                    )
 
         schema_columns = list(schema.names())
         if required_columns is None:
@@ -258,6 +275,12 @@ class SpatialFrame:
             collected = pl.concat(retained_batches, how="vertical", rechunk=False)
         else:
             collected = pl.DataFrame(schema={name: schema[name] for name in retained_columns})
+        if source.geometry_kind == "point":
+            # Share the engine's coordinate memory so the frame matches the eager layout
+            collected = collected.with_columns(
+                pl.Series(self._x_col, engine.xs),
+                pl.Series(self._y_col, engine.ys),
+            )
         return self._from_engine(
             collected,
             engine,

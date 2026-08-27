@@ -1301,6 +1301,24 @@ class Engine:
         return self._core.n()
 
     @property
+    def xs(self) -> np.ndarray:
+        """Expose the dataset x coordinates as a read-only zero-copy view.
+
+        Returns:
+            A read-only float64 array sharing the engine's x coordinate memory.
+        """
+        return self._core.xs()
+
+    @property
+    def ys(self) -> np.ndarray:
+        """Expose the dataset y coordinates as a read-only zero-copy view.
+
+        Returns:
+            A read-only float64 array sharing the engine's y coordinate memory.
+        """
+        return self._core.ys()
+
+    @property
     def extent(self) -> tuple[float, float, float, float] | None:
         """Report the bounding extent of the dataset.
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import polars as pl
 import pytest
 import shapely
@@ -550,3 +551,100 @@ def test_scan_parquet_supports_lazy_points(tmp_path):
     )
 
     assert result["id"].to_list() == [1, 2]
+
+
+def test_lazy_point_frame_exposes_coordinates_like_the_eager_frame():
+    source = _point_data()
+    eager = SpatialFrame.from_wkb_points(source, "geometry")._df.select("id", "_x", "_y")
+
+    deferred = (
+        SpatialFrame.from_lazy(source.lazy(), "geometry", "point")
+        .lazy()
+        .select("id", "_x", "_y")
+        .collect()
+    )
+
+    assert deferred.schema == eager.schema
+    assert deferred.equals(eager)
+
+
+def test_lazy_point_coordinates_survive_batched_ingestion():
+    source = _point_data()
+
+    result = (
+        SpatialFrame.from_lazy(source.lazy(), "geometry", "point", ingest_batch_size=2)
+        .lazy()
+        .select("_x", "_y")
+        .collect()
+    )
+
+    assert result["_x"].to_list() == [0.0, 1.0, 2.0, 3.0, 4.0]
+    assert result["_y"].to_list() == [0.0, 0.0, 0.0, 0.0, 0.0]
+
+
+def test_lazy_point_coordinates_are_shared_with_the_engine():
+    source = _point_data()
+    sf = SpatialFrame.from_lazy(source.lazy(), "geometry", "point")._materialize_lazy(
+        None, source.lazy().collect_schema()
+    )
+
+    assert np.shares_memory(sf._df["_x"].to_numpy(allow_copy=False), sf.engine.xs)
+    assert not sf.engine.xs.flags.writeable
+
+
+def test_lazy_point_coordinates_survive_an_empty_source():
+    source = _point_data().clear()
+
+    result = (
+        SpatialFrame.from_lazy(source.lazy(), "geometry", "point")
+        .lazy()
+        .select("id", "_x", "_y")
+        .collect()
+    )
+
+    assert result.height == 0
+    assert result.columns == ["id", "_x", "_y"]
+    assert result.schema["_x"] == pl.Float64
+
+
+def test_lazy_point_coordinate_columns_can_be_renamed():
+    source = _point_data()
+
+    result = (
+        SpatialFrame.from_lazy(source.lazy(), "geometry", "point", x_col="lon", y_col="lat")
+        .lazy()
+        .select("id", "lon", "lat")
+        .collect()
+    )
+
+    assert result["lon"].to_list() == [0.0, 1.0, 2.0, 3.0, 4.0]
+
+
+def test_lazy_point_coordinate_name_collision_is_rejected():
+    source = _point_data().with_columns(pl.lit(1.0).alias("_x"))
+
+    with pytest.raises(ValueError, match="collides with a source column"):
+        SpatialFrame.from_lazy(source.lazy(), "geometry", "point").lazy().select("id").collect()
+
+
+def test_lazy_point_coordinate_collision_is_resolved_by_renaming():
+    source = _point_data().with_columns(pl.lit(1.0).alias("_x"))
+
+    result = (
+        SpatialFrame.from_lazy(source.lazy(), "geometry", "point", x_col="lon", y_col="lat")
+        .lazy()
+        .select("_x", "lon")
+        .collect()
+    )
+
+    assert result["_x"].to_list() == [1.0] * 5
+    assert result["lon"].to_list() == [0.0, 1.0, 2.0, 3.0, 4.0]
+
+
+def test_lazy_polygon_frame_gains_no_coordinate_columns():
+    source = _polygon_data()
+
+    result = SpatialFrame.from_lazy(source.lazy(), "geometry", "polygon").lazy().collect()
+
+    assert "_x" not in result.columns
+    assert "_y" not in result.columns

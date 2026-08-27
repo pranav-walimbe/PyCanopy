@@ -6,7 +6,7 @@
 use std::{sync::Arc, time::Instant};
 
 use geo::{coord, Point, Rect};
-use numpy::{PyArray1, PyReadonlyArray1};
+use numpy::{ndarray::ArrayView1, PyArray1, PyArrayMethods, PyReadonlyArray1};
 use pyo3::{
     exceptions::PyValueError,
     prelude::*,
@@ -76,6 +76,28 @@ impl Engine {
         engine.metrics.wkb_decode_ns = wkb_decode_ns;
         Ok(engine)
     }
+}
+
+#[pyclass]
+struct CoordinateBuffer {
+    data: Arc<[f64]>, // keeps a coordinate allocation alive while numpy views it
+}
+
+fn coordinate_view<'py>(py: Python<'py>, data: &Arc<[f64]>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    // Hand numpy a borrowed view owned by a container holding its own Arc reference
+    let owner = Bound::new(
+        py,
+        CoordinateBuffer {
+            data: Arc::clone(data),
+        },
+    )?;
+    let borrowed = owner.borrow();
+    let view = ArrayView1::from(&*borrowed.data);
+    // SAFETY: the container's Arc keeps the allocation alive and Arc<[f64]> never reallocates
+    let array = unsafe { PyArray1::borrow_from_array(&view, owner.clone().into_any()) };
+    drop(borrowed);
+    array.readwrite().make_nonwriteable();
+    Ok(array)
 }
 
 #[pyclass]
@@ -2684,6 +2706,18 @@ impl Engine {
             total += g.heap_bytes();
         }
         total
+    }
+
+    /// Zero-copy read-only view of the dataset x coordinates
+    fn xs<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        self.flush_delta();
+        coordinate_view(py, &self.xs)
+    }
+
+    /// Zero-copy read-only view of the dataset y coordinates
+    fn ys<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        self.flush_delta();
+        coordinate_view(py, &self.ys)
     }
 
     /// Number of geometries in the dataset
