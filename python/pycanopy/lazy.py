@@ -79,8 +79,7 @@ def _fmt_node(node) -> str:
         return f"KNN_JOIN [k={node.k}, query_rows={len(node.query_df):,}, barrier]"
     if isinstance(node, WithinJoinNode):
         flip = ", flip" if node.flip else ""
-        rows = "?" if isinstance(node.query_df, pl.LazyFrame) else f"{len(node.query_df):,}"
-        return f"WITHIN_JOIN [query_rows={rows}, barrier{flip}]"
+        return f"WITHIN_JOIN [query_rows={len(node.query_df):,}, barrier{flip}]"
     if isinstance(node, WithinDistanceJoinNode):
         flip = ", flip" if node.flip else ""
         return f"WITHIN_DIST_JOIN [dist={node.distance:.4g}, query_rows={len(node.query_df):,}, barrier{flip}]"
@@ -234,12 +233,7 @@ def _source_columns_for_plan(plan: Plan, schema: pl.Schema) -> set[str] | None:
         (position for position, node in enumerate(body) if isinstance(node, _SOURCE_JOIN_TYPES)),
         None,
     )
-    if join_position is None:
-        query_columns = set()
-    else:
-        query = body[join_position].query_df
-        query_schema = query.collect_schema() if isinstance(query, pl.LazyFrame) else query.schema
-        query_columns = set(query_schema.names())
+    query_columns = set() if join_position is None else set(body[join_position].query_df.columns)
     source_columns = set(schema.names())
 
     def source_name(output_name: str) -> str | None:
@@ -567,7 +561,7 @@ class SpatialLazyFrame:
 
     def within_join(
         self,
-        query_df: pl.DataFrame | pl.LazyFrame,
+        query_df: pl.DataFrame,
         x_col: str,
         y_col: str,
     ) -> SpatialLazyFrame:
@@ -577,22 +571,13 @@ class SpatialLazyFrame:
         (conflicting right-side columns are prefixed with 'right_').
 
         Args:
-            query_df: Eager or lazy frame of query points. Lazy input is consumed in batches.
+            query_df: DataFrame of query points.
             x_col: Column in query_df holding x coordinates.
             y_col: Column in query_df holding y coordinates.
 
         Returns:
             New SpatialLazyFrame with the within join node appended.
         """
-        if not isinstance(query_df, (pl.DataFrame, pl.LazyFrame)):
-            raise TypeError("query_df must be a polars DataFrame or LazyFrame")
-        schema = (
-            query_df.collect_schema() if isinstance(query_df, pl.LazyFrame) else query_df.schema
-        )
-        if x_col not in schema:
-            raise ValueError(f"x_col {x_col!r} not found in query_df")
-        if y_col not in schema:
-            raise ValueError(f"y_col {y_col!r} not found in query_df")
         return SpatialLazyFrame(
             self._sf,
             [*self._plan, WithinJoinNode(query_df, x_col, y_col)],
