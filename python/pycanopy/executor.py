@@ -28,7 +28,6 @@ from pycanopy.nodes import (
     WithinDistanceOfPointNode,
     WithinJoinNode,
 )
-from pycanopy.optimizer import _choose_execution_strategy
 
 # Internal column tracking original row positions through scalar filters. Engine results
 # are indices into the original dataset and must correlate with post-filter rows.
@@ -208,19 +207,8 @@ class SpatialExecutor:
             join_node = next(n for n in plan if isinstance(n, _JOIN_TYPES))
             if isinstance(join_node, PolygonKnnJoinNode) and join_node.sorted_output:
                 return self._execute_polygon_knn_sorted(plan, sf)
-            probe_is_deferred = isinstance(join_node.query_df, pl.LazyFrame)
-            probe_rows = None if probe_is_deferred else join_node.query_df.height
-            choice = _choose_execution_strategy(
-                streaming_filter_supported=False,
-                has_join=True,
-                streaming_probe_supported=True,
-                probe_is_deferred=probe_is_deferred,
-                probe_rows=probe_rows,
-                filter_batch_rows=None,
-                probe_batch_rows=morsel,
-            )
-            if choice.strategy == "streaming_probe":
-                frames = list(self._stream_join_frames(plan, sf, morsel))
+            if join_node.query_df.height > morsel:
+                frames = self._stream_join_frames(plan, sf, morsel)
                 return pl.concat(frames, how="vertical", rechunk=False)
 
         # Polygon filters use the direct IO path while point filters can mask native row indices
@@ -274,42 +262,9 @@ class SpatialExecutor:
 
         # Join emitters ignore the incoming lf (they gather from sf.df directly)
         placeholder = sf.df.lazy()
-        query = join_node.query_df
-        if isinstance(query, pl.LazyFrame):
-            query_columns = query.collect_schema().names()
-            if join_node.keep_columns is not None:
-                overlap = set(query_columns) & set(sf.df.columns)
-                keep = set(join_node.keep_columns)
-                scan_columns = [
-                    column
-                    for column in query_columns
-                    if column in keep
-                    or column in overlap
-                    or column in (join_node.x_col, join_node.y_col)
-                ]
-                query = query.select(scan_columns)
-            chunks = query.collect_batches(chunk_size=morsel_rows, maintain_order=True)
-            total_probe_rows = 0
-        else:
-            chunks = query.iter_slices(morsel_rows)
-            total_probe_rows = query.height
-        yielded = False
-        for chunk in chunks:
-            yielded = True
-            if isinstance(query, pl.LazyFrame):
-                total_probe_rows += chunk.height
+        total_probe_rows = join_node.query_df.height
+        for chunk in join_node.query_df.iter_slices(morsel_rows):
             sub = dataclasses.replace(join_node, query_df=chunk, total_probe_rows=total_probe_rows)
-            lf = self._emit_node(sub, sf, placeholder, PluginPath.EXPR)
-            for node in post_nodes:
-                lf = self._emit_node(node, sf, lf, PluginPath.EXPR)
-            out = lf.collect()
-            if projection is not None:
-                out = out.select(list(projection))
-            yield out
-        if not yielded:
-            schema = query.collect_schema() if isinstance(query, pl.LazyFrame) else query.schema
-            empty = pl.DataFrame(schema=schema)
-            sub = dataclasses.replace(join_node, query_df=empty, total_probe_rows=0)
             lf = self._emit_node(sub, sf, placeholder, PluginPath.EXPR)
             for node in post_nodes:
                 lf = self._emit_node(node, sf, lf, PluginPath.EXPR)

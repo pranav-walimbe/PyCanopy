@@ -22,10 +22,6 @@ from pycanopy import (
     point_distance,
     wkb_point_distance,
 )
-from pycanopy.engine import (
-    _extract_query_polygon_rings,
-    _points_within_distance_of_polygon_scan,
-)
 
 
 def _haversine_ref(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
@@ -183,31 +179,6 @@ def test_points_within_distance_of_polygon():
     assert tight == {0}
 
 
-def test_point_polygon_scan_matches_engine_for_holes_and_parts():
-    xs = np.array([0.5, 2.0, 2.0, 5.5, 7.0], dtype=np.float64)
-    ys = np.array([0.5, 2.0, 3.25, 5.5, 7.0], dtype=np.float64)
-    polygon = shapely.MultiPolygon(
-        [
-            shapely.Polygon(
-                [(0, 0), (4, 0), (4, 4), (0, 4)],
-                holes=[[(1, 1), (3, 1), (3, 3), (1, 3)]],
-            ),
-            shapely.box(5, 5, 6, 6),
-        ]
-    )
-    distance = 0.2
-
-    expected = Engine.from_coords(xs, ys).points_within_distance_of_polygon(polygon, distance)
-    actual = _points_within_distance_of_polygon_scan(
-        xs,
-        ys,
-        _extract_query_polygon_rings(polygon),
-        distance,
-    )
-
-    assert actual.tolist() == expected.tolist()
-
-
 def test_convex_hull_area():
     # Corners of a 2x2 square plus an interior point: hull area is 4.
     xs = np.array([0.0, 2.0, 2.0, 0.0, 1.0], dtype=np.float64)
@@ -327,25 +298,6 @@ def test_lazy_polygon_within_distance_join():
     # Point (2, 0.5) is 1.0 from the first square only.
     assert out["pid"].to_list() == [0]
     assert out["qid"].to_list() == [99]
-
-
-def test_lazy_polygon_within_distance_join_accepts_lazy_probe():
-    sf = _poly_frame([(0, 0, 1, 1), (10, 0, 11, 1)])
-    query = pl.DataFrame({"qx": [2.0], "qy": [0.5], "qid": [99]}).lazy()
-    plan = sf.lazy().polygon_within_distance_join(query, "qx", "qy", distance=1.5)
-
-    assert "query_rows=?" in plan.explain()
-    out = plan.collect()
-    assert out["pid"].to_list() == [0]
-    assert out["qid"].to_list() == [99]
-
-
-def test_lazy_polygon_within_distance_join_validates_probe_columns():
-    sf = _poly_frame([(0, 0, 1, 1)])
-    query = pl.DataFrame({"qx": [0.5]}).lazy()
-
-    with pytest.raises(ValueError, match="y_col 'qy'"):
-        sf.lazy().polygon_within_distance_join(query, "qx", "qy", distance=1.0)
 
 
 def test_point_polygon_distance_planner_flips_pairs_and_aggregates():
