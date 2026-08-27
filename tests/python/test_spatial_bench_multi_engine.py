@@ -5,11 +5,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from bench.spatial_bench import __main__ as spatial_bench
 from bench.spatial_bench import driver_utils, report_utils
 from bench.spatial_bench.config import (
     DATASET_VERSION,
     DEFAULT_RUNS,
     INSTANCE_TYPE,
+    MAX_RUNTIME_MINUTES_BY_SCALE_FACTOR,
     PUBLIC_DATA_TEMPLATE,
     QUERY_TIMEOUT_SECONDS,
     REGION,
@@ -43,12 +45,20 @@ def test_config_matches_spatialbench_single_node_protocol():
     assert SUPPORTED_SCALE_FACTORS == (1, 10)
     assert DEFAULT_RUNS == 3
     assert QUERY_TIMEOUT_SECONDS == 1200
+    assert MAX_RUNTIME_MINUTES_BY_SCALE_FACTOR == {1: 60, 10: 180}
     assert REGION == "us-west-2"
     assert INSTANCE_TYPE == "m7i.2xlarge"
     assert PUBLIC_DATA_TEMPLATE.startswith("s3://")
     # The dataset build has to be identifiable from the path
     # The committed answers match only one of them
     assert DATASET_VERSION in PUBLIC_DATA_TEMPLATE
+
+
+@pytest.mark.parametrize(("scale_factor", "minutes"), [(1, 60), (10, 180)])
+def test_user_data_sets_scale_factor_runtime(scale_factor, minutes):
+    script = spatial_bench._user_data("ami-test", "run-test", scale_factor, False, 3, "pycanopy")
+
+    assert f'MAX_RUNTIME_MIN="{minutes}"' in script
 
 
 def test_combine_transports_preserves_requested_engine_order(tmp_path):
