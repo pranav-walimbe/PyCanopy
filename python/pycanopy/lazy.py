@@ -380,61 +380,6 @@ def _stream_deferred_point_filter(sf, strategy: _StreamingPointFilter) -> Iterat
         yield pl.DataFrame(schema=strategy.schema).select(strategy.output_columns)
 
 
-def _deferred_point_lazy_source(sf, batch_size: int | None) -> pl.LazyFrame:
-    # Expose decoded point batches without materializing reusable engine state
-    source = sf._lazy_source
-    chunk_size = source.ingest_batch_size if batch_size is None else batch_size
-    source_schema = sf._lazy_schema()
-    output_schema = pl.Schema(
-        {
-            **dict(source_schema),
-            sf._x_col: pl.Float64,
-            sf._y_col: pl.Float64,
-        }
-    )
-
-    def batches(with_columns, predicate, n_rows, batch_size_hint):
-        # Decode only when projected coordinates or predicates need them
-        requested = output_schema.names() if with_columns is None else list(with_columns)
-        predicate_columns = set() if predicate is None else set(predicate.meta.root_names())
-        coordinate_columns = {sf._x_col, sf._y_col}
-        decode = bool(coordinate_columns & (set(requested) | predicate_columns))
-        required = set(requested) | predicate_columns
-        scan_columns = [column for column in source_schema.names() if column in required]
-        if decode and source.geometry_col not in scan_columns:
-            scan_columns.append(source.geometry_col)
-        produced = 0
-        yielded = False
-        for batch in source.frame.select(scan_columns).collect_batches(
-            chunk_size=chunk_size,
-            maintain_order=True,
-        ):
-            if decode:
-                xs, ys = wkb_points_to_xy(batch[source.geometry_col])
-                batch = batch.with_columns(pl.Series(sf._x_col, xs), pl.Series(sf._y_col, ys))
-            if predicate is not None:
-                batch = batch.filter(predicate)
-            if with_columns is not None:
-                batch = batch.select(with_columns)
-            if n_rows is not None and produced + batch.height > n_rows:
-                batch = batch.head(n_rows - produced)
-            if batch.height:
-                yielded = True
-                produced += batch.height
-                yield batch
-            if n_rows is not None and produced >= n_rows:
-                break
-        if not yielded:
-            schema = (
-                output_schema
-                if with_columns is None
-                else pl.Schema({column: output_schema[column] for column in with_columns})
-            )
-            yield pl.DataFrame(schema=schema)
-
-    return register_io_source(batches, schema=output_schema)
-
-
 class SpatialLazyFrame:
     """Builds a spatial query plan declaratively. Declaration order is not execution order.
 
@@ -838,7 +783,6 @@ class SpatialLazyFrame:
 
         The plan runs morsel by morsel as a Polars IO source, so downstream ops (sort,
         sink_parquet) fuse with the join into one out-of-core pipeline. A one-row probe runs first.
-        A base deferred point source decodes WKB per batch and exposes its coordinate columns.
 
         Args:
             batch_size: Probe rows per morsel. Defaults to MORSEL_ROWS.
@@ -846,9 +790,6 @@ class SpatialLazyFrame:
         Returns:
             A Polars LazyFrame that streams this plan's output.
         """
-        source = self._sf._lazy_source
-        if not self._plan and source is not None and source.geometry_kind == "point":
-            return _deferred_point_lazy_source(self._sf, batch_size)
         sample = next(self.collect_batched(batch_size=1), None)
         schema = sample.schema if sample is not None else pl.Schema({})
 
