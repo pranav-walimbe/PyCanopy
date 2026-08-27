@@ -85,8 +85,10 @@ def _fmt_node(node) -> str:
         flip = ", flip" if node.flip else ""
         return f"WITHIN_DIST_JOIN [dist={node.distance:.4g}, query_rows={len(node.query_df):,}, barrier{flip}]"
     if isinstance(node, PolygonWithinDistanceJoinNode):
-        rows = "?" if isinstance(node.query_df, pl.LazyFrame) else f"{len(node.query_df):,}"
-        return f"POLY_WITHIN_DIST_JOIN [dist={node.distance:.4g}, query_rows={rows}, barrier]"
+        return (
+            f"POLY_WITHIN_DIST_JOIN [dist={node.distance:.4g}, "
+            f"query_rows={len(node.query_df):,}, barrier]"
+        )
     if isinstance(node, PolygonKnnJoinNode):
         return f"POLY_KNN_JOIN [k={node.k}, query_rows={len(node.query_df):,}, barrier]"
     if isinstance(node, PointsWithinDistanceOfPolygonNode):
@@ -653,7 +655,7 @@ class SpatialLazyFrame:
 
     def polygon_within_distance_join(
         self,
-        query_df: pl.DataFrame | pl.LazyFrame,
+        query_df: pl.DataFrame,
         x_col: str,
         y_col: str,
         distance: float,
@@ -664,7 +666,7 @@ class SpatialLazyFrame:
         are query_df's then the Engine df's (conflicting right-side columns prefixed 'right_').
 
         Args:
-            query_df: Eager or lazy frame of query points. Lazy input is consumed in batches.
+            query_df: DataFrame of query points.
             x_col: Column in query_df holding x coordinates.
             y_col: Column in query_df holding y coordinates.
             distance: Maximum Euclidean point-to-polygon distance for a match.
@@ -672,15 +674,6 @@ class SpatialLazyFrame:
         Returns:
             New SpatialLazyFrame with the polygon within-distance join node appended.
         """
-        if not isinstance(query_df, (pl.DataFrame, pl.LazyFrame)):
-            raise TypeError("query_df must be a polars DataFrame or LazyFrame")
-        schema = (
-            query_df.collect_schema() if isinstance(query_df, pl.LazyFrame) else query_df.schema
-        )
-        if x_col not in schema:
-            raise ValueError(f"x_col {x_col!r} not found in query_df")
-        if y_col not in schema:
-            raise ValueError(f"y_col {y_col!r} not found in query_df")
         return SpatialLazyFrame(
             self._sf,
             [*self._plan, PolygonWithinDistanceJoinNode(query_df, x_col, y_col, distance)],

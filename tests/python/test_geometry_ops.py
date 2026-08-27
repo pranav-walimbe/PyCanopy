@@ -329,25 +329,6 @@ def test_lazy_polygon_within_distance_join():
     assert out["qid"].to_list() == [99]
 
 
-def test_lazy_polygon_within_distance_join_accepts_lazy_probe():
-    sf = _poly_frame([(0, 0, 1, 1), (10, 0, 11, 1)])
-    query = pl.DataFrame({"qx": [2.0], "qy": [0.5], "qid": [99]}).lazy()
-    plan = sf.lazy().polygon_within_distance_join(query, "qx", "qy", distance=1.5)
-
-    assert "query_rows=?" in plan.explain()
-    out = plan.collect()
-    assert out["pid"].to_list() == [0]
-    assert out["qid"].to_list() == [99]
-
-
-def test_lazy_polygon_within_distance_join_validates_probe_columns():
-    sf = _poly_frame([(0, 0, 1, 1)])
-    query = pl.DataFrame({"qx": [0.5]}).lazy()
-
-    with pytest.raises(ValueError, match="y_col 'qy'"):
-        sf.lazy().polygon_within_distance_join(query, "qx", "qy", distance=1.0)
-
-
 def test_point_polygon_distance_planner_flips_pairs_and_aggregates():
     polygons = [shapely_box(i * 10, 0, i * 10 + 1, 1) for i in range(600)]
     hit_xs = np.arange(600, dtype=np.float64) * 10 + 0.5
