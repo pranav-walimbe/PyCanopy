@@ -159,6 +159,16 @@ def test_polygon_self_intersection_and_iou():
     assert abs(iou - (1.0 / 7.0)) < 1e-9  # 1 / (4 + 4 - 1)
 
 
+def test_polygon_pair_area_rejects_out_of_range_indices():
+    eng = _poly_engine([(0, 0, 1, 1)])
+
+    with pytest.raises(ValueError, match="less than the polygon count"):
+        eng.polygon_pairs_intersection_area(
+            np.array([0], dtype=np.uint32),
+            np.array([1], dtype=np.uint32),
+        )
+
+
 def test_disjoint_polygons_have_no_intersection_pairs():
     eng = _poly_engine([(0, 0, 1, 1), (10, 10, 11, 11)])
     pairs = eng.polygon_intersects_self_join().reshape(-1, 2)
@@ -212,6 +222,14 @@ def test_group_convex_hull_areas_matches_scalar():
         assert abs(batch[i] - expected) < 1e-9, f"group {i}: batch={batch[i]} scalar={expected}"
 
 
+def test_group_convex_hull_areas_rejects_mismatched_coordinates():
+    xs = pl.Series([[0.0, 1.0, 0.0]])
+    ys = pl.Series([[0.0]])
+
+    with pytest.raises(ValueError, match="xs and ys must have the same length"):
+        Engine.group_convex_hull_areas(xs, ys)
+
+
 def test_wkb_point_distance():
     # 3-4-5 right triangle: distance should be exactly 5.0
     pts_a = pl.Series(shapely.to_wkb([shapely.Point(0.0, 0.0), shapely.Point(0.0, 0.0)]))
@@ -262,6 +280,38 @@ def test_point_distance_accepts_polars_columns():
     df = pl.DataFrame({"x": [0.0, 1.0], "y": [0.0, 1.0]})
     dists = point_distance(df["x"], df["y"], df["x"], df["y"], "planar")
     assert np.allclose(dists, [0.0, 0.0])
+
+
+@pytest.mark.parametrize("coordinate_system", ["planar", "geographic"])
+def test_point_distance_rejects_mismatched_coordinate_lengths(coordinate_system):
+    with pytest.raises(ValueError, match="all coordinate arrays must have the same length"):
+        point_distance(
+            np.array([0.0, 1.0]),
+            np.array([0.0, 1.0]),
+            np.array([0.0]),
+            np.array([0.0]),
+            coordinate_system,
+        )
+
+
+@pytest.mark.parametrize("coordinate_system", ["planar", "geographic"])
+def test_distance_to_point_rejects_mismatched_coordinate_lengths(coordinate_system):
+    with pytest.raises(ValueError, match="same length"):
+        distance_to_point(
+            np.array([0.0, 1.0]),
+            np.array([0.0]),
+            0.0,
+            0.0,
+            coordinate_system,
+        )
+
+
+def test_wkb_point_distance_rejects_mismatched_lengths():
+    left = pl.Series(shapely.to_wkb([shapely.Point(0, 0), shapely.Point(1, 1)]))
+    right = pl.Series(shapely.to_wkb([shapely.Point(0, 0)]))
+
+    with pytest.raises(ValueError, match="all coordinate arrays must have the same length"):
+        wkb_point_distance(left, right)
 
 
 def test_point_distance_rejects_unknown_coordinate_system():
