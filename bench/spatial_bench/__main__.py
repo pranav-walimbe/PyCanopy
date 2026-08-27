@@ -20,7 +20,7 @@ from bench.spatial_bench.config import (
     ENGINE_IDS,
     INSTANCE_PROFILE,
     INSTANCE_TYPE,
-    MAX_RUNTIME_MINUTES,
+    MAX_RUNTIME_MINUTES_BY_SCALE_FACTOR,
     POLL_SECONDS,
     PROFILE_VARIANTS,
     PROJECT_TAG,
@@ -79,7 +79,7 @@ def _user_data(
         "REPO_BRANCH": REPOSITORY_BRANCH,
         "SCALE_FACTOR": str(scale_factor),
         "DATA_ROOT": PUBLIC_DATA_TEMPLATE.format(scale_factor=scale_factor),
-        "MAX_RUNTIME_MIN": str(MAX_RUNTIME_MINUTES),
+        "MAX_RUNTIME_MIN": str(MAX_RUNTIME_MINUTES_BY_SCALE_FACTOR[scale_factor]),
         "PROFILE_MODE": "1" if profile else "0",
         "PROFILE_VARIANT": variant,
         "ENGINE": engine,
@@ -171,10 +171,17 @@ def _emit_progress(s3, run_id: str, seen: int, engine: str) -> int:
     return len(lines)
 
 
-def _wait_for_success(s3, ec2, run_id: str, instance_id: str, engine: str = "pycanopy") -> bool:
+def _wait_for_success(
+    s3,
+    ec2,
+    run_id: str,
+    instance_id: str,
+    max_runtime_minutes: int,
+    engine: str = "pycanopy",
+) -> bool:
     # Poll S3 for the _SUCCESS marker until it appears or the box dies or the deadline passes
     key = f"{RESULT_KEY_PREFIX}/{run_id}/_SUCCESS"
-    deadline = time.monotonic() + (MAX_RUNTIME_MINUTES + 15) * 60
+    deadline = time.monotonic() + (max_runtime_minutes + 15) * 60
     seen = 0
     while time.monotonic() < deadline:
         seen = _emit_progress(s3, run_id, seen, engine)
@@ -301,8 +308,17 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             )
         with ThreadPoolExecutor(max_workers=len(instances)) as executor:
+            max_runtime_minutes = MAX_RUNTIME_MINUTES_BY_SCALE_FACTOR[scale_factor]
             futures = {
-                node: executor.submit(_wait_for_success, s3, ec2, run_id, instance_id, node)
+                node: executor.submit(
+                    _wait_for_success,
+                    s3,
+                    ec2,
+                    run_id,
+                    instance_id,
+                    max_runtime_minutes,
+                    node,
+                )
                 for node, (run_id, instance_id) in instances.items()
             }
             statuses = {node: future.result() for node, future in futures.items()}
