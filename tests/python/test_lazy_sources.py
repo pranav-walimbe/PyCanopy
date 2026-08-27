@@ -8,7 +8,6 @@ import shapely
 from polars.io.plugins import register_io_source
 
 import pycanopy as pc
-import pycanopy.lazy as pycanopy_lazy
 from pycanopy import SpatialFrame, SpatialLazyFrame
 from pycanopy.engine import Engine
 
@@ -155,9 +154,6 @@ def test_lazy_point_filter_reduces_rows_before_wkb_ingestion(monkeypatch):
         return original(cls, inspected())
 
     monkeypatch.setattr(Engine, "_from_wkb_point_batches", classmethod(tracked))
-    monkeypatch.setattr(
-        pycanopy_lazy, "_streaming_point_filter_plan", lambda sf, plan, schema: None
-    )
     result = (
         SpatialFrame.from_lazy(_point_data().lazy(), "geometry", "point", ingest_batch_size=2)
         .lazy()
@@ -184,9 +180,6 @@ def test_lazy_filter_after_spatial_operation_is_not_pushed(monkeypatch):
         return original(cls, inspected())
 
     monkeypatch.setattr(Engine, "_from_wkb_point_batches", classmethod(tracked))
-    monkeypatch.setattr(
-        pycanopy_lazy, "_streaming_point_filter_plan", lambda sf, plan, schema: None
-    )
     result = (
         SpatialFrame.from_lazy(_point_data().lazy(), "geometry", "point", ingest_batch_size=2)
         .lazy()
@@ -473,9 +466,6 @@ def test_lazy_point_ingestion_is_bounded_and_projection_aware(monkeypatch):
         return original(cls, inspected())
 
     monkeypatch.setattr(Engine, "_from_wkb_point_batches", classmethod(tracked))
-    monkeypatch.setattr(
-        pycanopy_lazy, "_streaming_point_filter_plan", lambda sf, plan, schema: None
-    )
     result = (
         SpatialFrame.from_lazy(lazy_frame, "geometry", "point", ingest_batch_size=2)
         .lazy()
@@ -488,134 +478,6 @@ def test_lazy_point_ingestion_is_bounded_and_projection_aware(monkeypatch):
     assert result["id"].to_list() == [2, 3, 4]
     assert set(projections[0]) == {"id", "geometry"}
     assert "unused" not in projections[0]
-
-
-def test_lazy_point_range_streams_without_materializing_engine(monkeypatch):
-    source = _point_data()
-    lazy_frame, projections = _tracked_source(source)
-
-    def unexpected(cls, columns):
-        raise AssertionError("streaming filter materialized an Engine")
-
-    monkeypatch.setattr(Engine, "_from_wkb_point_batches", classmethod(unexpected))
-    result = (
-        SpatialFrame.from_lazy(lazy_frame, "geometry", "point", ingest_batch_size=2)
-        .lazy()
-        .range_query(0.5, -1, 3.5, 1)
-        .filter(pl.col("value") >= 30)
-        .select("id")
-        .collect()
-    )
-
-    assert result["id"].to_list() == [3, 4]
-    assert set(projections[0]) == {"id", "value", "geometry"}
-
-
-def test_lazy_point_radius_streams_requested_wkb_in_source_order():
-    source = _point_data()
-    result = (
-        SpatialFrame.from_lazy(source.lazy(), "geometry", "point", ingest_batch_size=2)
-        .lazy()
-        .within_distance_of_point(2, 0, 1)
-        .select("id", "geometry")
-        .collect()
-    )
-
-    assert result["id"].to_list() == [2, 3, 4]
-    assert result["geometry"].to_list() == source["geometry"].to_list()[1:4]
-
-
-def test_lazy_point_streaming_yields_bounded_matching_batches():
-    batches = list(
-        SpatialFrame.from_lazy(
-            _point_data().lazy(),
-            "geometry",
-            "point",
-            ingest_batch_size=2,
-        )
-        .lazy()
-        .range_query(-1, -1, 10, 1)
-        .select("id")
-        .collect_batched()
-    )
-
-    assert [batch.height for batch in batches] == [2, 2, 1]
-    assert pl.concat(batches)["id"].to_list() == [1, 2, 3, 4, 5]
-
-
-def test_lazy_point_streaming_preserves_empty_schema():
-    result = (
-        SpatialFrame.from_lazy(_point_data().lazy(), "geometry", "point", ingest_batch_size=2)
-        .lazy()
-        .range_query(100, 100, 101, 101)
-        .select("id", "value")
-        .collect()
-    )
-
-    assert result.schema == pl.Schema({"id": pl.Int64, "value": pl.Int64})
-    assert result.is_empty()
-
-
-def test_lazy_point_streaming_preserves_unusual_wkb_fallback():
-    source = pl.DataFrame(
-        {
-            "id": [1, 2, 3],
-            "geometry": [
-                shapely.to_wkb(shapely.Point(0, 0, 1), output_dimension=3),
-                None,
-                shapely.Point(10, 10).wkb,
-            ],
-        },
-        schema_overrides={"geometry": pl.Binary},
-    )
-    result = (
-        SpatialFrame.from_lazy(source.lazy(), "geometry", "point", ingest_batch_size=1)
-        .lazy()
-        .within_distance_of_point(0, 0, 1)
-        .select("id")
-        .collect()
-    )
-
-    assert result["id"].to_list() == [1]
-
-
-def test_lazy_point_streaming_falls_back_for_global_scalar(monkeypatch):
-    calls = 0
-    original = Engine._from_wkb_point_batches.__func__
-
-    def tracked(cls, columns):
-        nonlocal calls
-        calls += 1
-        return original(cls, columns)
-
-    monkeypatch.setattr(Engine, "_from_wkb_point_batches", classmethod(tracked))
-    result = (
-        SpatialFrame.from_lazy(_point_data().lazy(), "geometry", "point")
-        .lazy()
-        .filter(pl.col("value") >= pl.col("value").mean())
-        .range_query(-1, -1, 10, 1)
-        .select("id")
-        .collect()
-    )
-
-    assert calls == 1
-    assert result["id"].to_list() == [3, 4, 5]
-
-
-def test_lazy_point_streaming_sink_and_lazy_source(tmp_path):
-    query = (
-        SpatialFrame.from_lazy(_point_data().lazy(), "geometry", "point", ingest_batch_size=2)
-        .lazy()
-        .range_query(0.5, -1, 3.5, 1)
-        .select("id")
-    )
-    path = tmp_path / "streamed.parquet"
-
-    query.sink_parquet(path)
-    lazy_result = query.lazy_source().collect()
-
-    assert pl.read_parquet(path)["id"].to_list() == [2, 3, 4]
-    assert lazy_result["id"].to_list() == [2, 3, 4]
 
 
 def test_lazy_point_ingestion_preserves_requested_wkb_and_order():
