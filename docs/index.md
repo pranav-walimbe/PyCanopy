@@ -1,12 +1,11 @@
 # PyCanopy
 
-A declarative spatial query layer for Polars. Rust core, Python API.
+A declarative spatial query layer for Polars.
 
 ## What is PyCanopy
 
-PyCanopy adds spatial filters, nearest-neighbour queries, joins, and grouped aggregations to Polars
-DataFrames. Its lazy query planner combines Polars expressions with native Rust spatial kernels and
-uses workload statistics to choose an execution strategy and spatial index.
+PyCanopy lets you filter, search, join, and aggregate spatial data stored in Polars DataFrames. It
+automatically chooses how to execute each query and whether a spatial index would help.
 
 ## Why PyCanopy
 

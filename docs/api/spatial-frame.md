@@ -39,20 +39,13 @@ events = SpatialFrame.scan_parquet(
 )
 ```
 
-No source rows are collected and no spatial engine is built until query collection. A terminal
-PyCanopy `.select(...)` narrows the source scan. A safe leading sequence of scalar filters and an
-optional limit are also pushed into the lazy source before geometry is decoded. WKB is always read
-for the rows used to construct native geometry, but it remains in the tabular result only when
-selected. Without an explicit select, all source columns, including geometry, are returned.
+At collection, eligible filters, limits, and projections are pushed into the lazy source before WKB
+is decoded in ordered batches. Geometry is read for every surviving row but is returned as a column
+only when selected. Without `.select()`, all source columns are returned.
 
-Projected input is decoded in ordered batches into native point or polygon buffers. A WKB batch can
-be released after decoding unless the geometry column is part of the requested output. The
-completed engine still holds the full native geometry dataset, while selected attributes remain as
-chunked Polars columns. Blocking operations in the supplied `LazyFrame`, such as a global sort, may
-still materialize upstream.
-
-`ingest_batch_size` defaults to 32,768 rows. Smaller values reduce temporary geometry memory.
-Larger values may improve throughput for inexpensive geometries.
+The complete native geometry dataset is built before spatial execution. `ingest_batch_size`
+controls decode batch size and defaults to 32,768 rows. Blocking operations already present in the
+supplied `LazyFrame` may still materialize their input.
 
 ## Inspecting GeoParquet metadata
 

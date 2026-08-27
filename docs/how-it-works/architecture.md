@@ -3,14 +3,12 @@
 PyCanopy is a spatial query layer around Polars rather than a replacement DataFrame engine.
 
 ```mermaid
-flowchart LR
-    U["SpatialFrame.lazy()<br/>declarative query"] --> P["Spatial plan<br/>Python"]
-    P --> O["Optimizer<br/>order, fusion, projection"]
-    O --> E["Executor<br/>physical path"]
-    E --> PL["Polars<br/>scan, filter, gather, output"]
-    E --> R["Rust engine<br/>geometry, indexes, kernels"]
-    PL --> OUT["Polars DataFrame<br/>or streamed sink"]
-    R --> OUT
+flowchart TB
+    Q["1. Declare a spatial query<br/>with the Polars-like Python API"]
+    P["2. Build and optimize<br/>an immutable spatial plan"]
+    E["3. Execute together<br/>Polars handles tables · Rust handles spatial work"]
+    O["4. Return a Polars DataFrame<br/>or stream results to a sink"]
+    Q --> P --> E --> O
 ```
 
 ## Design boundaries
@@ -37,21 +35,12 @@ result = (
 ```
 
 ```mermaid
-sequenceDiagram
-    participant User
-    participant Plan as SpatialLazyFrame
-    participant Opt as Optimizer
-    participant Rust as Rust engine
-    participant Polars
-
-    User->>Plan: declare join, filter, projection
-    User->>Plan: collect()
-    Plan->>Opt: immutable plan
-    Opt->>Opt: preserve join barrier and push projection
-    Opt->>Rust: execute point-in-polygon join
-    Rust-->>Polars: query and target row indices
-    Polars->>Polars: gather narrow columns and apply fare filter
-    Polars-->>User: result DataFrame
+flowchart TB
+    PLAN["Declared plan<br/>join → fare filter → projection"]
+    OPT["Optimized plan<br/>preserve join barrier · narrow gathered columns"]
+    JOIN["Rust spatial join<br/>return query and target row indices"]
+    RESULT["Polars<br/>gather columns · filter fare · build result"]
+    PLAN --> OPT --> JOIN --> RESULT
 ```
 
 ## Design philosophy

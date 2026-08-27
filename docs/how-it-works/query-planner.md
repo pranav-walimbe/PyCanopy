@@ -4,14 +4,12 @@ Every `SpatialLazyFrame` method appends an immutable node. Declaration order is 
 optimizer, not necessarily execution order.
 
 ```mermaid
-flowchart LR
-    API["lazy API calls"] --> RAW["logical node list"]
-    RAW --> SRC["deferred-source preparation"]
-    SRC --> SEL["estimate filter selectivity and cost"]
-    SEL --> SORT["reorder within barriers"]
-    SORT --> FUSE["fuse eligible spatial filters"]
-    FUSE --> JOIN["choose supported join orientation"]
-    JOIN --> PHY["physical execution plan"]
+flowchart TB
+    RAW["1. Logical plan<br/>immutable nodes in declaration order"]
+    SRC["2. Prepare the source<br/>push down eligible filters, limits, and columns"]
+    OPT["3. Optimize spatial work<br/>estimate · reorder · fuse · orient joins"]
+    PHY["4. Physical plan<br/>ready for the executor"]
+    RAW --> SRC --> OPT --> PHY
 ```
 
 ## Plan nodes
