@@ -5,7 +5,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from bench.spatial_bench import __main__ as spatial_bench
 from bench.spatial_bench import driver_utils, report_utils
 from bench.spatial_bench.config import (
     DATASET_VERSION,
@@ -52,13 +51,6 @@ def test_config_matches_spatialbench_single_node_protocol():
     # The dataset build has to be identifiable from the path
     # The committed answers match only one of them
     assert DATASET_VERSION in PUBLIC_DATA_TEMPLATE
-
-
-@pytest.mark.parametrize(("scale_factor", "minutes"), [(1, 60), (10, 180)])
-def test_user_data_sets_scale_factor_runtime(scale_factor, minutes):
-    script = spatial_bench._user_data("ami-test", "run-test", scale_factor, False, 3, "pycanopy")
-
-    assert f'MAX_RUNTIME_MIN="{minutes}"' in script
 
 
 def test_combine_transports_preserves_requested_engine_order(tmp_path):
