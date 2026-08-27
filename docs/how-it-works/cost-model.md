@@ -1,104 +1,114 @@
-# Cost Model & Index Selection
+# Cost Model and Automatic Indexing
 
-## Index types
+Automatic indexing answers two separate questions:
 
-PyCanopy chooses among four spatial access paths:
+1. Which access structure fits this geometry and query?
+2. Is building it cheaper than scanning or reusing an existing index?
 
-| Index | Best for |
-|:------|:---------|
-| KD-tree | Point kNN and range queries over clustered point data |
-| R-tree | Polygon queries and bounding-box searches |
-| Grid | Range and distance queries over uniformly distributed points |
-| Brute force | Small datasets or queries expected to scan or return much of the dataset |
+```mermaid
+flowchart LR
+    Q["query shape and probe count"] --> CAND["candidate index rules"]
+    ST["dataset statistics"] --> CAND
+    CAND --> COST["calibrated cost comparison"]
+    BUILT["already-built indexes"] --> COST
+    COST --> WIN["scan, reuse, or build"]
+```
 
-## Index mode
+## Access paths
 
-`index_mode` is set on `SpatialFrame` construction and can later be changed through
-`sf.engine.set_index_mode(...)`.
+| Access path | Typical role |
+|:------------|:-------------|
+| Parallel scan | Small inputs, broad queries, or index builds that cannot repay their cost |
+| Grid | Range and distance workloads over uniform point data |
+| KD-tree | Point kNN and non-uniform point range workloads |
+| R-tree | Polygon bounds, polygon queries, and polygon kNN candidates |
 
-| Mode | Behavior |
-|:-----|:----------|
-| `auto` (default) | Build index only when the cost model says it beats a scan |
-| `eager` | Use the rule-selected access path without comparing its estimated cost with a scan |
-| `none` | Always scan brute-force |
+These are candidates rather than promises. In `auto` mode, a query can still choose a scan even
+when an index type fits its shape.
 
-## Candidate index selection
+## Statistics collected once
 
-When the engine considers building a new index, `select_index` applies these rules to pick
-the candidate type:
+```mermaid
+flowchart TB
+    GEO["native geometry"] --> N["row count"]
+    GEO --> EXT["dataset extent"]
+    GEO --> DIST["point distribution"]
+    GEO --> HIST["32 x 32 spatial histogram"]
+    N --> PLAN["index planner"]
+    EXT --> PLAN
+    DIST --> PLAN
+    HIST --> PLAN
+```
+
+- Row count gates index work on small datasets
+- Extent provides a fallback area-based selectivity estimate
+- Grid-cell variation classifies point data as uniform or clustered
+- The histogram estimates range-query output more accurately than extent area alone
+- Polygon histograms bin each polygon by its exterior-ring centroid
+
+## Candidate selection
 
 ```mermaid
 flowchart TD
-    A[Query arrives] --> B{N < 500\nor sel > 50%?}
-    B -- yes --> BF[Brute force]
-    B -- no --> C{kNN with\nk/N > 10%?}
-    C -- yes --> BF
-    C -- no --> D{Polygon\ndataset?}
-    D -- yes --> RT[R-tree]
-    D -- no --> E{Range query\nand uniform?}
-    E -- yes --> GR[Grid]
-    E -- no --> KD[KD-tree]
+    A["query"] --> SMALL{"small input or broad result?"}
+    SMALL -- yes --> SCAN["parallel scan"]
+    SMALL -- no --> KIND{"geometry kind"}
+    KIND -- polygon --> RT["R-tree"]
+    KIND -- point --> OP{"operation"}
+    OP -- kNN --> KD["KD-tree"]
+    OP -- range or distance --> DIST{"uniform distribution?"}
+    DIST -- yes --> GRID["Grid"]
+    DIST -- no --> KD
 ```
 
-Point distribution is classified from variation in grid-cell counts. A separate 32×32
-histogram estimates range selectivity; polygon histograms count exterior-ring centroids.
+The exact gates are implementation details. The important boundary is that rule-based candidate
+selection happens before the calibrated scan/build/reuse comparison.
 
-In `auto` mode, cached indexes are also candidates and their build cost is already paid.
+## Cost comparison
 
-## Cost gate
+For query count $Q$, dataset size $N$, and estimated selectivity $s$:
 
-When `index_mode="auto"`, the planner compares the applicable costs and picks the minimum
-($Q$ = probe count, $N$ = dataset size):
+```mermaid
+flowchart TB
+    NEW["new candidate"] --> NC["build cost + Q x probe cost"]
+    OLD["built index"] --> OC["Q x probe cost"]
+    SCAN["parallel scan"] --> SC["Q x N x scan factor"]
+    NC --> MIN["lowest estimated total"]
+    OC --> MIN
+    SC --> MIN
+```
 
-$$
-\text{winner} = \arg\min \begin{cases}
-\text{Cost}_{\text{probe}}(\text{each built index}) & \text{build already paid} \\
-\text{Cost}_{\text{build}} + \text{Cost}_{\text{probe}}(\text{best new index}) \\
-\text{Cost}_{\text{probe}}(\text{brute force})
-\end{cases}
-$$
+- Grid build cost grows approximately with $N$
+- KD-tree and R-tree build costs grow approximately with $N\log_2N$
+- Tree probes include traversal plus expected result work
+- Grid probes scale mainly with expected result work
+- A built index has zero remaining build cost and competes on probe cost alone
 
-**Selectivity** (fraction of $N$ expected to match):
+The model predicts relative choices, not user-visible runtime. File reads, Polars expressions, row
+gathers, and result materialization sit outside these native index estimates.
 
-$$
-\text{sel} = \begin{cases}
-\text{hist}(\text{bbox}) / N & \text{range query (32×32 histogram)} \\
-k / N & \text{kNN} \\
-1 / N & \text{contains}
-\end{cases}
-$$
+## Index modes
 
-**Probe cost** ($Q$ warm queries against a built index):
+| Mode | Planner behavior |
+|:-----|:-----------------|
+| `auto` | Compare scan, built indexes, and the best new candidate |
+| `eager` | Use the rule-selected candidate without the scan cost gate |
+| `none` | Always use the parallel scan |
 
-$$
-\text{Cost}_{\text{probe}} = Q \times \begin{cases}
-N \cdot c_{\text{scan}} & \text{brute force} \\
-(\log_2 N + \text{sel} \cdot N) \cdot c_{\text{tree}} & \text{KD-tree or R-tree} \\
-\text{sel} \cdot N \cdot c_{\text{grid}} & \text{grid}
-\end{cases}
-$$
-
-**Build cost** (paid once and compared with the probe cost for all $Q$ queries):
-
-$$
-\text{Cost}_{\text{build}} = \begin{cases}
-0 & \text{brute force} \\
-N \cdot c_{\text{build}} & \text{grid} \\
-N \log_2 N \cdot c_{\text{build}} & \text{KD-tree or R-tree}
-\end{cases}
-$$
+Explicit native index modes also exist on the low-level `Engine` for testing and calibration.
 
 ## Calibration
 
-The formulas above use generic names for readability. The operation-specific constants in
-`src/planner/calibration.rs` can be recalibrated with:
+Planner factors come from release-mode native Engine timings across synthetic point and polygon
+workloads.
 
 ```bash
-uv run python -m bench.ops
-
-# Optional timing repetitions and random seed
-uv run python -m bench.ops --runs 5 --seed 42
+make tune-engine
 ```
 
-The suite normalizes timings across point and polygon dataset sizes and reports the median
-ratio. Use a release build when calibrating for target hardware.
+- Build and probe stages use Rust metrics rather than Python wall time
+- Multiple sizes, selectivities, distributions, and k values contribute to the fit
+- The resulting factors are stored in `python/pycanopy/cost_profiles/default.json`
+- Python and Rust use the same bundled profile
+
+See `bench/ops/README.md` in the repository for the calibration harness and dry-run command.
