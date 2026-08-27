@@ -79,6 +79,17 @@ class SelectNode:
 
 
 @dataclass
+class CountNode:
+    """Terminal marker collapsing the result to its matching row count.
+
+    Carries an empty projection so a deferred source reads geometry alone and no
+    attribute column is retained. Must be the last node in a plan.
+    """
+
+    columns: tuple[str, ...] = ()
+
+
+@dataclass
 class KnnJoinNode:
     """Spatial join: for each row in query_df find k nearest in Engine's dataset.
 

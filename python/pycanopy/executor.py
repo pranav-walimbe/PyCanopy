@@ -12,6 +12,7 @@ import polars as pl
 
 from pycanopy.nodes import (
     ContainsNode,
+    CountNode,
     FusedSpatialNode,
     IntersectsSelfJoinNode,
     KnnJoinNode,
@@ -159,6 +160,8 @@ class SpatialExecutor:
 
     def _extract_projection(self, plan: Plan) -> tuple[tuple[str, ...] | None, Plan]:
         # Split a trailing SelectNode off the plan and push its keep-set onto join nodes
+        if plan and isinstance(plan[-1], CountNode):
+            return None, plan[:-1]
         if not plan or not isinstance(plan[-1], SelectNode):
             return None, plan
         output_columns = plan[-1].columns

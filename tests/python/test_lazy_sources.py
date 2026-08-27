@@ -648,3 +648,61 @@ def test_lazy_polygon_frame_gains_no_coordinate_columns():
 
     assert "_x" not in result.columns
     assert "_y" not in result.columns
+
+
+def test_count_matches_the_collected_height():
+    source = _point_data()
+    query = SpatialFrame.from_lazy(source.lazy(), "geometry", "point").lazy()
+
+    assert query.range_query(-1, -1, 2.5, 1).count() == 3
+
+
+def test_count_reads_geometry_alone(monkeypatch):
+    source = _point_data()
+    lazy_frame, projections = _tracked_source(source)
+
+    count = (
+        SpatialFrame.from_lazy(lazy_frame, "geometry", "point")
+        .lazy()
+        .range_query(-1, -1, 2.5, 1)
+        .count()
+    )
+
+    assert count == 3
+    assert projections == [["geometry"]]
+
+
+def test_count_still_reads_columns_a_preceding_filter_needs():
+    source = _point_data()
+
+    count = (
+        SpatialFrame.from_lazy(source.lazy(), "geometry", "point")
+        .lazy()
+        .filter(pl.col("value") >= 30)
+        .range_query(-1, -1, 3.5, 1)
+        .count()
+    )
+
+    assert count == 2
+
+
+def test_count_on_an_eager_frame_matches_the_selected_height():
+    source = _point_data()
+    sf = SpatialFrame.from_wkb_points(source, "geometry")
+
+    plan = sf.lazy().range_query(-1, -1, 2.5, 1)
+
+    assert plan.count() == plan.select("id").collect().height
+
+
+def test_count_returns_zero_when_nothing_matches():
+    source = _point_data()
+
+    count = (
+        SpatialFrame.from_lazy(source.lazy(), "geometry", "point")
+        .lazy()
+        .range_query(100, 100, 200, 200)
+        .count()
+    )
+
+    assert count == 0
