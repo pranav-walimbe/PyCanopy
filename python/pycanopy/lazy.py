@@ -91,7 +91,9 @@ def _fmt_node(node) -> str:
             f"dist={node.distance:.4g}, sel={node.selectivity:.3g}]"
         )
     if isinstance(node, IntersectsSelfJoinNode):
-        return "INTERSECTS_SELF_JOIN [pairs, barrier]"
+        if node.key_col is None:
+            return "INTERSECTS_SELF_JOIN [pairs, barrier]"
+        return f"INTERSECTS_SELF_JOIN [pairs, key={node.key_col}, barrier]"
     return f"UNKNOWN [{type(node).__name__}]"
 
 
@@ -218,7 +220,8 @@ def _source_columns_for_plan(plan: Plan, schema: pl.Schema) -> set[str] | None:
     # Return source columns needed during execution, or None when all columns are output
     if not plan or not isinstance(plan[-1], (SelectNode, CountNode)):
         if plan and isinstance(plan[-1], IntersectsSelfJoinNode):
-            return set()
+            key_col = plan[-1].key_col
+            return set() if key_col is None else {key_col}
         return None
 
     body = plan[:-1]
@@ -555,13 +558,18 @@ class SpatialLazyFrame:
             [*self._plan, WithinDistanceOfPointNode(cx, cy, distance)],
         )
 
-    def intersects_pairs(self) -> SpatialLazyFrame:
+    def intersects_pairs(self, key_col: str | None = None) -> SpatialLazyFrame:
         """Find all intersecting polygon pairs with overlap area and IoU (polygon dataset).
+
+        Args:
+            key_col: Optional column name whose values replace the positional left/right
+                indices. Output columns are named ``{key_col}_1`` and ``{key_col}_2``, and
+                each pair is canonicalized so the smaller key value appears in ``_1``.
 
         Returns:
             New SpatialLazyFrame with the intersects self-join node appended.
         """
-        return SpatialLazyFrame(self._sf, [*self._plan, IntersectsSelfJoinNode()])
+        return SpatialLazyFrame(self._sf, [*self._plan, IntersectsSelfJoinNode(key_col)])
 
     def explain(self) -> str:
         """Return the physical plan, or the logical plan for a deferred source.

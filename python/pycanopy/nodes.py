@@ -189,8 +189,11 @@ class IntersectsSelfJoinNode:
     """Spatial self-join: all intersecting polygon pairs with overlap area and IoU.
 
     Polygon datasets only. A terminal barrier that produces a pair frame (left, right,
-    area_left, area_right, overlap_area, iou) rather than a row subset.
+    area_left, area_right, overlap_area, iou) rather than a row subset. A key_col
+    replaces the positional indices and names its columns key_1 and key_2.
     """
+
+    key_col: str | None = None
 
 
 @dataclass

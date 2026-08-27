@@ -706,3 +706,89 @@ def test_count_returns_zero_when_nothing_matches():
     )
 
     assert count == 0
+
+
+def _keyed_polygon_source(keys, dtype) -> pl.DataFrame:
+    boxes = [shapely.box(0, 0, 2, 2), shapely.box(1, 1, 3, 3), shapely.box(1.5, 1.5, 4, 4)]
+    return pl.DataFrame(
+        {"key": keys, "unused": list(range(3)), "geometry": [b.wkb for b in boxes]},
+        schema={"key": dtype, "unused": pl.Int64, "geometry": pl.Binary},
+    )
+
+
+@pytest.mark.parametrize(
+    ("keys", "dtype"),
+    [([30, 10, 20], pl.Int64), (["c", "a", "b"], pl.String)],
+)
+def test_lazy_intersects_pairs_key_col_matches_the_eager_frame(keys, dtype):
+    source = _keyed_polygon_source(keys, dtype)
+    eager = SpatialFrame.from_wkb_polygons(source, "geometry").intersects_pairs(key_col="key")
+
+    deferred = (
+        SpatialFrame.from_lazy(source.lazy(), "geometry", "polygon")
+        .lazy()
+        .intersects_pairs("key")
+        .collect()
+    )
+
+    assert deferred.schema == eager.schema
+    assert deferred.equals(eager)
+
+
+@pytest.mark.parametrize("dtype", [pl.Int64, pl.String])
+def test_lazy_intersects_pairs_key_col_keeps_the_empty_schema(dtype):
+    keys = [1, 2] if dtype == pl.Int64 else ["a", "b"]
+    source = pl.DataFrame(
+        {
+            "key": keys,
+            "geometry": [shapely.box(0, 0, 1, 1).wkb, shapely.box(10, 10, 11, 11).wkb],
+        },
+        schema={"key": dtype, "geometry": pl.Binary},
+    )
+    eager = SpatialFrame.from_wkb_polygons(source, "geometry").intersects_pairs(key_col="key")
+
+    deferred = (
+        SpatialFrame.from_lazy(source.lazy(), "geometry", "polygon")
+        .lazy()
+        .intersects_pairs("key")
+        .collect()
+    )
+
+    assert deferred.height == 0
+    assert deferred.schema == eager.schema
+
+
+def test_lazy_intersects_pairs_without_a_key_stays_positional():
+    source = _keyed_polygon_source([30, 10, 20], pl.Int64)
+
+    deferred = (
+        SpatialFrame.from_lazy(source.lazy(), "geometry", "polygon")
+        .lazy()
+        .intersects_pairs()
+        .collect()
+    )
+
+    assert deferred.columns[:2] == ["left", "right"]
+
+
+def test_lazy_intersects_pairs_reads_only_the_key_column(monkeypatch):
+    source = _keyed_polygon_source([30, 10, 20], pl.Int64)
+    lazy_frame, projections = _tracked_source(source)
+
+    result = (
+        SpatialFrame.from_lazy(lazy_frame, "geometry", "polygon")
+        .lazy()
+        .intersects_pairs("key")
+        .collect()
+    )
+
+    assert result.height == 3
+    assert projections == [["key", "geometry"]]
+
+
+def test_lazy_intersects_pairs_key_appears_in_the_plan():
+    source = _keyed_polygon_source([30, 10, 20], pl.Int64)
+    plan = SpatialFrame.from_lazy(source.lazy(), "geometry", "polygon").lazy()
+
+    assert "key=key" in plan.intersects_pairs("key").explain()
+    assert "key=" not in plan.intersects_pairs().explain()
