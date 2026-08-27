@@ -1228,7 +1228,14 @@ pub fn par_points_within_distance_of_polygon<I: SpatialIndex + Sync>(
     poly_offsets: &[i64],
     distance: f64,
 ) -> Vec<u64> {
-    let (min_x, min_y, max_x, max_y) = query_polygon_bounds(poly_xs, poly_ys);
+    let (mut min_x, mut min_y) = (f64::INFINITY, f64::INFINITY);
+    let (mut max_x, mut max_y) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for (&x, &y) in poly_xs.iter().zip(poly_ys.iter()) {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
     let n_parts = poly_offsets.len().saturating_sub(1);
     index
         .range(
@@ -1253,59 +1260,6 @@ pub fn par_points_within_distance_of_polygon<I: SpatialIndex + Sync>(
         })
         .map(|pi| pi as u64)
         .collect()
-}
-
-/// Point indices within `distance` of one query polygon using a direct parallel scan
-#[allow(clippy::too_many_arguments)]
-pub fn par_points_within_distance_of_polygon_scan(
-    xs: &[f64],
-    ys: &[f64],
-    poly_xs: &[f64],
-    poly_ys: &[f64],
-    poly_ring_offsets: &[i64],
-    poly_offsets: &[i64],
-    distance: f64,
-) -> Vec<u64> {
-    let (min_x, min_y, max_x, max_y) = query_polygon_bounds(poly_xs, poly_ys);
-    let n_parts = poly_offsets.len().saturating_sub(1);
-    xs.par_iter()
-        .zip(ys.par_iter())
-        .enumerate()
-        .filter_map(|(pi, (&x, &y))| {
-            if x < min_x - distance
-                || x > max_x + distance
-                || y < min_y - distance
-                || y > max_y + distance
-            {
-                return None;
-            }
-            (0..n_parts)
-                .any(|qp| {
-                    point_to_polygon_distance(
-                        x,
-                        y,
-                        poly_xs,
-                        poly_ys,
-                        poly_ring_offsets,
-                        poly_offsets,
-                        qp,
-                    ) <= distance
-                })
-                .then_some(pi as u64)
-        })
-        .collect()
-}
-
-fn query_polygon_bounds(poly_xs: &[f64], poly_ys: &[f64]) -> (f64, f64, f64, f64) {
-    let (mut min_x, mut min_y) = (f64::INFINITY, f64::INFINITY);
-    let (mut max_x, mut max_y) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
-    for (&x, &y) in poly_xs.iter().zip(poly_ys.iter()) {
-        min_x = min_x.min(x);
-        min_y = min_y.min(y);
-        max_x = max_x.max(x);
-        max_y = max_y.max(y);
-    }
-    (min_x, min_y, max_x, max_y)
 }
 
 /// For each query point, return its index if it falls within [min_x, max_x] × [min_y, max_y].
@@ -1411,40 +1365,6 @@ mod tests {
         )
         .compact();
         assert_eq!(flipped, forward);
-    }
-
-    #[test]
-    fn point_polygon_scan_matches_brute_force_index() {
-        let xs: Arc<[f64]> = vec![0.5, 2.0, 4.0, 8.0].into();
-        let ys: Arc<[f64]> = vec![0.5, 0.5, 2.0, 8.0].into();
-        let poly_xs = [0.0, 1.0, 1.0, 0.0, 0.0];
-        let poly_ys = [0.0, 0.0, 1.0, 1.0, 0.0];
-        let ring_offsets = [0, 5];
-        let poly_offsets = [0, 1];
-        let distance = 1.0;
-        let index = BruteForce::build(Arc::clone(&xs), Arc::clone(&ys));
-
-        let expected = par_points_within_distance_of_polygon(
-            &index,
-            &xs,
-            &ys,
-            &poly_xs,
-            &poly_ys,
-            &ring_offsets,
-            &poly_offsets,
-            distance,
-        );
-        let actual = par_points_within_distance_of_polygon_scan(
-            &xs,
-            &ys,
-            &poly_xs,
-            &poly_ys,
-            &ring_offsets,
-            &poly_offsets,
-            distance,
-        );
-
-        assert_eq!(actual, expected);
     }
 
     // A lon/lat point cloud spanning the equator, mid latitudes, the poles, and the antimeridian

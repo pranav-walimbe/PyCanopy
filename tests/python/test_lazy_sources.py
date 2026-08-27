@@ -525,35 +525,6 @@ def test_lazy_point_radius_streams_requested_wkb_in_source_order():
     assert result["geometry"].to_list() == source["geometry"].to_list()[1:4]
 
 
-def test_lazy_point_polygon_distance_streams_native_morsels(monkeypatch):
-    source = _point_data()
-    lazy_frame, projections = _tracked_source(source)
-    batch_lengths: list[int] = []
-    original = pycanopy_lazy._points_within_distance_of_polygon_scan
-
-    def tracked(xs, ys, polygon_rings, distance):
-        # Record native scan morsels before forwarding to the exact kernel
-        batch_lengths.append(len(xs))
-        return original(xs, ys, polygon_rings, distance)
-
-    def unexpected(cls, columns):
-        raise AssertionError("streaming polygon filter materialized an Engine")
-
-    monkeypatch.setattr(pycanopy_lazy, "_points_within_distance_of_polygon_scan", tracked)
-    monkeypatch.setattr(Engine, "_from_wkb_point_batches", classmethod(unexpected))
-    result = (
-        SpatialFrame.from_lazy(lazy_frame, "geometry", "point", ingest_batch_size=2)
-        .lazy()
-        .points_within_distance_of_polygon(shapely.box(1, -1, 3, 1), 0)
-        .select("id")
-        .collect()
-    )
-
-    assert batch_lengths == [2, 2, 1]
-    assert result["id"].to_list() == [2, 3, 4]
-    assert set(projections[0]) == {"id", "geometry"}
-
-
 def test_lazy_point_streaming_yields_bounded_matching_batches():
     batches = list(
         SpatialFrame.from_lazy(

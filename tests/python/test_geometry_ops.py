@@ -22,10 +22,6 @@ from pycanopy import (
     point_distance,
     wkb_point_distance,
 )
-from pycanopy.engine import (
-    _extract_query_polygon_rings,
-    _points_within_distance_of_polygon_scan,
-)
 
 
 def _haversine_ref(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
@@ -181,31 +177,6 @@ def test_points_within_distance_of_polygon():
 
     tight = set(eng.points_within_distance_of_polygon(poly, 0.5).tolist())
     assert tight == {0}
-
-
-def test_point_polygon_scan_matches_engine_for_holes_and_parts():
-    xs = np.array([0.5, 2.0, 2.0, 5.5, 7.0], dtype=np.float64)
-    ys = np.array([0.5, 2.0, 3.25, 5.5, 7.0], dtype=np.float64)
-    polygon = shapely.MultiPolygon(
-        [
-            shapely.Polygon(
-                [(0, 0), (4, 0), (4, 4), (0, 4)],
-                holes=[[(1, 1), (3, 1), (3, 3), (1, 3)]],
-            ),
-            shapely.box(5, 5, 6, 6),
-        ]
-    )
-    distance = 0.2
-
-    expected = Engine.from_coords(xs, ys).points_within_distance_of_polygon(polygon, distance)
-    actual = _points_within_distance_of_polygon_scan(
-        xs,
-        ys,
-        _extract_query_polygon_rings(polygon),
-        distance,
-    )
-
-    assert actual.tolist() == expected.tolist()
 
 
 def test_convex_hull_area():
