@@ -1,5 +1,6 @@
 """Focused tests for multi-engine SpatialBench orchestration."""
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -95,6 +96,80 @@ def test_all_engines_use_the_shared_runner(monkeypatch, engine):
     assert result["status"] == "ok"
     assert result["time"] == 1.25
     assert captured["command"][-3:] == [engine, "q1", "s3://data"]
+
+
+def test_shared_runner_classifies_sigkill_as_oom(monkeypatch):
+    monkeypatch.setattr(
+        driver_utils.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout="", stderr="", returncode=-9),
+    )
+
+    result = driver_utils._spawn("geopandas", "q3", "s3://data")
+
+    assert result == {"status": "oom", "error": "OOM: subprocess killed by SIGKILL"}
+
+
+def test_timing_suite_stops_after_oom_and_writes_remaining_queries(monkeypatch, tmp_path):
+    responses = [
+        {"status": "ok", "seconds": 1.0, "run_times": [1.0]},
+        {"status": "oom", "error": "OOM: subprocess killed by SIGKILL", "run_times": []},
+    ]
+    monkeypatch.setattr(driver_utils, "ASSETS_DIR", tmp_path)
+    monkeypatch.setattr(driver_utils, "version", lambda package: "1.0")
+    monkeypatch.setattr(driver_utils, "_measure", lambda *args: responses.pop(0))
+
+    transport = driver_utils.run_timing_suite("geopandas", ["q1", "q2", "q3"], "s3://data", 10, 3)
+
+    results = report_utils.read_transport(transport)
+    continuation = json.loads((tmp_path / "geopandas-continuation.json").read_text())
+    assert list(results["queries"]) == ["q1", "q2"]
+    assert results["queries"]["q2"]["status"] == "oom"
+    assert continuation == {"engine": "geopandas", "query_ids": ["q3"]}
+
+
+def test_timing_suite_does_not_replace_after_final_query_oom(monkeypatch, tmp_path):
+    monkeypatch.setattr(driver_utils, "ASSETS_DIR", tmp_path)
+    monkeypatch.setattr(driver_utils, "version", lambda package: "1.0")
+    monkeypatch.setattr(
+        driver_utils,
+        "_measure",
+        lambda *args: {
+            "status": "oom",
+            "error": "OOM: subprocess killed by SIGKILL",
+            "run_times": [],
+        },
+    )
+
+    driver_utils.run_timing_suite("geopandas", ["q12"], "s3://data", 10, 3)
+
+    assert not (tmp_path / "geopandas-continuation.json").exists()
+
+
+def test_combine_transports_merges_replacement_attempts(tmp_path):
+    first = tmp_path / "first.tsv"
+    second = tmp_path / "second.tsv"
+    report_utils.write_transport(
+        first,
+        "geopandas",
+        "1.0",
+        {"run ID": "run-1"},
+        {"q1": {"status": "oom", "error": "OOM", "run_times": []}},
+    )
+    report_utils.write_transport(
+        second,
+        "geopandas",
+        "1.0",
+        {"run ID": "run-2"},
+        {"q2": {"status": "ok", "seconds": 2.0, "run_times": [2.0]}},
+    )
+
+    results = report_utils.combine_transports([first, second], ["geopandas"], 10)
+
+    engine = results["engines"]["geopandas"]
+    assert list(engine["queries"]) == ["q1", "q2"]
+    assert engine["queries"]["q1"]["status"] == "oom"
+    assert engine["metadata"]["run ID"] == "run-1, run-2"
 
 
 def test_grouped_chart_supports_live_engine_results(tmp_path):

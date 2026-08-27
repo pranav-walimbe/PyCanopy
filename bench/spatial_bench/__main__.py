@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import tempfile
 import time
@@ -148,7 +149,7 @@ def _alive(ec2, instance_id: str) -> bool:
         inst = ec2.describe_instances(InstanceIds=[instance_id])
     except ClientError as exc:
         if exc.response["Error"]["Code"] == "InvalidInstanceID.NotFound":
-            return True
+            return False
         raise
     state = inst["Reservations"][0]["Instances"][0]["State"]["Name"]
     return state in ("pending", "running")
@@ -181,7 +182,8 @@ def _wait_for_success(
 ) -> bool:
     # Poll S3 for the _SUCCESS marker until it appears or the box dies or the deadline passes
     key = f"{RESULT_KEY_PREFIX}/{run_id}/_SUCCESS"
-    deadline = time.monotonic() + (max_runtime_minutes + 15) * 60
+    started = time.monotonic()
+    deadline = started + (max_runtime_minutes + 15) * 60
     seen = 0
     while time.monotonic() < deadline:
         seen = _emit_progress(s3, run_id, seen, engine)
@@ -191,7 +193,7 @@ def _wait_for_success(
             return True
         except ClientError:
             pass
-        if not _alive(ec2, instance_id):
+        if not _alive(ec2, instance_id) and time.monotonic() - started >= POLL_SECONDS * 2:
             return False
         time.sleep(POLL_SECONDS)
     return False
@@ -206,13 +208,107 @@ def _download(s3, run_id: str) -> list[Path]:
         name = obj["Key"].rsplit("/", 1)[-1]
         if name in ("_SUCCESS", "progress.log"):
             continue
-        keep = name.endswith((".png", ".txt", ".json"))
+        continuation = name.endswith("-continuation.json")
+        keep = name.endswith((".png", ".txt", ".json")) and not continuation
         dest = ASSETS_DIR if keep else Path(tempfile.gettempdir())
         dest.mkdir(parents=True, exist_ok=True)
         local = dest / name if keep else dest / f"{run_id}-{name}"
         s3.download_file(RESULT_BUCKET, obj["Key"], str(local))
         paths.append(local)
     return paths
+
+
+def _continuation_queries(paths: list[Path], engine: str) -> list[str] | None:
+    # Read the continuation manifest from one completed instance attempt
+    suffix = f"{engine}-continuation.json"
+    manifests = [path for path in paths if path.name.endswith(suffix)]
+    if not manifests:
+        return None
+    if len(manifests) != 1:
+        raise ValueError(f"multiple continuation manifests for {engine}")
+    payload = json.loads(manifests[0].read_text())
+    query_ids = payload.get("query_ids")
+    if payload.get("engine") != engine or not isinstance(query_ids, list):
+        raise ValueError(f"invalid continuation manifest for {engine}")
+    if not query_ids or any(query_id not in QUERY_IDS for query_id in query_ids):
+        raise ValueError(f"invalid continuation query list for {engine}")
+    return query_ids
+
+
+def _run_node_chain(
+    s3,
+    ec2,
+    ssm,
+    group_id: str,
+    node: str,
+    scale_factor: int,
+    profile: bool,
+    n: int,
+    query_ids: list[str] | None,
+    instance_ids: list[str],
+) -> tuple[bool, list[Path]]:
+    # Run one engine or profile variant across as many replacement boxes as OOM requires
+    pending = query_ids
+    paths = []
+    attempt = 1
+    while True:
+        current_queries = list(QUERY_IDS) if pending is None else pending
+        suffix = node if attempt == 1 else f"{node}-attempt{attempt}"
+        run_id = f"{group_id}-{suffix}"
+        instance_id = _launch(
+            ec2,
+            ssm,
+            run_id,
+            scale_factor,
+            profile,
+            n,
+            "pycanopy" if profile else node,
+            pending,
+            node if profile else "branch",
+        )
+        instance_ids.append(instance_id)
+        success = _wait_for_success(
+            s3,
+            ec2,
+            run_id,
+            instance_id,
+            MAX_RUNTIME_MINUTES_BY_SCALE_FACTOR[scale_factor],
+            node,
+        )
+        attempt_paths = _download(s3, run_id)
+        paths.extend(attempt_paths)
+        if not success or profile:
+            return success, paths
+        continuation = _continuation_queries(attempt_paths, node)
+        if continuation is None:
+            return True, paths
+        if (
+            len(continuation) >= len(current_queries)
+            or continuation != current_queries[-len(continuation) :]
+        ):
+            raise ValueError(f"continuation for {node} did not make progress")
+        print(
+            f"[{node}] [ec2] resuming {len(continuation)} queries on a fresh instance",
+            flush=True,
+        )
+        pending = continuation
+        attempt += 1
+
+
+def _terminate_instances(ec2, instance_ids: list[str]) -> None:
+    # Best-effort cleanup because completed boxes terminate themselves and may already be gone
+    terminated = []
+    for instance_id in instance_ids:
+        try:
+            ec2.terminate_instances(InstanceIds=[instance_id])
+        except ClientError as exc:
+            code = exc.response["Error"]["Code"]
+            if code != "InvalidInstanceID.NotFound":
+                print(f"[ec2] cleanup warning for {instance_id}: {code}", flush=True)
+        else:
+            terminated.append(instance_id)
+    if terminated:
+        print(f"[ec2] terminated {', '.join(terminated)}", flush=True)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -286,49 +382,33 @@ def main(argv: list[str] | None = None) -> int:
     # Profile mode fans out over builds of PyCanopy, not over engines
     nodes = list(PROFILE_VARIANTS) if args.profile else engines
 
-    instances = {}
+    instance_ids: list[str] = []
     paths: list[Path] = []
     statuses = {}
     try:
         group_id = uuid.uuid4().hex[:12]
-        for node in nodes:
-            run_id = f"{group_id}-{node}"
-            instances[node] = (
-                run_id,
-                _launch(
+        with ThreadPoolExecutor(max_workers=len(nodes)) as executor:
+            futures = {
+                node: executor.submit(
+                    _run_node_chain,
+                    s3,
                     ec2,
                     ssm,
-                    run_id,
+                    group_id,
+                    node,
                     scale_factor,
                     args.profile,
                     n,
-                    "pycanopy" if args.profile else node,
                     args.query,
-                    node if args.profile else "branch",
-                ),
-            )
-        with ThreadPoolExecutor(max_workers=len(instances)) as executor:
-            max_runtime_minutes = MAX_RUNTIME_MINUTES_BY_SCALE_FACTOR[scale_factor]
-            futures = {
-                node: executor.submit(
-                    _wait_for_success,
-                    s3,
-                    ec2,
-                    run_id,
-                    instance_id,
-                    max_runtime_minutes,
-                    node,
+                    instance_ids,
                 )
-                for node, (run_id, instance_id) in instances.items()
+                for node in nodes
             }
-            statuses = {node: future.result() for node, future in futures.items()}
-        for run_id, _ in instances.values():
-            paths.extend(_download(s3, run_id))
+            for node, future in futures.items():
+                statuses[node], node_paths = future.result()
+                paths.extend(node_paths)
     finally:
-        instance_ids = [instance_id for _, instance_id in instances.values()]
-        if instance_ids:
-            ec2.terminate_instances(InstanceIds=instance_ids)
-            print(f"[ec2] terminated {', '.join(instance_ids)}", flush=True)
+        _terminate_instances(ec2, instance_ids)
 
     if args.profile:
         transports = {
