@@ -30,20 +30,21 @@ def pycanopy(data_paths: dict[str, str]) -> pl.DataFrame:
     # Row offset inside its own file lets the slice skip every other row group
     local_row = hit["_row"][0] - int((names["_file"] == zone_file).arg_max())
 
-    zone, trip = pl.collect_all(
-        [
-            pl.scan_parquet(zone_file, storage_options=STORAGE_OPTIONS)
-            .select(["z_boundary"])
-            .slice(local_row, 1),
-            pl.scan_parquet(data_paths["trip"], storage_options=STORAGE_OPTIONS).select(
-                ["t_pickuploc"]
-            ),
-        ]
+    zone = (
+        pl.scan_parquet(zone_file, storage_options=STORAGE_OPTIONS)
+        .select(["z_boundary"])
+        .slice(local_row, 1)
+        .collect()
     )
     # from_wkb keeps a MultiPolygon whole rather than exploding it into parts
     poly = shapely.from_wkb(zone["z_boundary"][0])
 
-    sf = SpatialFrame.from_wkb_points(trip, "t_pickuploc")
-    # Only the count is needed so take the engine's matching indices without gathering rows
-    idx = sf.engine.points_within_distance_of_polygon(poly, 0.0)
-    return pl.DataFrame({"trip_count_in_coconino_county": [len(idx)]})
+    sf = SpatialFrame.scan_parquet(
+        data_paths["trip"],
+        geometry_col="t_pickuploc",
+        geometry_kind="point",
+        storage_options=STORAGE_OPTIONS,
+    )
+    # Selecting a coordinate column keeps the scan on geometry alone and skips every attribute
+    count = sf.lazy().points_within_distance_of_polygon(poly, 0.0).select("_x").collect().height
+    return pl.DataFrame({"trip_count_in_coconino_county": [count]})
