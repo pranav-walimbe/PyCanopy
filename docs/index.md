@@ -4,7 +4,9 @@ A declarative spatial query layer for Polars. Rust core, Python API.
 
 ## What is PyCanopy
 
-PyCanopy brings fast spatial queries (range, kNN, joins, polygon containment) into the Polars ecosystem without leaving Python. You declare the operations you want and the engine decides the most efficient way to execute the query and whether it should build one of its available spatial indices.
+PyCanopy adds spatial filters, nearest-neighbour queries, joins, and grouped aggregations to Polars
+DataFrames. Its lazy query planner combines Polars expressions with native Rust spatial kernels and
+uses workload statistics to choose an execution strategy and spatial index.
 
 ## Why PyCanopy
 
@@ -32,17 +34,16 @@ PyCanopy is fastest on 11/24 testcases and lands within 5% of the fastest time o
 
 Full results tables with per-query times are on the [Benchmarks](benchmarks.md) page.
 
-## Accepted input formats
+## Data sources
 
-| Format | Example |
-|:-------|:--------|
-| numpy `(N, 2)` array | `np.array([[x, y], ...])` |
-| GeoArrow PyArrow array | `pa.StructArray` or `FixedSizeList<2>` |
-| geopandas `GeoSeries` | `gdf.geometry` |
-| shapely Points / Polygons / MultiPolygons | `[Point(x, y), ...]` |
-| list of `(x, y)` tuples | `[(x, y), ...]` |
-| Separate coordinate sequences | `Engine.from_coords(xs, ys)` |
-| WKB point column (Binary) | `SpatialFrame.from_wkb_points(df, "geom")` |
-| WKB polygon column (Binary) | `SpatialFrame.from_wkb_polygons(df, "geom")` |
-| Polars lazy point/polygon WKB | `SpatialFrame.from_lazy(lf, "geom", "point")` |
-| Lazy local or S3 Parquet | `SpatialFrame.scan_parquet(path, "geom", "polygon")` |
+| Source | Entry point |
+|:-------|:------------|
+| Point coordinate columns in a Polars `DataFrame` | `SpatialFrame(df, x_col="x", y_col="y")` |
+| Point WKB in a Polars `DataFrame` | `SpatialFrame.from_wkb_points(df, "geometry")` |
+| Polygon or MultiPolygon WKB in a Polars `DataFrame` | `SpatialFrame.from_wkb_polygons(df, "geometry")` |
+| Shapely or GeoArrow polygon geometry | `SpatialFrame.from_polygons(df, "geometry")` |
+| Point or polygon WKB in a Polars `LazyFrame` | `SpatialFrame.from_lazy(lf, "geometry", "point")` |
+| Local, cloud, or GeoParquet data | `SpatialFrame.scan_parquet(path)` |
+
+The lower-level `Engine` also accepts NumPy arrays, coordinate sequences, GeoArrow arrays,
+GeoPandas geometry, and Shapely geometry directly.

@@ -37,11 +37,12 @@ nav:
     - Engine: api/engine.md
     - Planar and Geographic Distances: api/coordinate-reference-system.md
   - How It Works:
-    - Query Planner: how-it-works/query-planner.md
-    - Cost Model & Index Selection: how-it-works/cost-model.md
-    - Execution Paths: how-it-works/execution-paths.md
-    - Streaming Architecture: how-it-works/streaming.md
-    - In-Memory Optimization: how-it-works/in-memory-optimization.md
+    - Architecture Overview: how-it-works/architecture.md
+    - Data Ingestion and Ownership: how-it-works/data-ingestion.md
+    - Spatial Query Planning: how-it-works/query-planner.md
+    - Cost Model and Automatic Indexing: how-it-works/cost-model.md
+    - Physical Execution: how-it-works/execution-paths.md
+    - Morsel Execution and Aggregation: how-it-works/streaming.md
   - Contributing: contributing.md
 
 plugins:

@@ -9,11 +9,11 @@ You need Rust (stable), `cargo-nextest`, and Python 3.10–3.12. Install the Rus
 git clone https://github.com/pranav-walimbe/PyCanopy
 cd PyCanopy
 
-# Install dev dependencies (uv recommended)
-uv sync --group dev
+# Install dev dependencies
+make setup
 
 # Build the Rust extension and install in editable mode
-uv run maturin develop
+make build
 
 # Full check: format + build + lint + test
 make check
@@ -22,13 +22,14 @@ make check
 For a release build (needed for accurate benchmark numbers):
 
 ```bash
-uv run maturin develop --release
+make build-prod
 ```
 
 ## Make targets
 
 | Command | What it does |
 |:--------|:-------------|
+| `make setup` | Create the virtual environment and install development dependencies |
 | `make check` | Format, build, lint and run every test. The default target |
 | `make build` | Debug build |
 | `make build-prod` | Release build, needed for accurate benchmark numbers |
@@ -42,29 +43,33 @@ list with `make sf1 engines=pycanopy`.
 
 ## Running tests
 
+Run the complete local check before submitting a change:
+
 ```bash
 make check
-# or directly
+```
+
+Run either test suite directly while iterating:
+
+```bash
 cargo nextest run
 uv run pytest tests/python -x -q
 ```
 
 ## Style
 
-After every code change, run:
+Use these commands for focused formatting and linting while iterating:
 
 ```bash
-uv run ruff format && uv run ruff check
-cargo fmt && cargo clippy
+uv run ruff check --fix python/ tests/python/ bench/
+uv run ruff format python/ tests/python/ bench/
+cargo fmt
+cargo clippy --tests -- -D warnings
 ```
 
-`scripts/check_comments.py` enforces the rules below that ruff and clippy cannot express. Run
-`uv run python scripts/check_comments.py` to list violations, or with `--fix` to strip trailing
-periods from single-line comments.
+Then run `make check` before submitting the change.
 
-For coding style, I like these guidelines:
-
-**Comments**
+### Comments
 
 - Comments annotate code in one line. Use a multi-line block only when one line truly cannot carry it.
 - Comments should use near-zero commas. Say the one thing the reader needs and stop.
@@ -73,14 +78,14 @@ For coding style, I like these guidelines:
 - Single-line comments have no trailing period, multi-line comment blocks end each sentence with a period.
 - Write a TODO as `// TODO(name):` or `# TODO(name):`.
 
-**Python**
+### Python
 
 - All imports at module level.
 - Public functions use Google-style docstrings with `Args:`, `Returns:` and `Yields:` as applicable.
 - Docstrings carry no `Raises:` section and no line for a `None` return or input.
 - Private functions carry no docstring. They use a `#` comment as the first line in the body.
 
-**Rust**
+### Rust
 
 - `pub` items require a one-line `///` doc comment. Private `fn` usually carry none.
 - `///` docs are free prose. `Args:` and `Returns:` headings are Python-only.

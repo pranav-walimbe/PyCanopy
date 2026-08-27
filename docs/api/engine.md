@@ -1,6 +1,8 @@
 # Engine
 
-`Engine` is the low-level spatial index that backs every `SpatialFrame`. Most users interact with it only through `SpatialFrame.engine` for delta buffer operations or batch convex-hull computations. It can also be used directly when you need index access without the DataFrame layer.
+`Engine` is the low-level native geometry and spatial-index layer behind `SpatialFrame`. Most users
+should build queries through `SpatialFrame.lazy()`. Use `Engine` directly for geometry queries
+without DataFrame row gathering or for its standalone geometry computations.
 
 For coordinate systems and the standalone distance utilities, see [Coordinate Reference System](coordinate-reference-system.md).
 

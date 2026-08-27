@@ -140,33 +140,26 @@ SedonaDB, DuckDB, and GeoPandas baselines come from published SpatialBench resul
 
 ---
 
-## How It Works
+## High Level Overview
 
-### Spatial-aware Logical Planning
+### Spatial Query Planning
 
-- **Predicate pushdown:** moves compatible scalar filters ahead of spatial predicates
-- **Filter fusion:** combines eligible range and contains predicates in a single Rust call
-- **Projection pushdown:** narrows join inputs before gathering rows
-- **Join orientation:** flips supported joins based on relative input sizes
-
-### Physical Planning
-
-- **IO path:** directly queries the spatial index and slices source rows for selective predicates
-- **EXPR path:** applies scalar filters in Polars before evaluating broader spatial predicates in Rust
-- **Morsel streaming:** processes large query-side joins in batches for incremental collection, lazy pipelines, or direct Parquet sinks
-- **Streaming aggregation:** aggregates each join batch as it is produced, avoiding materialization of the complete join result
+- Mixes Polars filters and projections with range, containment, distance, k-nearest-neighbour, and join operations
+- Pushes down compatible predicates and projections and fuses spatial filters
+- Uses cost-based planning to choose the execution order of supported spatial joins
 
 ### Automatic Indexing
 
-- Tracks dataset extent, spatial distribution, and density to estimate query selectivity
-- Uses a cost model to compare brute-force scanning, reusing an existing index, and building and probing a new index
-- Selects among grid, KD-tree, and R-tree indexes based on the query and workload
+- Uses a cost model to choose between a parallel scan, an existing index, or building a new index
+- Selects grid, KD-tree, or R-tree indexes based on the geometry and workload
 
-### Why Rust
+### Performant Execution
 
-The hot paths benefit from packed immutable index structures, parallel loops, and efficient access to contiguous NumPy buffers. PyO3 and Maturin provide direct Python bindings and cross-platform extension packaging.
+- Processes large joins in morsels and reduces supported grouped aggregations without materializing the complete pair frame
+- Runs compute-intensive spatial kernels in parallel Rust outside the Python GIL
+- Stores geometry in contiguous arrays and KD-tree and R-tree indexes in packed immutable buffers for cache-efficient traversal
 
-For a detailed overview of PyCanopy's design, see the [How It Works documentation](https://pranav-walimbe.github.io/PyCanopy/how-it-works/query-planner/).
+For a detailed overview of PyCanopy's design, see the [How It Works documentation](https://pranav-walimbe.github.io/PyCanopy/how-it-works/architecture/).
 
 ---
 
