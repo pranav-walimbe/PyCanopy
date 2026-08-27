@@ -139,6 +139,13 @@ fn ensure_u32_indexable(len: usize, label: &str) -> PyResult<()> {
     Ok(())
 }
 
+fn ensure_equal_lengths(lengths: &[usize], message: &'static str) -> PyResult<()> {
+    if lengths.windows(2).all(|pair| pair[0] == pair[1]) {
+        return Ok(());
+    }
+    Err(PyValueError::new_err(message))
+}
+
 #[pyclass(name = "_PointBuilder")]
 struct PyPointBuilder {
     coordinates: Option<(Vec<f64>, Vec<f64>)>,
@@ -2365,6 +2372,15 @@ impl Engine {
                 "i_idx and j_idx must have the same length",
             ));
         }
+        if is
+            .iter()
+            .chain(js.iter())
+            .any(|&index| index as usize >= self.n_polygons)
+        {
+            return Err(PyValueError::new_err(
+                "polygon pair indices must be less than the polygon count",
+            ));
+        }
         let ring_off = self.ring_offsets.as_deref().unwrap();
         let poly_off = self.poly_offsets.as_deref().unwrap();
         // For MultiPolygons the pair area sums over their part pairs
@@ -2514,6 +2530,17 @@ impl Engine {
         let offs = offsets
             .as_slice()
             .map_err(|_| PyValueError::new_err("offsets must be a contiguous int64 array"))?;
+        ensure_equal_lengths(&[xs.len(), ys.len()], "xs and ys must have the same length")?;
+        let valid_offsets = offs.first() == Some(&0)
+            && offs
+                .windows(2)
+                .all(|pair| pair[0] >= 0 && pair[0] <= pair[1])
+            && offs.last().is_some_and(|&end| end as usize == xs.len());
+        if !valid_offsets {
+            return Err(PyValueError::new_err(
+                "offsets must start at zero, be nondecreasing, and end at the coordinate length",
+            ));
+        }
         let n = offs.len().saturating_sub(1);
         let areas: Vec<f64> = py.allow_threads(|| {
             (0..n)
@@ -2549,6 +2576,10 @@ impl Engine {
         let ys2 = ys2
             .as_slice()
             .map_err(|_| PyValueError::new_err("ys2 must be a contiguous float64 array"))?;
+        ensure_equal_lengths(
+            &[xs1.len(), ys1.len(), xs2.len(), ys2.len()],
+            "all coordinate arrays must have the same length",
+        )?;
         let n = xs1.len();
         let dists: Vec<f64> = (0..n)
             .into_par_iter()
@@ -2582,6 +2613,10 @@ impl Engine {
         let lats2 = lats2
             .as_slice()
             .map_err(|_| PyValueError::new_err("lats2 must be a contiguous float64 array"))?;
+        ensure_equal_lengths(
+            &[lons1.len(), lats1.len(), lons2.len(), lats2.len()],
+            "all coordinate arrays must have the same length",
+        )?;
         let n = lons1.len();
         let dists: Vec<f64> = (0..n)
             .into_par_iter()
@@ -2608,6 +2643,7 @@ impl Engine {
         let ys = ys
             .as_slice()
             .map_err(|_| PyValueError::new_err("ys must be a contiguous float64 array"))?;
+        ensure_equal_lengths(&[xs.len(), ys.len()], "xs and ys must have the same length")?;
         let n = xs.len();
         let dists: Vec<f64> = (0..n)
             .into_par_iter()
@@ -2635,6 +2671,10 @@ impl Engine {
         let lats = lats
             .as_slice()
             .map_err(|_| PyValueError::new_err("lats must be a contiguous float64 array"))?;
+        ensure_equal_lengths(
+            &[lons.len(), lats.len()],
+            "longitudes and latitudes must have the same length",
+        )?;
         // hoist the fixed center's cos(lat) out of the per-point loop
         let cos_cy = cy.to_radians().cos();
         let n = lons.len();
