@@ -19,21 +19,16 @@ ZONE_NAME = "Coconino County"
 def pycanopy(data_paths: dict[str, str]) -> pl.DataFrame:
     # Zone row group statistics span the whole name range so the predicate prunes no bytes
     names = (
-        pl.scan_parquet(
-            data_paths["zone"], storage_options=STORAGE_OPTIONS, include_file_paths="_file"
-        )
-        .select(["z_name", "_file"])
+        pl.scan_parquet(data_paths["zone"], storage_options=STORAGE_OPTIONS)
+        .select(["z_name"])
         .collect()
     )
-    hit = names.with_row_index("_row").filter(pl.col("z_name") == ZONE_NAME).head(1)
-    zone_file = hit["_file"][0]
-    # Row offset inside its own file lets the slice skip every other row group
-    local_row = hit["_row"][0] - int((names["_file"] == zone_file).arg_max())
-
+    row = names.with_row_index("_row").filter(pl.col("z_name") == ZONE_NAME)["_row"][0]
+    # Slicing one row lets the boundary scan skip every row group before it
     zone = (
-        pl.scan_parquet(zone_file, storage_options=STORAGE_OPTIONS)
+        pl.scan_parquet(data_paths["zone"], storage_options=STORAGE_OPTIONS)
         .select(["z_boundary"])
-        .slice(local_row, 1)
+        .slice(row, 1)
         .collect()
     )
     # from_wkb keeps a MultiPolygon whole rather than exploding it into parts
