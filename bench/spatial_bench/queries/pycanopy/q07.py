@@ -16,10 +16,10 @@ DEG_PER_M = 0.000009  # 1 meter ~= 0.000009 degrees
 
 
 def pycanopy(data_paths: dict[str, str]) -> pl.DataFrame:
-    trip = pl.read_parquet(
-        data_paths["trip"],
-        columns=["t_tripkey", "t_distance", "t_pickuploc", "t_dropoffloc"],
-        storage_options=STORAGE_OPTIONS,
+    trip = (
+        pl.scan_parquet(data_paths["trip"], storage_options=STORAGE_OPTIONS)
+        .select(["t_tripkey", "t_distance", "t_pickuploc", "t_dropoffloc"])
+        .collect()
     )
     line_m = wkb_point_distance(trip["t_pickuploc"], trip["t_dropoffloc"]) / DEG_PER_M
 

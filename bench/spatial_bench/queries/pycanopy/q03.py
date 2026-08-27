@@ -22,17 +22,20 @@ BASE_POLY = Polygon(
     ]
 )
 
-_COLS = ["t_pickuploc", "t_pickuptime", "t_dropofftime", "t_distance", "t_fare"]
+_AGG_COLS = ["t_pickuptime", "t_dropofftime", "t_distance", "t_fare"]
 
 
 def pycanopy(data_paths: dict[str, str]) -> pl.DataFrame:
-    trip = pl.read_parquet(
+    sf = SpatialFrame.scan_parquet(
         data_paths["trip"],
-        columns=_COLS,
+        geometry_col="t_pickuploc",
+        geometry_kind="point",
         storage_options=STORAGE_OPTIONS,
     )
-    sf = SpatialFrame.from_wkb_points(trip, "t_pickuploc")
-    filtered = sf.points_within_distance_of_polygon(BASE_POLY, DISTANCE)
+    # The deferred source prunes to the aggregated columns and frees each WKB batch after decode
+    filtered = (
+        sf.lazy().points_within_distance_of_polygon(BASE_POLY, DISTANCE).select(_AGG_COLS).collect()
+    )
     filtered = filtered.with_columns(
         pickup_month=pl.col("t_pickuptime").dt.truncate("1mo"),
         duration_seconds=(pl.col("t_dropofftime") - pl.col("t_pickuptime")).dt.total_seconds(),

@@ -17,10 +17,10 @@ RADIUS = 0.45  # degrees (~50km, planar)
 
 
 def pycanopy(data_paths: dict[str, str]) -> pl.DataFrame:
-    trip = pl.read_parquet(
-        data_paths["trip"],
-        columns=["t_tripkey", "t_pickuploc", "t_pickuptime"],
-        storage_options=STORAGE_OPTIONS,
+    trip = (
+        pl.scan_parquet(data_paths["trip"], storage_options=STORAGE_OPTIONS)
+        .select(["t_tripkey", "t_pickuploc", "t_pickuptime"])
+        .collect()
     )
     sf = SpatialFrame.from_wkb_points(trip, "t_pickuploc")
     near = sf.radius_query(CENTER[0], CENTER[1], RADIUS)
