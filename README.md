@@ -17,10 +17,10 @@
 ---
 
 > [!NOTE]
-> Highly competitive on [Apache SpatialBench](https://github.com/apache/sedona-spatialbench) (single-node spatial query benchmark): fastest on 11/24 testcases, within 5% of the fastest time on 14/24 testcases
+> Highly competitive on [Apache SpatialBench](https://github.com/apache/sedona-spatialbench) (single-node spatial query benchmark): fastest on 11/24 testcases and within 5% of the fastest time on 11/24 testcases
 
 <p align="center">
-  <img src="assets/spatialbench_sf1_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1" width="100%"/>
+  <img src="assets/spatialbench_sf1.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1" width="100%"/>
 </p>
 <p align="center"><sub>Apache SpatialBench SF1 · lower is better · bars past the cap truncated with their value · TIMEOUT / ERROR annotated</sub></p>
 
@@ -120,23 +120,23 @@ Each query-side batch is joined and aggregated before the next begins, so the co
 
 Run on a single `m7i.2xlarge` (8 vCPU, 32 GB), the same hardware used by [Apache SpatialBench](https://github.com/apache/sedona-spatialbench). PyCanopy is measured live with `index_mode="auto"`. Results were produced using the benchmark harness in `bench/spatial_bench`.
 
-PyCanopy is fastest on 11/24 testcases and lands within 5% of the fastest time on 14/24 testcases (there is some variance among benchmark runs).
+PyCanopy is fastest on 11/24 testcases and lands within 5% of the fastest time on 11/24 testcases (there is some variance among benchmark runs).
 
 **SF1** (~6M trips)
 
 <p align="center">
-  <img src="assets/spatialbench_sf1_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1" width="100%"/>
+  <img src="assets/spatialbench_sf1.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1" width="100%"/>
 </p>
 <p align="center"><sub>Apache SpatialBench SF1 · lower is better · linear axis, bars past the cap truncated with their value · TIMEOUT / ERROR annotated</sub></p>
 
 **SF10** (~60M trips)
 
 <p align="center">
-  <img src="assets/spatialbench_sf10_auto.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF10" width="100%"/>
+  <img src="assets/spatialbench_sf10.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF10" width="100%"/>
 </p>
 <p align="center"><sub>Apache SpatialBench SF10 · lower is better · linear axis, bars past the cap truncated with their value · TIMEOUT / ERROR annotated</sub></p>
 
-SedonaDB, DuckDB, and GeoPandas baselines come from published SpatialBench results. See the [full per-query results and methodology](https://pranav-walimbe.github.io/PyCanopy/benchmarks/).
+All engines were measured by the PyCanopy benchmark harness against the pinned SpatialBench workload. See the [full per-query results and methodology](https://pranav-walimbe.github.io/PyCanopy/benchmarks/).
 
 ---
 

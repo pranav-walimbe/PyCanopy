@@ -38,7 +38,7 @@ nav:
     - Planar and Geographic Distances: api/coordinate-reference-system.md
   - How It Works:
     - Architecture Overview: how-it-works/architecture.md
-    - Data Ingestion and Ownership: how-it-works/data-ingestion.md
+    - Data Ingestion: how-it-works/data-ingestion.md
     - Spatial Query Planning: how-it-works/query-planner.md
     - Cost Model and Automatic Indexing: how-it-works/cost-model.md
     - Physical Execution: how-it-works/execution-paths.md

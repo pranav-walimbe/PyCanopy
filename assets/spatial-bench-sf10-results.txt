@@ -1,0 +1,72 @@
+Apache SpatialBench SF10
+
+Run metadata
+------------
+timestamp (UTC): 2026-08-27T22:12:50+00:00
+run ID: 89233e536500-pycanopy
+workload revision: b9221a9c4b02b10db20611d79b4019d2b3c4b68e
+dataset: v0.1.0
+source: SpatialBench public S3
+source region: us-west-2
+configuration: SF10, 3 run(s) per query, 1200s query timeout
+system: Linux 6.18.41-94.142.amzn2023.x86_64 (x86_64)
+CPU: Intel(R) Xeon(R) Platinum 8488C
+logical CPUs: 8
+memory: 30.8 GiB
+cloud instance: m7i.2xlarge
+AMI: ami-08b7b9fdd7a1edf3d
+storage: gp3, 32 GiB, 3000 IOPS, 125 MiB/s
+engines: PyCanopy 0.4.1, DuckDB 1.5.5, SedonaDB 0.4.1, GeoPandas 1.1.4
+
+Results
+-------
+query         PyCanopy        DuckDB      SedonaDB     GeoPandas
+----------------------------------------------------------------
+q1                5.33          4.78          2.29       TIMEOUT
+q2                4.28          5.08          5.84       TIMEOUT
+q3                4.67          4.75          3.65       TIMEOUT
+q4                8.52          6.14          5.88           OOM
+q5               11.86         12.32         23.85           OOM
+q6               10.12          8.78         11.22         ERROR
+q7               11.11          5.91          7.39         ERROR
+q8                5.71          6.85          5.29         ERROR
+q9                0.23          0.50          0.25         ERROR
+q10              29.49       TIMEOUT         38.29         ERROR
+q11              32.30       TIMEOUT         61.19         ERROR
+q12              38.59       TIMEOUT        117.50         ERROR
+
+Raw samples (seconds)
+---------------------
+PyCanopy q1: 8.15, 3.93, 3.90
+PyCanopy q2: 4.63, 4.06, 4.17
+PyCanopy q3: 4.86, 4.59, 4.57
+PyCanopy q4: 8.86, 8.51, 8.18
+PyCanopy q5: 12.59, 11.60, 11.37
+PyCanopy q6: 10.27, 10.04, 10.05
+PyCanopy q7: 10.61, 11.96, 10.75
+PyCanopy q8: 5.75, 5.70, 5.68
+PyCanopy q9: 0.23, 0.24, 0.22
+PyCanopy q10: 29.57, 29.49, 29.40
+PyCanopy q11: 32.54, 32.13, 32.22
+PyCanopy q12: 38.79, 38.76, 38.22
+DuckDB q1: 7.31, 3.48, 3.56
+DuckDB q2: 5.93, 4.66, 4.65
+DuckDB q3: 4.70, 4.79, 4.77
+DuckDB q4: 6.23, 6.07, 6.13
+DuckDB q5: 12.81, 12.18, 11.98
+DuckDB q6: 8.84, 8.93, 8.58
+DuckDB q7: 5.85, 5.95, 5.94
+DuckDB q8: 6.75, 6.65, 7.16
+DuckDB q9: 0.53, 0.50, 0.48
+SedonaDB q1: 2.53, 2.19, 2.16
+SedonaDB q2: 6.84, 5.59, 5.09
+SedonaDB q3: 3.54, 3.97, 3.45
+SedonaDB q4: 5.82, 5.94, 5.88
+SedonaDB q5: 23.44, 24.22, 23.89
+SedonaDB q6: 20.18, 6.65, 6.82
+SedonaDB q7: 7.18, 7.91, 7.07
+SedonaDB q8: 5.47, 5.06, 5.33
+SedonaDB q9: 0.26, 0.24, 0.25
+SedonaDB q10: 38.70, 37.96, 38.22
+SedonaDB q11: 61.97, 60.98, 60.60
+SedonaDB q12: 117.27, 118.29, 116.93

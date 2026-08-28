@@ -1,0 +1,20 @@
+Calibrated CostFactors:
+
+Brute Force
+    knn_scan_ns_per_item:        5.349
+    bbox_scan_ns_per_item:       2.788
+
+Points
+    grid_build_ns_per_item:      8.376
+    kdtree_build_ns_per_item:    5.517
+    grid_range_ns:               23.315
+    kdtree_range_ns:             4.103
+    kdtree_knn_ns:               45.667
+
+Polygons
+    rtree_build_ns_per_item:     5.022
+    rtree_range_ns:              8.231
+    rtree_knn_ns:                160.299
+
+profile: /Users/pranavmacbookpro/projects/PyCanopy/python/pycanopy/cost_profiles/default.json
+elapsed: 7.0 s   peak RSS: 362.9 MiB

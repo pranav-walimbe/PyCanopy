@@ -45,11 +45,12 @@ AGENTS.md
 pycanopy_logo_files/
 scripts/
 
-# Generated benchmark outputs in assets (keep only the logo and the SpatialBench charts)
-/assets/*
-!/assets/pycanopy_logo3.png
-!/assets/spatialbench_sf1_auto.png
-!/assets/spatialbench_sf10_auto.png
-!/assets/spatial-bench-sf1_auto-results.txt
-!/assets/spatial-bench-sf10_auto-results.txt
-!/assets/PyCanopy_tutorial.ipynb
+# Keep only documentation-friendly asset formats
+/assets/**
+!/assets/**/
+!/assets/*.txt
+!/assets/*.ipynb
+!/assets/*.png
+!/assets/**/*.txt
+!/assets/**/*.ipynb
+!/assets/**/*.png

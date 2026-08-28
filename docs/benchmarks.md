@@ -4,48 +4,48 @@
 
 Run on a single `m7i.2xlarge` (8 vCPU, 32 GB), the same hardware used by [Apache SpatialBench](https://github.com/apache/sedona-spatialbench). PyCanopy is measured with `index_mode="auto"`.
 
-PyCanopy is fastest on 11/24 testcases and lands within 5% of the fastest time on 14/24 testcases (there is some variance among benchmark runs).
+PyCanopy is fastest on 11/24 testcases and lands within 5% of the fastest time on 11/24 testcases (there is some variance among benchmark runs).
 
 ### SF1 (~6M trips)
 
-![PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1](assets/spatialbench_sf1_auto.png)
+![PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1](assets/spatialbench_sf1.png)
 
 *Apache SpatialBench SF1 · lower is better · bars past the cap truncated with their value · TIMEOUT / ERROR annotated*
 
 | Query | PyCanopy | SedonaDB | DuckDB | GeoPandas |
 |:------|:--------:|:--------:|:------:|:---------:|
-| q1  | 1.39 | **0.66** | 0.96 | 12.78 |
-| q2  | **3.74** | 8.07 | 9.95 | 20.74 |
-| q3  | 1.23 | **0.80** | 1.17 | 13.59 |
-| q4  | **7.44** | 8.41 | 9.83 | 25.24 |
-| q5  | **1.71** | 5.10 | 1.80 | 47.08 |
-| q6  | **5.51** | 8.59 | 9.36 | 24.43 |
-| q7  | 2.15 | **1.66** | 1.82 | 137.00 |
-| q8  | **1.04** | 1.10 | 1.08 | 16.08 |
-| q9  | **0.23** | 0.23 | 50.15 | 0.28 |
-| q10 | **8.65** | 18.79 | 207.84 | 46.13 |
-| q11 | **9.90** | 32.98 | TIMEOUT | 51.01 |
-| q12 | 14.86 | **14.55** | ERROR | TIMEOUT |
+| q1  | 1.05 | **0.54** | 0.76 | 12.92 |
+| q2  | 2.01 | **1.70** | 2.00 | 14.94 |
+| q3  | 0.80 | **0.58** | 1.61 | 13.63 |
+| q4  | 4.99 | 4.60 | **3.82** | 18.35 |
+| q5  | **1.18** | 3.92 | 1.85 | 49.75 |
+| q6  | 4.66 | **3.12** | 4.24 | 19.74 |
+| q7  | 1.35 | **1.14** | 1.30 | 136.98 |
+| q8  | **0.71** | 0.73 | 1.21 | 15.72 |
+| q9  | 0.15 | **0.11** | 0.26 | 0.38 |
+| q10 | **5.92** | 6.52 | 203.77 | 43.20 |
+| q11 | **6.91** | 10.70 | 360.37 | 47.39 |
+| q12 | **3.48** | 10.15 | TIMEOUT | TIMEOUT |
 
 ### SF10 (~60M trips)
 
-![PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF10](assets/spatialbench_sf10_auto.png)
+![PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF10](assets/spatialbench_sf10.png)
 
 *Apache SpatialBench SF10 · lower is better · bars past the cap truncated with their value · TIMEOUT / ERROR annotated*
 
 | Query | PyCanopy | SedonaDB | DuckDB | GeoPandas |
 |:------|:--------:|:--------:|:------:|:---------:|
-| q1  | 8.52 | **3.04** | 4.58 | ERROR |
-| q2  | 9.39 | 8.89 | **8.26** | ERROR |
-| q3  | 6.88 | **4.09** | 5.17 | TIMEOUT |
-| q4  | 17.34 | **7.52** | 8.51 | ERROR |
-| q5  | 14.60 | 50.81 | **14.40** | ERROR |
-| q6  | 11.07 | **9.11** | 10.67 | ERROR |
-| q7  | 22.73 | 14.44 | **14.03** | ERROR |
-| q8  | 7.30 | **7.24** | 7.57 | TIMEOUT |
-| q9  | **0.34** | 0.38 | 942.98 | 0.49 |
-| q10 | **27.26** | 42.02 | ERROR | ERROR |
-| q11 | **37.21** | 97.52 | ERROR | ERROR |
-| q12 | 175.31 | **145.66** | ERROR | TIMEOUT |
+| q1  | 5.33 | **2.29** | 4.78 | TIMEOUT |
+| q2  | **4.28** | 5.84 | 5.08 | TIMEOUT |
+| q3  | 4.67 | **3.65** | 4.75 | TIMEOUT |
+| q4  | 8.52 | **5.88** | 6.14 | OOM |
+| q5  | **11.86** | 23.85 | 12.32 | OOM |
+| q6  | 10.12 | 11.22 | **8.78** | ERROR |
+| q7  | 11.11 | 7.39 | **5.91** | ERROR |
+| q8  | 5.71 | **5.29** | 6.85 | ERROR |
+| q9  | **0.23** | 0.25 | 0.50 | ERROR |
+| q10 | **29.49** | 38.29 | TIMEOUT | ERROR |
+| q11 | **32.30** | 61.19 | TIMEOUT | ERROR |
+| q12 | **38.59** | 117.50 | TIMEOUT | ERROR |
 
-All times in seconds. **Bold** = fastest on that query. SedonaDB, DuckDB, and GeoPandas baselines from published SpatialBench results.
+All times in seconds. **Bold** = fastest on that query. Every engine was measured by the PyCanopy harness against the pinned SpatialBench workload.
