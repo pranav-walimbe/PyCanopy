@@ -40,6 +40,7 @@ docs/assets/
 .DS_Store
 
 # Internal development files
+.agents/
 CLAUDE.md
 AGENTS.md
 pycanopy_logo_files/

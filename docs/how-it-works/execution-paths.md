@@ -1,76 +1,81 @@
-# Physical Execution
+# Query Execution
 
-The executor turns an optimized plan into Polars operations and native spatial calls. Plan shape
-and estimated selectivity determine how rows cross that boundary.
+`SpatialExecutor` walks the optimized node list and coordinates Polars with the native engine.
+Filter plans and join plans follow different routes.
 
-![The executor routes joins through morsels and spatial filters through either a Polars expression or direct index path](../assets/diagrams/execution-routing.png)
+![Filter plans use either an expression path or a direct engine path, while join plans use dedicated join kernels](../assets/diagrams/execution-routing.png)
 
-## Expression path
+## Filter plans
 
-Use Polars to reduce rows before native spatial evaluation:
+### Expression path
 
-- Add a temporary original-row index
-- Run scalar Polars expressions first
-- Pass surviving row indices to Rust through `map_batches`
-- Evaluate the point spatial predicate over those candidates
-- Return an aligned Boolean mask to Polars
+The `EXPR` path lets Polars reduce rows before a point spatial predicate runs:
 
-This path avoids building a temporary spatial index over the filtered subset. It is a Python
-callback inside a Polars lazy expression, not a native Polars expression plugin.
+1. Add a temporary original-row index.
+2. Apply scalar Polars filters.
+3. Pass surviving original-row indices to Rust through `map_batches`.
+4. Evaluate the spatial predicate over those candidates.
+5. Return a Boolean mask aligned with the surviving rows.
 
-## Direct index path
+The callback is a Python function inside a Polars lazy expression. It is not a native Polars
+expression plugin. The engine does not build a temporary index over the filtered subset.
 
-Query the complete native engine first when the spatial predicate is selective:
+### Direct engine path
 
-- Resolve each spatial predicate to compact row-index lists
-- Intersect multiple hit lists before gathering attributes
-- Gather matching `SpatialFrame` rows once
-- Run remaining scalar filters over that smaller DataFrame
+The `IO` path starts with the complete native engine:
 
-Polygon filters use this path because native polygon geometry is not represented as Polars
-coordinate columns. kNN without a preceding scalar filter also queries the complete engine.
+1. Resolve each supported spatial predicate to original-row indices.
+2. Intersect multiple hit lists in native code.
+3. Gather the matching `SpatialFrame` rows once.
+4. Apply scalar filters and a terminal limit to the gathered DataFrame.
 
-This decision only controls the Polars integration path. The native cost model separately chooses
-whether a kernel scans, reuses an index, or builds one.
+The optimizer selects this route for sufficiently selective range or containment filters. Polygon
+filter plans also use it because polygon geometry is not available as Polars coordinate columns.
 
-## From kernel to result
+“Direct engine” describes how results reconnect to Polars. The kernel may still scan, reuse an
+index, or build an index according to the native access-path planner.
 
-The native and tabular stages exchange compact indices rather than full rows:
+### kNN filters
 
-![Native access and exact refinement produce compact indices that drive narrow Polars gathers and post-join work](../assets/diagrams/kernel-result-pipeline.png)
+kNN does not use the general `IO` selection rule. With an earlier scalar filter, Rust scans the
+surviving row indices and marks the nearest `k`. Without an earlier scalar filter, the engine runs
+a global kNN query and the executor filters by its returned indices.
 
-### Native spatial work
+## Join plans
 
-- Bounds and indexes discard geometries that cannot match
+Join nodes call dedicated native batch kernels. Each kernel returns query-side and target-side row
+indices, plus distances where the operation defines them. The executor then:
+
+- gathers only the projected columns from each side;
+- prefixes conflicting target names with `right_`;
+- concatenates the two gathered sides horizontally; and
+- applies post-join nodes to the assembled result.
+
+Large probe sides are divided into morsels. Small joins use the same kernel and assembly path in a
+single call.
+
+![A join kernel returns compact pair indices that drive narrow gathers and post-join Polars work](../assets/diagrams/kernel-result-pipeline.png)
+
+## Inside a native kernel
+
+The exact stages depend on the operation and selected access path:
+
+- A scan or spatial index produces candidates
+- Bounding boxes can discard candidates before exact geometry work
 - Point-in-polygon uses prepared polygon bands for exact containment
-- Polygon distance and kNN refine bounding-box candidates with exact geometry distance
-- Eligible grouped kernels update aggregate state instead of emitting every pair
-- Long-running Rust sections release the Python GIL and use Rayon where parallelism helps
+- Polygon distance and polygon kNN refine candidates with exact geometry distance
+- Eligible grouped joins update aggregate state instead of returning match pairs
+- Long-running Rust sections release the Python GIL and use Rayon where parallel work pays
 
-### Join assembly
+## Copies and shared buffers
 
-- Kernels return query-side and target-side row indices
-- Projection planning narrows both gathers before rows are copied
-- Conflicting target column names receive a `right_` prefix
-- Post-join Polars nodes run over the assembled morsel
-
-## Packed in-memory structures
-
-- `geo-index` KD-trees and R-trees keep traversal data in contiguous packed buffers
-- Point coordinates live in Rust-owned `Arc<[f64]>` arrays shared by scan and grid paths
-- KD-trees share coordinates for exact refinement while owning packed traversal data
-- Polygon rings and parts use flat coordinate arrays plus offsets instead of nested objects
-
-These layouts reduce pointer chasing and improve cache locality during traversal.
-
-## Boundary crossings and copies
-
-- Coordinate constructors normalize inputs to contiguous NumPy arrays and copy once into
+- Coordinate constructors normalize inputs to contiguous NumPy arrays and copy them into
   Rust-owned storage
-- Point and polygon WKB are decoded from Arrow buffers without one Python geometry object per row
+- Point WKB uses NumPy buffer decoding for the common format; polygon WKB can decode from Arrow
+  buffers in Rust
 - Native kernels return arrays of indices, masks, distances, or aggregate state
-- Engine coordinate buffers can be exposed as read-only NumPy and Polars views without another
+- Engine point coordinates can be exposed as read-only NumPy and Polars views without another
   coordinate copy
 
-“Zero-copy” applies to those shared buffers, not the entire query. Row gathers, index builds, input
-normalization, and final result construction can still allocate.
+Shared coordinate views do not make the whole query zero-copy. Row gathers, index builds, input
+normalization, polygon subsets, and result construction can allocate.

@@ -40,8 +40,8 @@ nav:
     - Architecture Overview: how-it-works/architecture.md
     - Data Ingestion: how-it-works/data-ingestion.md
     - Spatial Query Planning: how-it-works/query-planner.md
-    - Cost Model and Automatic Indexing: how-it-works/cost-model.md
-    - Physical Execution: how-it-works/execution-paths.md
+    - Query Execution: how-it-works/execution-paths.md
+    - Native Access Planning: how-it-works/cost-model.md
     - Morsel Execution and Aggregation: how-it-works/streaming.md
   - Contributing: contributing.md
 

@@ -1,89 +1,103 @@
 # Spatial Query Planning
 
-## Operations become plan nodes
+## Logical nodes
 
-Calling a method on `SpatialLazyFrame` does not run that operation. It creates a typed node and
-returns a new frame containing the previous plan plus that node.
+Each `SpatialLazyFrame` method returns a new frame with one typed node appended. No work runs until
+`collect()`, `count()`, `collect_batched()`, `sink_parquet()`, or another terminal operation asks
+for a result.
 
-For example, a filter, spatial query, and projection become a plan like:
+For example:
 
-```text
-ScalarNode → RangeNode → SelectNode
+```python
+result = (
+    places.lazy()
+    .filter(pl.col("category") == "park")
+    .range_query(-74.1, 40.6, -73.8, 40.9)
+    .select("name")
+    .collect()
+)
 ```
 
-- Each node stores only what its operation needs, such as a Polars expression, query bounds, join
-  inputs, or selected columns
-- Nodes initially appear in declaration order; optimization begins when a terminal operation
-  collects, streams, counts, or sinks the query
+records `ScalarNode`, `RangeNode`, and `SelectNode` in declaration order.
 
 | Node category | Examples | Planning role |
 |:--------------|:---------|:--------------|
-| Scalar filter | `filter()` | Polars expression that may move within a reorderable section |
+| Scalar filter | `filter()` | Polars expression that can move within a reorderable section |
 | Spatial filter | `range_query()`, `contains()` | Row-subset operation ordered by estimated selectivity |
-| Nearest neighbour | `knn()` | Changes result shape and forms a planning barrier |
+| Nearest neighbour | `knn()` | Result-shaping operation and planning barrier |
 | Spatial join | `within_join()`, `knn_join()` | Combines two inputs and forms a planning barrier |
-| Terminal shape | `select()`, `count()` | Defines which attributes the result must retain |
+| Output shape | `select()`, `count()` | Determines which attributes must survive execution |
 | Row bound | `limit()` | Preserves result order and forms a barrier |
 
-## From a logical plan to execution
+## From declaration to execution
 
-![A logical plan moves through source preparation and optimizer passes to become an execution-ordered physical plan](../assets/diagrams/query-plan-transformation.png)
+![A terminal operation prepares a deferred source, optimizes the remaining node list, and selects a Polars integration path](../assets/diagrams/query-plan-transformation.png)
 
-- Materialized frames already have their Polars attributes, native geometry, and dataset statistics,
-  so they skip source preparation
-- Deferred frames first push a safe leading tabular prefix into Polars and materialize the required
-  source rows
-- The optimizer then works from the complete engine statistics and emits an execution-ordered plan
-- Native access-path planning later decides whether each spatial operation should scan, reuse an
-  index, or build a new one
+PyCanopy does not construct a separate physical-plan object. The executor receives an optimized,
+execution-ordered list of the same typed nodes plus an `EXPR` or `IO` integration-path choice.
+
+Materialized and deferred frames enter this process differently:
+
+- A materialized frame already has its attributes, native geometry, and statistics, so its complete
+  logical node list goes directly to the optimizer
+- A deferred frame first removes a safe source prefix, materializes the required rows and columns,
+  then optimizes the nodes that remain
+
+The engine's native scan/index decision happens later, when a spatial kernel runs.
 
 ## Ordering and barriers
 
-The optimizer divides a plan at operations whose semantics depend on order. It may reorder filters
-inside each resulting section, but never moves them across kNN, joins, self-joins, or limits.
+The optimizer divides the node list at operations whose semantics depend on order. It sorts only
+within the sections between those barriers.
 
-- Scalar filters run before spatial filters within a reorderable section
-- Scalar expressions use a small structural cost derived from their Polars expression tree
-- Range and radius filters estimate selectivity from the query area and dataset extent
-- Containment and kNN nodes use expected result-size estimates
-- Spatial filters are ordered from narrower to broader expected results
-- These ordering heuristics are separate from the calibrated native index cost model
+- Scalar filters run before spatial filters within a section
+- Scalar expressions are ordered by a structural cost derived from their Polars expression tree
+- Range and radius filters estimate selectivity from query area and dataset extent
+- Containment and kNN estimate expected result size
+- Spatial filters run from narrower to broader estimated results
+- kNN, joins, self-joins, and limits remain in their declared position
 
-## Spatial filter fusion
+These heuristics order operations. They do not choose a grid, KD-tree, R-tree, or scan.
 
-Compatible range and containment filters can share one Rust boundary crossing:
+## Plan rewrites
 
-![Filter fusion and projection pushdown reduce boundary crossings and gathered columns](../assets/diagrams/query-plan-rewrites.png)
+![The optimizer can fuse compatible filters and narrow columns gathered for joins](../assets/diagrams/query-plan-rewrites.png)
 
-- Fusion applies only to eligible consecutive range and containment filters
-- Very selective filters stay separate because reducing rows early is more valuable than fusion
-- Small datasets skip fusion because planning and intersection overhead would outweigh the saved
-  boundary crossings
+### Spatial filter fusion
 
-## Projection planning
+Consecutive range and containment predicates may become one `FusedSpatialNode`. The executor then
+makes one Rust call, and Rust intersects the intermediate hit lists before returning one Boolean
+mask.
 
-A terminal `select()` or `count()` tells the planner which attributes must survive execution.
+Fusion is skipped when the dataset is small or when a predicate is selective enough that applying
+it separately should reduce later work.
 
-- Join gathers retain requested output columns plus columns required by later filters
-- Deferred sources read only source-side columns needed by the remaining plan
-- `count()` retains no output attributes, though filters and geometry may still require source data
+### Projection planning
+
+A terminal `select()` or `count()` determines which attributes must survive:
+
+- Join gathers retain requested output columns and columns read by later scalar filters
+- Deferred sources retain only source-side columns required by the remaining plan
+- `count()` requests no output attributes, though filters and geometry can still require input
+  columns
 
 ## Join orientation
 
-- Symmetric point joins may flip when probing from the smaller side avoids unnecessary work
-- Supported point-to-polygon distance kernels compare the forward plan with building a grid over the
-  point side
-- Existing indexes count as already built when native planning compares orientations
-- Joins without a safe reverse kernel preserve their declared orientation
+Python and Rust make orientation decisions at different scopes:
 
-## Execution-path selection
+- The Python optimizer can flip supported symmetric joins based on the two side sizes
+- Native point-to-polygon distance planning can compare the declared direction with building a grid
+  over the point side
+- Joins without a safe reverse kernel keep their declared orientation
 
-After optimization, the planner chooses how spatial results reconnect to Polars rows:
+## Polars integration path
 
-- Joins and kNN use the expression path that carries row indices through the Polars plan
-- Highly selective spatial filters can use the direct I/O path, querying the full native engine and
-  gathering only matching Polars rows
-- Broader filters use the expression path so Polars can apply scalar work before spatial evaluation
+After optimization, PyCanopy selects how non-join spatial filters reconnect to Polars rows:
 
-This choice controls Polars integration. The native cost model independently chooses the spatial
-access path used inside the Rust engine.
+- `EXPR` keeps the work in a Polars lazy chain and passes surviving original-row indices to Rust
+- `IO` queries the complete engine first, gathers the matching rows, then applies scalar filters
+- Joins use dedicated join execution rather than this filter-path choice
+- kNN has its own scalar-aware behavior: it scans prior scalar survivors when present and otherwise
+  queries the complete engine
+
+The next page follows these routes through the executor.

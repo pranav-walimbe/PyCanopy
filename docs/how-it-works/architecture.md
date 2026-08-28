@@ -1,18 +1,38 @@
 # Architecture Overview
 
-PyCanopy is a spatial query layer around Polars rather than a replacement DataFrame engine.
+PyCanopy adds spatial planning and native geometry kernels to Polars. Polars remains responsible
+for reading tables, evaluating scalar expressions, gathering rows, and producing DataFrames.
 
-![PyCanopy architecture showing how its planner routes tabular work to Polars and spatial work to the Rust engine](../assets/diagrams/architecture-overview.png)
+![A PyCanopy query moves from API calls through source preparation and optimization before the executor coordinates Polars and the Rust engine](../assets/diagrams/architecture-overview.png)
 
-## Architecture Philosophy
+## Query lifecycle
 
-- **Delegate tabular work to Polars:** rely on Polars for scans, scalar expressions, projections,
-  row gathering, tabular joins, and final output
-- **Abstract away complexity:** expose a DataFrame-oriented API while planning execution paths,
-  indexes, join direction, and spatial kernels under the hood
-- **Bound peak memory:** design ingestion, joins, and aggregation around batches, morsels, compact
-  row indices, and narrow intermediates
-- **Centralize cost-based decisions:** use one calibrated native model to compare scans, existing
-  indexes, new indexes, index kinds, and spatial join direction
-- **Favor contiguous representations:** keep coordinates, packed indexes, and kernel inputs in
-  cache-efficient memory layouts with minimal copying
+1. `SpatialLazyFrame` records each operation as a typed node without executing it.
+2. A terminal operation prepares a deferred source, if present, and builds the complete native
+   geometry engine.
+3. `SpatialOptimizer` estimates and reorders the remaining nodes, then selects how spatial results
+   will reconnect to Polars rows.
+4. `SpatialExecutor` translates the optimized nodes into Polars operations and Rust calls.
+5. Each Rust kernel chooses its own scan or index access path from the engine's statistics and
+   configured index mode.
+
+The Python optimizer and the Rust access-path planner answer different questions. The Python layer
+orders logical operations and chooses a Polars integration path. The Rust layer decides how a
+specific spatial kernel should find candidates.
+
+## Division of work
+
+| Layer | Responsibilities |
+|:------|:-----------------|
+| Polars | Scans, scalar filters, projection, row gathering, tabular joins, and final output |
+| PyCanopy Python | Plan construction, deferred-source preparation, operation ordering, projection planning, and execution routing |
+| PyCanopy Rust | Geometry storage, statistics, candidate search, exact predicates, distances, and eligible grouped aggregation |
+
+PyCanopy exchanges row indices, masks, distances, and aggregate state across the Python/Rust
+boundary. Full attribute rows stay in Polars.
+
+## Materialization boundary
+
+A `SpatialFrame` always owns a complete native geometry dataset when spatial execution starts.
+Deferred ingestion can reduce the rows and columns read before that point, while morsel execution
+can bound join intermediates afterward. Neither feature partitions the indexed geometry engine.
