@@ -1,33 +1,42 @@
 # Morsel Execution and Aggregation
 
-Large spatial joins divide the query-side DataFrame into fixed-size slices called **morsels**.
-Each morsel probes the complete indexed `SpatialFrame`, then post-join work runs before the next
-morsel begins.
+Spatial join kernels accept a query-side DataFrame and probe a complete `SpatialFrame` engine.
+Morsel execution slices that query side so PyCanopy can process one join intermediate at a time.
 
-![Each query morsel probes the same indexed SpatialFrame before its result is filtered, projected, and consumed](../assets/diagrams/morsel-execution.png)
+![The query side is sliced into morsels that probe the same complete SpatialFrame before each result is consumed](../assets/diagrams/morsel-execution.png)
 
-## What morsels bound
+## When joins use morsels
 
-- Query coordinates passed to one native join call
-- Pair indices and gathered columns produced by one probe slice
-- Post-join filters and projections applied before the next slice
-- The result held by incremental terminals
+`collect()` uses morsels automatically when the first join's probe side exceeds the configured
+batch size. Smaller joins run once through the same join kernel and result-assembly path.
 
-Polars `iter_slices` reuses the query DataFrame's underlying buffers. `batch_size` controls the
-morsel size, while the native planner still receives the complete probe count when choosing a
-kernel or index strategy.
+Streaming terminals call the morsel iterator for every join plan; a probe side smaller than one
+batch produces one morsel. Non-join plans yield one complete DataFrame.
 
-Morsels do **not** partition the indexed side. Every morsel queries the same fully materialized
-`SpatialFrame` engine.
+`batch_size` controls rows per probe slice. Polars `iter_slices()` shares the query DataFrame's
+underlying buffers, and the native planner still receives the complete probe count when selecting
+a kernel or access path.
+
+Morsels never partition the indexed side. Each one queries the same fully materialized engine.
+
+## What one morsel bounds
+
+- Query coordinates passed to one native batch call
+- Match indices and distances returned by that call
+- Projected columns gathered for the matched pairs
+- Post-join filters applied before the next result is produced
+
+A morsel does not impose a row limit on its result. A high-fan-out join can produce many match rows
+from one probe slice.
 
 ## Result terminals
 
-| Terminal | What happens to each result morsel | Complete output retained? |
-|:---------|:-----------------------------------|:--------------------------|
-| `collect()` | Results are concatenated into one DataFrame | Yes |
-| `collect_batched()` | The caller receives each DataFrame immediately | No |
-| `sink_parquet()` | Each DataFrame is written to one Parquet file | No |
-| `lazy_source()` | Each DataFrame enters a downstream Polars plan | Depends on that plan |
+| Terminal | Treatment of each morsel | Complete output retained? |
+|:---------|:-------------------------|:--------------------------|
+| `collect()` | Concatenate results into one DataFrame | Yes |
+| `collect_batched()` | Yield each result DataFrame to the caller | No |
+| `sink_parquet()` | Write each result DataFrame to one Parquet file | No |
+| `lazy_source()` | Feed each result DataFrame into a downstream Polars plan | Depends on that plan |
 
 ### Consume batches directly
 
@@ -36,7 +45,7 @@ for batch in zones.lazy().within_join(trips, "lon", "lat").collect_batched():
     process(batch)
 ```
 
-### Write without collecting the full result
+### Write without collecting the complete result
 
 ```python
 zones.lazy().polygon_knn_join(trips, "lon", "lat", k=5).sink_parquet("nearest.parquet")
@@ -55,38 +64,41 @@ zones.lazy().polygon_knn_join(trips, "lon", "lat", k=5).sink_parquet("nearest.pa
 )
 ```
 
-- Polars can push requested columns, predicates, and row limits into the Python IO source
-- A one-row execution establishes the source schema before the downstream plan starts
-- Polars decides whether later operations stream, spill, or materialize
+`lazy_source()` first executes a one-row probe to establish its schema. Polars can then push
+requested columns, predicates, and limits into the Python IO source. Polars decides whether later
+operations stream, spill, or materialize.
 
 ## Grouped aggregation
 
-Grouped spatial results take one of two paths:
-
-![Eligible grouped joins aggregate match state directly in Rust while other plans reduce and combine per-morsel partials](../assets/diagrams/morsel-aggregation.png)
+![Eligible grouped joins aggregate in Rust while other plans combine per-morsel Polars partials](../assets/diagrams/morsel-aggregation.png)
 
 ### Fused native path
 
-- Applies to a single point-in-polygon or point-to-polygon-distance join
-- Requires grouping keys from the target polygon frame
-- Supports count, sum, and mean over eligible query-side numeric columns
-- Updates group state in Rust without constructing match-pair rows
+The fused path applies only when the plan contains one supported polygon join and no other body
+nodes:
 
-### Partial aggregation path
+- `within_join()` or `polygon_within_distance_join()`
+- Group keys come only from the target polygon frame
+- `count`, `sum`, and `mean` are supported
+- Numeric values for `sum` and `mean` come only from the query side
 
-- Handles other supported shapes, including min and max
-- Reduces each joined morsel to a small partial DataFrame
-- Combines counts, sums, extrema, and mean components after all morsels finish
-- Avoids retaining the complete pair frame
+The kernel updates group state in Rust and returns compact per-group arrays rather than a match-pair
+frame.
 
-## Memory boundaries
+### Per-morsel partial path
+
+Other supported plans assemble each joined morsel and reduce it with Polars. PyCanopy retains the
+small partial frames, combines counts, sums, extrema, and mean components, then finalizes one
+grouped DataFrame. This path also supports `min` and `max`.
+
+## Remaining memory boundaries
 
 !!! important
-    Morsel execution bounds one join batch, not every allocation in the query.
+    Morsel execution bounds one join intermediate, not every allocation in the query.
 
-- `collect()` retains completed morsels and constructs the final output
-- High-fan-out joins can still produce a large result from one morsel
-- Partial-aggregate memory grows with group count and morsel count
-- `lazy_source()` cannot prevent downstream blocking operations such as a global sort
-- `polygon_knn_join(sorted_output=True)` processes the full probe and global sort in Rust
+- `collect()` retains the complete final output
+- High-fan-out joins can produce a large single-morsel result
+- The partial aggregation path retains one partial DataFrame per morsel until the final reduction
+- `lazy_source()` cannot make a downstream global sort non-blocking
+- `polygon_knn_join(sorted_output=True)` runs the complete probe and global ordering in Rust
 - The indexed `SpatialFrame` remains fully materialized throughout execution

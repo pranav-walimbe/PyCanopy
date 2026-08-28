@@ -1,13 +1,16 @@
-# Cost Model and Automatic Indexing
+# Native Access Planning and Automatic Indexing
 
-Automatic indexing answers two separate questions:
+The Python optimizer decides operation order and Polars integration. Once the executor invokes a
+spatial kernel, the Rust planner decides how that kernel should search the native geometry dataset.
 
-1. Which access structure fits this geometry and query?
-2. Is building it cheaper than scanning or reusing an existing index?
+It answers two questions:
 
-![Automatic index planning combines the query workload, dataset statistics, and available indexes before comparing costs](../assets/diagrams/automatic-index-planning.png)
+1. Which access structures support this geometry and operation?
+2. Is scanning, reusing an existing index, or building a new index cheapest for this workload?
 
-## Access paths
+![Native access planning combines the operation, dataset statistics, probe count, and existing indexes before comparing viable paths](../assets/diagrams/automatic-index-planning.png)
+
+## Candidate access paths
 
 | Access path | Typical role |
 |:------------|:-------------|
@@ -16,45 +19,59 @@ Automatic indexing answers two separate questions:
 | KD-tree | Point kNN and non-uniform point range workloads |
 | R-tree | Polygon bounds, polygon queries, and polygon kNN candidates |
 
-These are candidates rather than promises. In `auto` mode, a query can still choose a scan even
-when an index type fits its shape.
+The table describes candidates, not guarantees. In `auto` mode, a compatible index can still lose
+to a scan.
 
-## Statistics collected once
+## Planning inputs
 
-- Row count gates index work on small datasets
-- Extent provides a fallback area-based selectivity estimate
-- Grid-cell variation classifies point data as uniform or clustered
-- The histogram estimates range-query output more accurately than extent area alone
-- Polygon histograms bin each polygon by its exterior-ring centroid
+The engine collects statistics when it builds the native dataset:
+
+- Row count and extent
+- A fixed spatial histogram for non-empty datasets
+- Grid-cell variation used to classify point distributions
+- Polygon histogram entries based on exterior-ring centroids
+
+The query contributes its operation, geometry, probe count, `k` or distance where applicable, and
+an estimated result fraction. Already-built indexes contribute their remaining probe cost without
+another build charge.
 
 ## Cost comparison
 
 For query count $Q$, dataset size $N$, and estimated selectivity $s$:
 
-![The planner compares the estimated total cost of scanning, reusing an index, and building a new index](../assets/diagrams/index-cost-comparison.png)
+![The native planner compares the estimated total cost of scanning, reusing an index, and building a new index](../assets/diagrams/index-cost-comparison.png)
 
+- Scan cost grows with $Q \times N$
 - Grid build cost grows approximately with $N$
 - KD-tree and R-tree build costs grow approximately with $N\log_2N$
-- Tree probes include traversal plus expected result work
-- Grid probes scale mainly with expected result work
-- A built index has zero remaining build cost and competes on probe cost alone
+- Tree probes include traversal and expected result work
+- Grid probes depend mainly on expected result work
+- A built index competes on its remaining probe cost
 
-The model predicts relative choices, not user-visible runtime. File reads, Polars expressions, row
-gathers, and result materialization sit outside these native index estimates.
+The model compares native alternatives. It does not predict end-to-end query time, and it excludes
+file reads, Polars expressions, row gathering, and result materialization.
 
 ## Index modes
 
-| Mode | Planner behavior |
-|:-----|:-----------------|
-| `auto` | Compare scan, built indexes, and the best new candidate |
-| `eager` | Use the rule-selected candidate without the scan cost gate |
-| `none` | Always use the parallel scan |
+| Mode | Native planner behavior |
+|:-----|:------------------------|
+| `auto` | Compare a scan, compatible built indexes, and the best new index candidate |
+| `eager` | Use the rule-selected index candidate without the scan cost gate |
+| `none` | Use the parallel scan |
+
+Explicit index modes can also force a supported index kind. The public API reference documents
+those values.
+
+## Join direction
+
+Some native batch kernels compare more than one orientation. A point-to-polygon distance join, for
+example, can compare probing polygon structures from the point side with building a grid over the
+points and probing it from polygon bounds. The planner includes build and probe work for the full
+probe count, even when the Python executor later feeds that work in morsels.
 
 ## Calibration
 
-The bundled cost factors are fitted from release-mode timings of native scans, index builds, and
-index probes. The calibration workloads vary geometry type, dataset size, spatial distribution,
-selectivity, probe count, and kNN `k` so the model captures the main ways index costs scale.
-
-PyCanopy ships those fitted factors as defaults. They guide relative planning choices rather than
-predicting end-to-end query time on a particular machine.
+PyCanopy fits its bundled factors from release-mode timings of native scans, index builds, and
+index probes. Calibration varies geometry type, input size, spatial distribution, selectivity,
+probe count, and kNN `k`. The fitted factors guide relative choices rather than predicting wall
+time on a specific machine.
