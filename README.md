@@ -17,12 +17,7 @@
 ---
 
 > [!NOTE]
-> Highly competitive on [Apache SpatialBench](https://github.com/apache/sedona-spatialbench) (single-node spatial query benchmark): fastest on 11/24 testcases
-
-<p align="center">
-  <img src="assets/spatialbench_sf1.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1" width="100%"/>
-</p>
-<p align="center"><sub>Apache SpatialBench SF1 · lower is better · bars past the cap truncated with their value · TIMEOUT / ERROR annotated</sub></p>
+> Fastest on 11/24 testcases in [Apache SpatialBench](#benchmarks) (spatial query benchmark)
 
 ---
 
