@@ -1,128 +1,76 @@
 # Physical Execution
 
-The executor translates an optimized spatial plan into Polars operations and native Rust calls.
-For non-join filters, it chooses how spatial matches are connected back to Polars rows.
+The executor turns an optimized plan into Polars operations and native spatial calls. Plan shape
+and estimated selectivity determine how rows cross that boundary.
 
-```mermaid
-flowchart TD
-    PLAN["optimized plan"] --> TYPE{"plan shape"}
-    TYPE -- "large spatial join" --> MORSEL["morsel executor"]
-    TYPE -- "selective spatial filter" --> IO["direct index path"]
-    TYPE -- "scalar-first point filter" --> EXPR["Polars expression path"]
-    TYPE -- "polygon filter" --> IO
-    IO --> OUT["Polars DataFrame"]
-    EXPR --> OUT
-    MORSEL --> OUT
-```
+![The executor routes joins through morsels and spatial filters through either a Polars expression or direct index path](../assets/diagrams/execution-routing.png)
 
 ## Expression path
 
-Use Polars to reduce the candidate rows before native spatial evaluation:
+Use Polars to reduce rows before native spatial evaluation:
 
-```mermaid
-sequenceDiagram
-    participant Polars
-    participant Callback as map_batches callback
-    participant Rust
+- Add a temporary original-row index
+- Run scalar Polars expressions first
+- Pass surviving row indices to Rust through `map_batches`
+- Evaluate the point spatial predicate over those candidates
+- Return an aligned Boolean mask to Polars
 
-    Polars->>Polars: apply scalar filters
-    Polars->>Callback: surviving original row indices
-    Callback->>Rust: spatial predicate over candidates
-    Rust-->>Callback: aligned Boolean mask
-    Callback-->>Polars: keep matching rows
-```
-
-- The DataFrame receives a temporary original-row index
-- Scalar Polars expressions run first
-- `map_batches` passes only surviving row indices across the boundary
-- Rust evaluates point spatial predicates over those candidates
-- No temporary spatial index is built over the filtered subset
-
-This is a Python callback integrated into a Polars lazy expression, not a native Polars expression
-plugin.
+This path avoids building a temporary spatial index over the filtered subset. It is a Python
+callback inside a Polars lazy expression, not a native Polars expression plugin.
 
 ## Direct index path
 
-Use the complete native engine first when the spatial predicate is selective:
+Query the complete native engine first when the spatial predicate is selective:
 
-```mermaid
-flowchart LR
-    Q["spatial predicate"] --> ENG["scan or spatial index"]
-    ENG --> IDX["compact matching row indices"]
-    IDX --> SLICE["slice SpatialFrame attributes"]
-    SLICE --> POLARS["remaining scalar filters in Polars"]
-```
+- Resolve each spatial predicate to compact row-index lists
+- Intersect multiple hit lists before gathering attributes
+- Gather matching `SpatialFrame` rows once
+- Run remaining scalar filters over that smaller DataFrame
 
-- Multiple spatial hit lists are intersected before gathering rows
-- Scalar filters run over the smaller spatial result
-- Polygon filters use this path because their native geometry is not represented as Polars
-  coordinate columns
-- kNN without a preceding scalar filter also queries the complete engine directly
+Polygon filters use this path because native polygon geometry is not represented as Polars
+coordinate columns. kNN without a preceding scalar filter also queries the complete engine.
 
-The path decision controls Polars integration. The native cost model independently decides whether
-the engine scans, reuses an index, or builds one.
+This decision only controls the Polars integration path. The native cost model separately chooses
+whether a kernel scans, reuses an index, or builds one.
 
-## Native kernel pipeline
+## From kernel to result
 
-```mermaid
-flowchart LR
-    PROBE["probe coordinates or bounds"] --> ACCESS["scan / Grid / KD-tree / R-tree"]
-    ACCESS --> CAND["candidate indices"]
-    CAND --> EXACT["exact refinement when required"]
-    EXACT --> PAIRS["match indices or aggregate states"]
-```
+The native and tabular stages exchange compact indices rather than full rows:
 
-- Bounds and indexes remove geometries that cannot match
+![Native access and exact refinement produce compact indices that drive narrow Polars gathers and post-join work](../assets/diagrams/kernel-result-pipeline.png)
+
+### Native spatial work
+
+- Bounds and indexes discard geometries that cannot match
 - Point-in-polygon uses prepared polygon bands for exact containment
 - Polygon distance and kNN refine bounding-box candidates with exact geometry distance
-- Supported aggregate kernels update group states without emitting every pair
-- Long-running pure Rust sections use Rayon and release the Python GIL
+- Eligible grouped kernels update aggregate state instead of emitting every pair
+- Long-running Rust sections release the Python GIL and use Rayon where parallelism helps
 
-## Join assembly
+### Join assembly
 
-Rust kernels return compact query-side and target-side indices:
-
-```mermaid
-flowchart TB
-    PAIR["query_idx, target_idx"] --> QG["gather selected query columns"]
-    PAIR --> TG["gather selected SpatialFrame columns"]
-    QG --> CAT["horizontal concatenate"]
-    TG --> CAT
-    CAT --> NAME["prefix conflicting target names with right_"]
-    NAME --> POST["post-join Polars nodes"]
-```
-
-Projection planning narrows each gather before it happens. This matters because pair-index arrays
-are usually much smaller than copying unused columns for every match.
+- Kernels return query-side and target-side row indices
+- Projection planning narrows both gathers before rows are copied
+- Conflicting target column names receive a `right_` prefix
+- Post-join Polars nodes run over the assembled morsel
 
 ## Packed in-memory structures
 
-```mermaid
-flowchart LR
-    subgraph Linked["heap-linked tree"]
-        A((node)) -. pointer .-> B((node))
-        B -. pointer .-> C((node))
-    end
-    subgraph Packed["packed immutable tree"]
-        BUF["header | nodes | item indices"]
-    end
-```
-
-- `geo-index` KD-trees and R-trees store traversal data in contiguous packed buffers
-- Point coordinates live in Rust-owned `Arc<[f64]>` arrays
-- Scan and grid paths share those coordinate allocations
-- KD-trees retain shared coordinates for exact distance refinement and own packed traversal data
+- `geo-index` KD-trees and R-trees keep traversal data in contiguous packed buffers
+- Point coordinates live in Rust-owned `Arc<[f64]>` arrays shared by scan and grid paths
+- KD-trees share coordinates for exact refinement while owning packed traversal data
 - Polygon rings and parts use flat coordinate arrays plus offsets instead of nested objects
+
+These layouts reduce pointer chasing and improve cache locality during traversal.
 
 ## Boundary crossings and copies
 
-- Coordinate constructors normalize inputs to contiguous NumPy arrays and copy once into Rust-owned
-  storage
-- Standard point WKB and polygon WKB are decoded from Arrow buffers without creating one Python
-  geometry object per row
-- Native kernels return arrays of indices, masks, distances, or aggregates
-- Read-only engine coordinate views can be exposed to NumPy and Polars without another coordinate
-  copy
+- Coordinate constructors normalize inputs to contiguous NumPy arrays and copy once into
+  Rust-owned storage
+- Point and polygon WKB are decoded from Arrow buffers without one Python geometry object per row
+- Native kernels return arrays of indices, masks, distances, or aggregate state
+- Engine coordinate buffers can be exposed as read-only NumPy and Polars views without another
+  coordinate copy
 
-“Zero-copy” applies to specific shared buffers, not the entire query. Row gathers, index builds,
-some input normalization, and final result construction still allocate memory.
+“Zero-copy” applies to those shared buffers, not the entire query. Row gathers, index builds, input
+normalization, and final result construction can still allocate.

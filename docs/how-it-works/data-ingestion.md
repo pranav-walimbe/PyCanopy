@@ -1,24 +1,9 @@
-# Data Ingestion and Ownership
+# Data Ingestion
 
 `SpatialFrame` has two source modes. Both produce the same execution state: aligned Polars
 attributes plus native Rust geometry.
 
-```mermaid
-flowchart TB
-    subgraph Materialized["Materialized frame"]
-        MDF["Polars DataFrame"] --> DEC1["decode or copy geometry once"]
-    end
-
-    subgraph Deferred["Deferred frame"]
-        SRC["Polars LazyFrame or Parquet scan"] --> PUSH["safe filters, limit, projection"]
-        PUSH --> BATCH["ordered WKB decode batches"]
-    end
-
-    DEC1 --> STATE["execution state"]
-    BATCH --> STATE
-    STATE --> ATTR["Polars attribute columns"]
-    STATE --> GEO["Rust point or polygon buffers"]
-```
+![Materialized and deferred ingestion paths converge on aligned Polars attributes and native Rust geometry](../assets/diagrams/ingestion-paths.png)
 
 ## Materialized sources
 
@@ -30,21 +15,16 @@ flowchart TB
 
 ## Deferred sources
 
-- `from_lazy()` accepts a Polars `LazyFrame` containing Binary WKB
-- `scan_parquet()` creates the same lazy source from local paths, globs, path lists, or cloud URLs
+- `from_lazy()` registers a Polars `LazyFrame` containing Binary WKB without collecting it
+- `scan_parquet()` creates the same deferred source from local paths, globs, path lists, or cloud
+  URLs
 - GeoParquet metadata can supply the geometry column and point/polygon kind
-- Nothing is decoded and no engine exists until a terminal operation prepares the plan
-
-```mermaid
-flowchart LR
-    PLAN["leading plan nodes"] --> SAFE{"safe source prefix?"}
-    SAFE -- "scalar filter" --> FILTER["Polars filter pushdown"]
-    FILTER --> LIMIT["optional terminal limit"]
-    SAFE -- "spatial op or barrier" --> KEEP["leave in spatial plan"]
-    LIMIT --> PROJECT["required source columns"]
-    KEEP --> PROJECT
-    PROJECT --> DECODE["collect batches and decode WKB"]
-```
+- A terminal operation determines which scalar filters, limit, and columns can be pushed into the
+  Polars source
+- Rows that survive the source plan are collected in ordered batches and their WKB is decoded into
+  native point or polygon buffers
+- Spatial execution begins after those batches have produced the complete native engine and aligned
+  selected attributes
 
 ## What is pushed into the source
 
@@ -58,14 +38,7 @@ conservative: failing to recognize an expression changes performance, not result
 
 ## Geometry representation
 
-```mermaid
-flowchart TB
-    P["Points"] --> XY["x: Arc&lt;[f64]&gt;<br/>y: Arc&lt;[f64]&gt;"]
-    G["Polygons and MultiPolygons"] --> C["flat x/y coordinates"]
-    G --> RO["ring offsets"]
-    G --> PO["polygon offsets"]
-    G --> PM["part-to-polygon mapping"]
-```
+![Points and polygons are represented by contiguous coordinate and offset buffers](../assets/diagrams/geometry-layout.png)
 
 - Flat arrays avoid one Python or Rust object per geometry
 - Offset arrays represent variable-length rings and polygon parts
