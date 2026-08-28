@@ -21,7 +21,7 @@ automatically chooses how to execute each query and whether a spatial index woul
 
 [Apache SpatialBench](https://github.com/apache/sedona-spatialbench) is the industry-standard single-node spatial query benchmark, maintained by the Apache Sedona project. Results below are from a single `m7i.2xlarge` (8 vCPU, 32 GB), the same instance type used in the published baseline.
 
-PyCanopy is fastest on 11/24 testcases and lands within 5% of the fastest time on 11/24 testcases (there is some variance among benchmark runs).
+PyCanopy is fastest on 11/24 testcases (there is some variance among benchmark runs).
 
 **SF1** (~6M trips)
 

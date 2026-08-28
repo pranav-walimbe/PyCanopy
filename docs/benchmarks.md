@@ -4,7 +4,7 @@
 
 Run on a single `m7i.2xlarge` (8 vCPU, 32 GB), the same hardware used by [Apache SpatialBench](https://github.com/apache/sedona-spatialbench). PyCanopy is measured with `index_mode="auto"`.
 
-PyCanopy is fastest on 11/24 testcases and lands within 5% of the fastest time on 11/24 testcases (there is some variance among benchmark runs).
+PyCanopy is fastest on 11/24 testcases (there is some variance among benchmark runs).
 
 ### SF1 (~6M trips)
 

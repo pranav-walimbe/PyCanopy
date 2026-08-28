@@ -17,7 +17,7 @@
 ---
 
 > [!NOTE]
-> Highly competitive on [Apache SpatialBench](https://github.com/apache/sedona-spatialbench) (single-node spatial query benchmark): fastest on 11/24 testcases and within 5% of the fastest time on 11/24 testcases
+> Highly competitive on [Apache SpatialBench](https://github.com/apache/sedona-spatialbench) (single-node spatial query benchmark): fastest on 11/24 testcases
 
 <p align="center">
   <img src="assets/spatialbench_sf1.png" alt="PyCanopy vs SedonaDB, DuckDB, and GeoPandas on Apache SpatialBench SF1" width="100%"/>
@@ -120,7 +120,7 @@ Each query-side batch is joined and aggregated before the next begins, so the co
 
 Run on a single `m7i.2xlarge` (8 vCPU, 32 GB), the same hardware used by [Apache SpatialBench](https://github.com/apache/sedona-spatialbench). PyCanopy is measured live with `index_mode="auto"`. Results were produced using the benchmark harness in `bench/spatial_bench`.
 
-PyCanopy is fastest on 11/24 testcases and lands within 5% of the fastest time on 11/24 testcases (there is some variance among benchmark runs).
+PyCanopy is fastest on 11/24 testcases (there is some variance among benchmark runs).
 
 **SF1** (~6M trips)
 
