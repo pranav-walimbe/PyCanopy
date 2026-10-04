@@ -55,23 +55,18 @@ The driving motivator behind creating this library was to provide the optimizati
 
 ## Example Operations
 
-### Optimized range query
+### Range query with an attribute filter
 
 ```python
-lf = (
+result = (
     sf.lazy()
     .range_query(min_x=-10.0, min_y=35.0, max_x=40.0, max_y=70.0)
     .filter(pl.col("population") > 100_000)
+    .collect()
 )
-print(lf.explain())
-# RANGE_QUERY [(-10, 35) → (40, 70)]
-# FROM
-#   FILTER [(col("population")) > (dyn int: 100000)]
-#   FROM
-#     DF [N=100,000; path: EXPR]
 ```
 
-The optimizer runs the scalar filter first. On the EXPR path, the surviving original row indices are passed to Rust, which returns a spatial Boolean mask over those candidates.
+Returns cities inside the bounding box with populations above 100,000.
 
 ### kNN join
 
@@ -81,7 +76,7 @@ query_df = pl.DataFrame({"qx": [2.35, 13.4], "qy": [48.85, 52.5]})
 result = sf.lazy().knn_join(query_df, x_col="qx", y_col="qy", k=3).collect()
 ```
 
-For each row in `query_df`, returns the 3 nearest rows in the `SpatialFrame`. Large probes are streamed in morsels automatically.
+Returns the 3 nearest rows in the `SpatialFrame` for each row in `query_df`.
 
 ### Point-in-polygon join with aggregation
 
@@ -102,7 +97,7 @@ stats = (
 )
 ```
 
-Each query-side batch is joined and aggregated before the next begins, so the complete pair frame is never materialized.
+Assigns each trip to its containing zone, then calculates the trip count and average fare per zone.
 
 > [!NOTE]
 > For the full operation catalog, index modes, streaming joins, and API reference see the **[docs site](https://pranav-walimbe.github.io/PyCanopy)**.
